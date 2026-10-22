@@ -2,13 +2,10 @@
 # Requires the PSL1GHT toolchain and ps3toolchain env vars loaded.
 
 TARGET		:= nasdl
-AUTHOR		:= cmspeedau
+AUTHOR		:= cmspeedou
 
-SRC_DIR		:= src
-OBJS_DIR	:= obj
-
-SRC	:= $(foreach dir, $(SRC_DIR), $(wildcard $(dir)/*.c))
-OBJS	:= $(SRC:.c=.o)
+SRC		:= main.c
+OBJS		:= $(SRC:.c=.o)
 
 TITLE		:= PS Linker NASDL
 APPID		:= PSNK00001
@@ -27,7 +24,7 @@ $(BIN): $(OBJS)
 %.o: %.c
 	$(CC) $(CFLAGS) -c -o $@ $<
 
-# Build an installable package (requires pkg.py from ps3tools / psl1ght-utils)
+# Build an installable package (requires pkg.py from psl1ght-utils)
 pkg: $(BIN)
 	pkg.py --contentid $(APPID)01-$(APPID) \
 	       $(TARGET).$(APPID) $(PKG)
