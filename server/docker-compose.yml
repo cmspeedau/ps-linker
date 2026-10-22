@@ -6,6 +6,11 @@
 # Games live in ./games (or edit the volume path below).
 # The container IP/host is what you enter in the PSP/PS3 NASDL app
 # and in webMAN MOD's network server settings.
+#
+# Server-side Store: drop a .store-queue.json into ./games with CDN
+# URLs to download; the container fetches them into the same library
+# and regenerates catalog.json every STORE_INTERVAL seconds.
+# NOTE: the volume is read-write so the Store can save downloads.
 
 services:
   ps-linker:
@@ -16,6 +21,7 @@ services:
       - "38008:38008"   # ps3netsrv++ (PS3 game streaming)
       - "8000:8000"     # HTTP share (PSP/PS3 NASDL downloads)
     volumes:
-      - ./games:/games:ro
+      - ./games:/games
     environment:
       - GAMES_DIR=/games
+      - STORE_INTERVAL=300   # seconds between store fetch + catalog regen
