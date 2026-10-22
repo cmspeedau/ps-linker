@@ -8,6 +8,7 @@ Two components:
 |---|---|---|
 | `server/` | Linux / NAS (host) | Streams games to PS3 via the ps3netsrv protocol, and serves files over HTTP for PSP download |
 | `psp/` | PSP (homebrew) | `NAS Downloader` app: connects to Wi-Fi, browses/downloads files from the PS Linker server to the Memory Stick |
+| `ps3/` | PS3 (homebrew) | `nasdl` app: same browse/download workflow as the PSP app, using PSL1GHT + BSD sockets, saving to `/dev_hdd0/NASDL/` |
 
 > Intended for homebrew and legally-owned content. This project does not provide or encourage piracy.
 
@@ -55,14 +56,37 @@ make
 
 Edit the server address (`SERVER`) / file list in `psp/main.c` to point at your NAS's HTTP share.
 
+## PS3 app (nasdl)
+
+Requires the [PSL1GHT toolchain](https://github.com/ps3dev/PSL1GHT) and a PS3 with CFW/HEN.
+
+```bash
+cd ps3
+make            # builds nasdl.self
+make pkg        # optional: installable .pkg
+```
+
+Files download to `/dev_hdd0/NASDL/`. The app reuses the same Media Go-style UI and directory-listing browser as the PSP version.
+
+## UI
+
+The app UI on both platforms follows the Media Go-inspired design spec in [`docs/UI-REFERENCE.md`](docs/UI-REFERENCE.md) (dark charcoal theme, sidebar, blue selection, header/status bars).
+
 ## Roadmap
 
 - [x] Repo scaffold + Linux server setup
-- [ ] PSP: interactive NAS browser (parse directory listing, on-device file picker)
+- [x] PSP: interactive NAS browser (parse directory listing, on-device file picker)
+- [x] Media Go-style UI on PSP (per docs/UI-REFERENCE.md)
+- [x] UI reference doc (docs/UI-REFERENCE.md) — Media Go look, media-management features stripped
+- [x] PS3 port (`ps3/`): PSL1GHT build, socket-based HTTP, same browse/download flow
 - [ ] PSP: unzip downloads with zlib
 - [ ] Server: single binary bundling ps3netsrv + HTTP share
 - [ ] GTK/Qt GUI front-end for Linux
-- [ ] Progress bars + HTTP Range resume in PSP app
+- [ ] Progress bars + HTTP Range resume in PSP app (progress bar done; resume pending)
+- [ ] PS3: RSX pixel-graphics renderer (currently ANSI console output)
+- [ ] Both: subdirectory navigation in the NAS browser
+- [ ] Both: functional Settings view (edit NAS URL on-device)
+- [ ] Compile-verify both builds on real toolchains (pspdev / PSL1GHT)
 
 ## License
 
