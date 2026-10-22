@@ -7,8 +7,8 @@ Two components:
 | Component | Target | What it does |
 |---|---|---|
 | `server/` | Docker / Linux / NAS (host) | Streams games to PS3 via the ps3netsrv protocol, serves files over HTTP for PSP/PS3 download (with Range/resume), and runs the server-side Store (downloads queued CDN titles into the same unified library) |
-| `psp/` | PSP (homebrew) | `NAS Downloader` app: connects to Wi-Fi, browses/downloads files from the PS Linker server to the Memory Stick |
-| `ps3/` | PS3 (homebrew, PSL1GHT) | `nasdl` app: browses/downloads files from the PS Linker server to the HDD |
+| `psp/` | PSP (homebrew) | `NAS Downloader` app: connects to Wi-Fi, browses/downloads files from the PS Linker server to the Memory Stick (resumable downloads) |
+| `ps3/` | PS3 (homebrew, PSL1GHT) | `nasdl` app: browses/downloads files from the PS Linker server to the HDD (resumable downloads) |
 
 > Intended for homebrew and legally-owned content. This project does not provide or encourage piracy.
 
@@ -104,6 +104,8 @@ make
 
 The server address defaults to `http://192.168.1.50:8000` and can be changed on-device: press **Select** in the browser to open the Settings view, edit the URL with the character picker, then press **Start** to save. The URL persists to `ms0:/PSP/GAME/NASDL/settings.txt`.
 
+Downloads are **resumable**: if a transfer is interrupted, re-selecting the file resumes from where it left off (`Range` request; the server must support 206 responses, which the PS Linker share does).
+
 ## PS3 app (nasdl)
 
 Requires the [PSL1GHT toolchain](https://github.com/PS3Dev/ps3toolchain) and a PS3 with CFW/HEN.
@@ -114,7 +116,7 @@ make          # produces nasdl.self
 make pkg      # optional: installable .pkg
 ```
 
-Same Settings view as the PSP app (**Select** in the browser); the URL persists to `/dev_hdd0/NASDL/settings.txt`.
+Same Settings view as the PSP app (**Select** in the browser); the URL persists to `/dev_hdd0/NASDL/settings.txt`. Downloads are resumable the same way as on PSP.
 
 See [docs/UI-REFERENCE.md](docs/UI-REFERENCE.md) for the app UI design reference.
 
@@ -139,13 +141,15 @@ See [docs/UI-REFERENCE.md](docs/UI-REFERENCE.md) for the app UI design reference
       protected) so PSP/PS3 clients never need zlib/unzip support
 - [x] Server: Range-capable HTTP share (`server/store/http_server.py`) replacing
       stock http.server — `Accept-Ranges`/`206` support, path-traversal safe,
-      compatible directory listings, so client resume can be enabled next
+      compatible directory listings
+- [x] Client resume: self-contained `resume.c/h` modules for both apps —
+      send `Range: bytes=<size>-` when a partial file exists, append on 206,
+      restart cleanly on 200; wired into both Makefiles
 
 ### In progress
 - [ ] Compile-verify both device builds on real toolchains (pspdev / PSL1GHT)
 - [ ] Test Store flow end-to-end with a real queue file + local HTTP CDN
-- [ ] HTTP Range resume in PSP/PS3 apps (server now sends 206/Accept-Ranges;
-      clients need retry-with-Range logic)
+      (including a Range-resume transfer against the container share)
 
 ### Next
 - [ ] Optional minimal Store view on PSP/PS3 (render `catalog.json` with
