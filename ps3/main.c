@@ -35,6 +35,8 @@
 #include <net/net.h>
 #include <io/pad.h>
 
+#include "resume.h"
+
 /* ------------------------------------------------------------------ */
 /* Config                                                              */
 /* ------------------------------------------------------------------ */
@@ -425,37 +427,25 @@ static int fetch_listing(void) {
 
 /* ------------------------------------------------------------------ */
 /* Download one file with a Media Go-style progress bar                */
+/* Downloading goes through resume.c, which sends Range headers and    */
+/* continues an interrupted transfer from the partial file on disk.    */
 /* ------------------------------------------------------------------ */
 
-static int download_file(const char *url, const char *dest_path) {
-    int s = http_send_get(url);
-    if (s < 0) return s;
-
-    int content_len = http_skip_headers(s);
-    if (content_len < -1) return content_len;   /* header read error */
-
-    FILE *f = fopen(dest_path, "wb");
-    if (!f) { close(s); return -3; }
-
-    static char buf[DL_BUF_SIZE];
-    long total = 0;
-    int ok = 1, n;
-
-    while (ok && (n = recv(s, buf, sizeof(buf), 0)) > 0) {
-        if (fwrite(buf, 1, n, f) != (size_t)n) { ok = 0; break; }
-        total += n;
-
-        int pct = content_len > 0 ? (int)((total * 100) / content_len) : 0;
-        if (pct > 100) pct = 100;
-        char info[64];
+/* Progress callback from resume.c: redraw the info line in place.
+   pct is 0-100, or -1 when the total size is unknown. */
+static void download_progress(int pct, long total) {
+    char info[64];
+    if (pct >= 0)
         snprintf(info, sizeof(info), "%d%%  (%ld KB)", pct, total / 1024);
-        Style st = { ANSI_BG_BG, ANSI_FG_DIM };
-        field(SCREEN_ROWS - 5, 30, &st, info);
-    }
+    else
+        snprintf(info, sizeof(info), "(%ld KB)", total / 1024);
+    Style st = { ANSI_BG_BG, ANSI_FG_DIM };
+    field(SCREEN_ROWS - 5, 30, &st, info);
+}
 
-    fclose(f);
-    close(s);
-    return ok ? 0 : -2;
+static int download_file(const char *url, const char *dest_path) {
+    draw_header("PS Linker", "Downloading...");
+    return ps3_resume_download(url, dest_path, download_progress);
 }
 
 /* ------------------------------------------------------------------ */
