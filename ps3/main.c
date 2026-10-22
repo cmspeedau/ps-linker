@@ -10,7 +10,8 @@
  * Build with the PSL1GHT toolchain: make
  * Requires CFW/HEN to install and run the generated package.
  *
- * Controls:  Up/Down = move, Cross = download, Circle = quit
+ * Controls:  Up/Down = move, Cross = download / enter directory,
+ *            Circle = parent directory (quit at root)
  *
  * Differences from the PSP version:
  *  - Networking uses BSD sockets (PSL1GHT), not sceHttp.
@@ -79,10 +80,15 @@ static const Style STYLE_STATUS = { ANSI_BG_ST,   ANSI_FG_DIM   };
 typedef struct {
     char name[MAX_PATH_LEN];
     char url[MAX_PATH_LEN];
+    int  is_dir;
 } FileEntry;
 
 static FileEntry g_files[MAX_FILES];
 static int g_file_count = 0;
+
+/* Current directory, relative to NAS_BASE_URL ("" = root).
+   Always either empty or terminated with '/'. */
+static char g_cwd[MAX_PATH_LEN] = "";
 
 /* ------------------------------------------------------------------ */
 /* Media Go-style console drawing helpers                              */
@@ -130,7 +136,7 @@ static void draw_sidebar(int row_from, int row_to, int active) {
 /* Bottom status bar with hint text and an optional status message. */
 static void draw_status(const char *msg) {
     char buf[SCREEN_COLS + 1];
-    snprintf(buf, sizeof(buf), " X:Download   O:Back   Up/Down:Move   | %s",
+    snprintf(buf, sizeof(buf), " Up/Down:Move  X:Download/Enter  O:Parent   | %s",
              msg ? msg : "");
     field(SCREEN_ROWS - 1, SCREEN_COLS, &STYLE_STATUS, buf);
 }
@@ -142,8 +148,22 @@ static void show_msg(int row, const Style *s, const char *msg) {
 }
 
 /* ------------------------------------------------------------------ */
-/* HTTP over BSD sockets (PSL1GHT)                                     */
+/* URL helpers                                                         */
 /* ------------------------------------------------------------------ */
+
+/* Build "BASE[/cwd][/name]". name may be NULL or end in '/'. */
+static void build_url(char *dst, size_t len, const char *name) {
+    size_t bl = strlen(NAS_BASE_URL);
+    bool base_slash = NAS_BASE_URL[bl - 1] == '/';
+    snprintf(dst, len, "%s%s%s%s%s",
+             NAS_BASE_URL,
+             base_slash || g_cwd[0] ? (base_slash ? "" : "/") : "",
+             g_cwd,
+             name ? (base_slash && !g_cwd[0] ? name
+                    : (g_cwd[0] ? name : (name[0] == '/' ? name + 1 : name)))
+                  : "",
+             "");
+}
 
 /* Strip scheme+host; returns path portion of url ("/" at minimum). */
 static const char *url_path(const char *url) {
@@ -166,6 +186,10 @@ static int url_host(const char *url, char *hostbuf, size_t len) {
     hostbuf[n] = '\0';
     return 0;
 }
+
+/* ------------------------------------------------------------------ */
+/* HTTP over BSD sockets (PSL1GHT)                                     */
+/* ------------------------------------------------------------------ */
 
 /* Resolve host (with optional :port), connect, return socket or <0. */
 static int http_connect(const char *url) {
@@ -242,7 +266,7 @@ static int http_skip_headers(int s) {
 }
 
 /* ------------------------------------------------------------------ */
-/* Directory-listing parser (same logic as the PSP version)            */
+/* Directory-listing parser                                            */
 /* Works with python3 -m http.server, nginx autoindex, Synology shares */
 /* ------------------------------------------------------------------ */
 
@@ -261,20 +285,34 @@ static void url_decode(char *dst, const char *src, size_t dstlen) {
 }
 
 static int add_file(const char *href) {
-    /* Skip parent links and anything that isn't a file in this dir */
     if (href[0] == '\0') return 0;
-    if (strncmp(href, "../", 3) == 0) return 0;
-    if (strchr(href, '/') != NULL) return 0;   /* nested dir or absolute */
+    if (strncmp(href, "../", 3) == 0) return 0;   /* parent link      */
+    if (href[0] == '/') return 0;                 /* server-absolute  */
+
+    int is_dir = 0;
     size_t hl = strlen(href);
-    if (hl > 0 && href[hl - 1] == '/') return 0;
+    if (hl > 0 && href[hl - 1] == '/') {          /* directory entry  */
+        is_dir = 1;
+        hl--;
+    }
+    if (hl == 0 || memchr(href, '/', hl) != NULL) return 0; /* nested/abs */
 
     if (g_file_count >= MAX_FILES) return 0;
     FileEntry *e = &g_files[g_file_count];
+
     url_decode(e->name, href, MAX_PATH_LEN);
-    if (NAS_BASE_URL[strlen(NAS_BASE_URL) - 1] == '/')
-        snprintf(e->url, MAX_PATH_LEN, "%s%s", NAS_BASE_URL, href);
-    else
-        snprintf(e->url, MAX_PATH_LEN, "%s/%s", NAS_BASE_URL, href);
+    if (!is_dir && strlen(e->name) > 4 &&
+        strcmp(e->name + strlen(e->name) - 4, "/") == 0)
+        e->name[strlen(e->name) - 1] = '\0';      /* safety, keep name clean */
+
+    /* Full URL: BASE / cwd / href */
+    char full[MAX_PATH_LEN];
+    build_url(full, sizeof(full), href);
+    if (is_dir && full[strlen(full) - 1] != '/')
+        strncat(full, "/", sizeof(full) - strlen(full) - 1);
+    snprintf(e->url, MAX_PATH_LEN, "%s", full);
+    e->is_dir = is_dir;
+
     g_file_count++;
     return 1;
 }
@@ -336,12 +374,10 @@ static int listing_cb(const char *body, void *user) {
     return 0;
 }
 
+/* Fetch the listing for the current g_cwd. */
 static int fetch_listing(void) {
     char url[MAX_PATH_LEN];
-    if (NAS_BASE_URL[strlen(NAS_BASE_URL) - 1] == '/')
-        snprintf(url, sizeof(url), "%s", NAS_BASE_URL);
-    else
-        snprintf(url, sizeof(url), "%s/", NAS_BASE_URL);
+    build_url(url, sizeof(url), NULL);
     return http_get_body(url, listing_cb, NULL);
 }
 
@@ -416,12 +452,38 @@ static int get_pressed(unsigned *pressed) {
 }
 
 /* ------------------------------------------------------------------ */
+/* Directory navigation                                                */
+/* ------------------------------------------------------------------ */
+
+/* Append "name/" to g_cwd. Returns 0 or <0 if the path would overflow. */
+static int cwd_enter(const char *name) {
+    size_t cl = strlen(g_cwd), nl = strlen(name);
+    if (cl + nl + 2 > sizeof(g_cwd)) return -1;
+    memcpy(g_cwd + cl, name, nl);
+    g_cwd[cl + nl] = '/';
+    g_cwd[cl + nl + 1] = '\0';
+    return 0;
+}
+
+/* Remove the last path component from g_cwd ("" if already at root). */
+static void cwd_up(void) {
+    char *slash = strrchr(g_cwd, '/');
+    if (slash && slash >= g_cwd) {
+        /* keep the trailing slash of the parent, if any */
+        if (slash == g_cwd)
+            g_cwd[0] = '\0';
+        else
+            *slash = '\0';
+    }
+}
+
+/* ------------------------------------------------------------------ */
 /* Splash / browser screens (Media Go layout, same as the PSP build)   */
 /* ------------------------------------------------------------------ */
 
 static void draw_splash(const char *msg) {
     ui_begin();
-    draw_header("PS Linker", "v1.0 PS3");
+    draw_header("PS Linker", "v1.1 PS3");
     draw_sidebar(1, SCREEN_ROWS - 2, 0);
 
     Style big = { ANSI_BG_BG, ANSI_FG_TXT };
@@ -452,13 +514,18 @@ static int browser(void) {
         if (sel < top) top = sel;
         if (sel >= top + list_rows) top = sel - list_rows + 1;
 
+        /* Panel header shows current path, truncated to fit. */
         Style head = { ANSI_BG_BG, ANSI_FG_DIM };
-        field(1, SCREEN_COLS - 14, &head, " NAS LIBRARY");
+        char hdr[SCREEN_COLS - 14 + 1];
+        snprintf(hdr, sizeof(hdr), " NAS LIBRARY: /%s", g_cwd);
+        field(1, SCREEN_COLS - 14, &head, hdr);
 
         int w = SCREEN_COLS - 16;
         char line[MAX_PATH_LEN];
         for (int i = top; i < g_file_count && i < top + list_rows; i++) {
-            snprintf(line, sizeof(line), "%s", g_files[i].name);
+            snprintf(line, sizeof(line), "%s%s",
+                     g_files[i].is_dir ? "[DIR]  " : "       ",
+                     g_files[i].name);
             if ((int)strlen(line) > w) line[w] = '\0';
             printf("%s%s\x1b[%d;15H %-*s %s",
                    i == sel ? STYLE_SEL.bg : STYLE_ROW.bg,
@@ -469,7 +536,7 @@ static int browser(void) {
         draw_sidebar(1, SCREEN_ROWS - 2, 0);
 
         char status[64];
-        snprintf(status, sizeof(status), "%d files - %d selected",
+        snprintf(status, sizeof(status), "%d entries - %d selected",
                  g_file_count, sel + 1);
         draw_status(status);
         fflush(stdout);
@@ -484,6 +551,21 @@ static int browser(void) {
             sel = (sel - 1 + g_file_count) % g_file_count;
         } else if (pressed & PAD_BTN_CROSS) {
             FileEntry *e = &g_files[sel];
+
+            if (e->is_dir) {
+                /* Enter the directory and reload its listing. */
+                draw_splash("Loading directory...");
+                if (cwd_enter(e->name) != 0 || fetch_listing() != 0) {
+                    cwd_up();   /* roll back on failure */
+                    Style err = { ANSI_BG_ERR, ANSI_FG_ERR };
+                    show_msg(17, &err, "Could not open directory.");
+                    wait_button();
+                    continue;
+                }
+                sel = 0; top = 0;
+                continue;
+            }
+
             char dest[MAX_PATH_LEN + 32];
             snprintf(dest, sizeof(dest), DEST_DIR "%s", e->name);
 
@@ -496,7 +578,19 @@ static int browser(void) {
             draw_status(rc == 0 ? "Download complete" : "Download failed");
             wait_button();
         } else if (pressed & PAD_BTN_CIRCLE) {
-            return 0;
+            if (g_cwd[0] != '\0') {
+                /* Go up one level and reload. */
+                draw_splash("Going up...");
+                cwd_up();
+                if (fetch_listing() != 0) {
+                    Style err = { ANSI_BG_ERR, ANSI_FG_ERR };
+                    show_msg(17, &err, "Could not reload parent directory.");
+                    wait_button();
+                }
+                sel = 0; top = 0;
+                continue;
+            }
+            return 0;   /* at root: quit */
         }
     }
 }
