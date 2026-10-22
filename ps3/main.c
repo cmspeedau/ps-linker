@@ -11,7 +11,10 @@
  * Requires CFW/HEN to install and run the generated package.
  *
  * Controls:  Up/Down = move, Cross = download / enter directory,
- *            Circle = parent directory (quit at root)
+ *            Circle = parent directory (quit at root),
+ *            Select = Settings (edit NAS URL)
+ * Settings:  Left/Right = pick char, Cross = insert / save & exit,
+ *            Circle = delete char, Start = save & exit
  *
  * Differences from the PSP version:
  *  - Networking uses BSD sockets (PSL1GHT), not sceHttp.
@@ -36,14 +39,19 @@
 /* Config                                                              */
 /* ------------------------------------------------------------------ */
 
-/* Base URL of the NAS share, e.g. "http://192.168.1.50:8000/files" */
-#define NAS_BASE_URL  "http://192.168.1.50:8000"
+/* Default base URL of the NAS share; editable at runtime via Settings
+   and persisted to SETTINGS_PATH. */
+#define DEFAULT_NAS_URL "http://192.168.1.50:8000"
 
 /* Destination directory on the PS3 HDD */
 #define DEST_DIR  "/dev_hdd0/NASDL/"
 
+/* Settings file (plain text: one line, the base URL) */
+#define SETTINGS_PATH DEST_DIR "settings.txt"
+
 #define MAX_FILES     128
 #define MAX_PATH_LEN  256
+#define MAX_URL_LEN   128
 #define DL_BUF_SIZE   (64 * 1024)   /* 64 KB chunks */
 
 /* Console "screen" metrics for the Media Go-style layout */
@@ -86,7 +94,7 @@ typedef struct {
 static FileEntry g_files[MAX_FILES];
 static int g_file_count = 0;
 
-/* Current directory, relative to NAS_BASE_URL ("" = root).
+/* Current directory, relative to g_nas_base ("" = root).
    Always either empty or terminated with '/'. */
 static char g_cwd[MAX_PATH_LEN] = "";
 
@@ -136,7 +144,8 @@ static void draw_sidebar(int row_from, int row_to, int active) {
 /* Bottom status bar with hint text and an optional status message. */
 static void draw_status(const char *msg) {
     char buf[SCREEN_COLS + 1];
-    snprintf(buf, sizeof(buf), " Up/Down:Move  X:Download/Enter  O:Parent   | %s",
+    snprintf(buf, sizeof(buf),
+             " Up/Down:Move  X:Download/Enter  O:Parent  Select:Settings | %s",
              msg ? msg : "");
     field(SCREEN_ROWS - 1, SCREEN_COLS, &STYLE_STATUS, buf);
 }
@@ -148,15 +157,48 @@ static void show_msg(int row, const Style *s, const char *msg) {
 }
 
 /* ------------------------------------------------------------------ */
+/* Settings: runtime NAS URL, persisted to the HDD                     */
+/* ------------------------------------------------------------------ */
+
+/* Base URL of the NAS share, e.g. "http://192.168.1.50:8000".
+   Editable in the Settings view; lives in RAM after load. */
+static char g_nas_base[MAX_URL_LEN] = DEFAULT_NAS_URL;
+
+/* Load the saved URL. Silently keeps the default if absent/invalid. */
+static void load_settings(void) {
+    FILE *f = fopen(SETTINGS_PATH, "r");
+    if (!f) return;
+    char buf[MAX_URL_LEN];
+    if (fgets(buf, sizeof(buf), f)) {
+        /* trim trailing whitespace/newlines */
+        size_t n = strlen(buf);
+        while (n > 0 && (buf[n-1] == '\n' || buf[n-1] == '\r' ||
+                         buf[n-1] == ' '))
+            buf[--n] = '\0';
+        if (n > 7 && strncmp(buf, "http://", 7) == 0)
+            snprintf(g_nas_base, sizeof(g_nas_base), "%s", buf);
+    }
+    fclose(f);
+}
+
+static int save_settings(void) {
+    FILE *f = fopen(SETTINGS_PATH, "w");
+    if (!f) return -1;
+    int ok = fputs(g_nas_base, f) >= 0;
+    fclose(f);
+    return ok ? 0 : -2;
+}
+
+/* ------------------------------------------------------------------ */
 /* URL helpers                                                         */
 /* ------------------------------------------------------------------ */
 
 /* Build "BASE[/cwd][/name]". name may be NULL or end in '/'. */
 static void build_url(char *dst, size_t len, const char *name) {
-    size_t bl = strlen(NAS_BASE_URL);
-    bool base_slash = NAS_BASE_URL[bl - 1] == '/';
+    size_t bl = strlen(g_nas_base);
+    bool base_slash = g_nas_base[bl - 1] == '/';
     snprintf(dst, len, "%s%s%s%s%s",
-             NAS_BASE_URL,
+             g_nas_base,
              base_slash || g_cwd[0] ? (base_slash ? "" : "/") : "",
              g_cwd,
              name ? (base_slash && !g_cwd[0] ? name
@@ -483,7 +525,7 @@ static void cwd_up(void) {
 
 static void draw_splash(const char *msg) {
     ui_begin();
-    draw_header("PS Linker", "v1.1 PS3");
+    draw_header("PS Linker", "v1.2 PS3");
     draw_sidebar(1, SCREEN_ROWS - 2, 0);
 
     Style big = { ANSI_BG_BG, ANSI_FG_TXT };
@@ -492,13 +534,113 @@ static void draw_splash(const char *msg) {
     draw_status("Starting...");
 }
 
+/* ------------------------------------------------------------------ */
+/* Settings view: edit the NAS URL with an on-screen character picker  */
+/* ------------------------------------------------------------------ */
+
+/* Single-row character strip, Media Go style. */
+static const char SETTINGS_CHARS[] =
+    "abcdefghijklmnopqrstuvwxyz0123456789-.:/_";
+#define SETTINGS_NCHARS ((int)(sizeof(SETTINGS_CHARS) - 1))
+/* Special slots after the chars: 0=delete, 1=save & exit */
+#define SP_DEL  SETTINGS_NCHARS
+#define SP_OK   (SETTINGS_NCHARS + 1)
+#define SETTINGS_NSLOTS (SETTINGS_NCHARS + 2)
+
+static void settings_view(void) {
+    int pick = 0, view = 0;
+    unsigned prev = 0;
+
+    /* Visible window of the strip: pick stays inside [view, view+W) */
+    const int strip_w = SCREEN_COLS - 16;      /* list panel width */
+    const int picker_row = SCREEN_ROWS - 4;
+
+    while (1) {
+        ui_begin();
+        draw_header("PS Linker", "Settings");
+        draw_sidebar(1, SCREEN_ROWS - 2, 2);   /* highlight "Settings" */
+
+        Style lbl = { ANSI_BG_BG, ANSI_FG_DIM };
+        field(4, strip_w, &lbl, " NAS SERVER URL");
+        Style val = { ANSI_BG_BG, ANSI_FG_TXT };
+        /* truncate URL to fit the panel */
+        char shown[MAX_URL_LEN];
+        snprintf(shown, sizeof(shown), "%s", g_nas_base);
+        if ((int)strlen(shown) > strip_w - 2) shown[strip_w - 2] = '\0';
+        field(6, strip_w, &val, shown);
+
+        Style hint = { ANSI_BG_BG, ANSI_FG_DIM };
+        field(8, strip_w, &hint,
+              " <>:pick  X:insert  O:delete  Start:save  Select:cancel");
+
+        /* Character picker strip */
+        char cell[4];
+        for (int i = 0; i < strip_w / 2 && view + i < SETTINGS_NSLOTS; i++) {
+            int slot = view + i;
+            Style *st = (slot == pick) ? &STYLE_SEL : &STYLE_ROW;
+            if (slot < SETTINGS_NCHARS) {
+                cell[0] = SETTINGS_CHARS[slot];
+                cell[1] = '\0';
+                printf("%s%s\x1b[%d;%dH %-2s%s",
+                       st->bg, st->fg, picker_row + 1, 15 + i * 2, cell,
+                       ANSI_RESET);
+            } else if (slot == SP_DEL) {
+                printf("%s%s\x1b[%d;%dH %-2s%s",
+                       st->bg, st->fg, picker_row + 1, 15 + i * 2, "<",
+                       ANSI_RESET);
+            } else {
+                printf("%s%s\x1b[%d;%dH %-2s%s",
+                       st->bg, st->fg, picker_row + 1, 15 + i * 2, "OK",
+                       ANSI_RESET);
+            }
+        }
+        fflush(stdout);
+
+        draw_status("Settings");
+
+        unsigned pressed;
+        do { usleep(16000); }
+        while (get_pressed(&pressed) != 0 || pressed == 0);
+
+        if (pressed & PAD_BTN_RIGHT) {
+            if (pick < SETTINGS_NSLOTS - 1) pick++;
+            if (pick >= view + strip_w / 2) view = pick - strip_w / 2 + 1;
+        } else if (pressed & PAD_BTN_LEFT) {
+            if (pick > 0) pick--;
+            if (pick < view) view = pick;
+        } else if (pressed & PAD_BTN_CROSS) {
+            if (pick < SETTINGS_NCHARS) {
+                size_t l = strlen(g_nas_base);
+                if (l + 1 < MAX_URL_LEN) {
+                    g_nas_base[l] = SETTINGS_CHARS[pick];
+                    g_nas_base[l + 1] = '\0';
+                }
+            } else if (pick == SP_DEL) {
+                size_t l = strlen(g_nas_base);
+                if (l > 0) g_nas_base[l - 1] = '\0';
+            } else {                          /* SP_OK: save & exit */
+                save_settings();
+                return;
+            }
+        } else if (pressed & PAD_BTN_CIRCLE) {
+            size_t l = strlen(g_nas_base);    /* delete last char */
+            if (l > 0) g_nas_base[l - 1] = '\0';
+        } else if (pressed & PAD_BTN_START) {
+            save_settings();
+            return;
+        } else if (pressed & PAD_BTN_SELECT) {
+            return;                           /* cancel */
+        }
+    }
+}
+
 static int browser(void) {
     draw_splash("Fetching listing from NAS...");
 
     if (fetch_listing() != 0 || g_file_count == 0) {
         Style err = { ANSI_BG_ERR, ANSI_FG_ERR };
         char msg[96];
-        snprintf(msg, sizeof(msg), "Could not reach %s", NAS_BASE_URL);
+        snprintf(msg, sizeof(msg), "Could not reach %s", g_nas_base);
         show_msg(17, &err, msg);
         show_msg(18, &err, "Press any button to retry.");
         wait_button();
@@ -545,7 +687,10 @@ static int browser(void) {
         do { usleep(16000); }
         while (get_pressed(&pressed) != 0 || pressed == 0);
 
-        if (pressed & PAD_BTN_DOWN) {
+        if (pressed & PAD_BTN_SELECT) {
+            settings_view();
+            continue;   /* URL may have changed: redraw */
+        } else if (pressed & PAD_BTN_DOWN) {
             sel = (sel + 1) % g_file_count;
         } else if (pressed & PAD_BTN_UP) {
             sel = (sel - 1 + g_file_count) % g_file_count;
@@ -612,7 +757,8 @@ int main(void) {
         return 1;
     }
 
-    mkdir(DEST_DIR, 0777);
+    mkdir(DEST_DIR, 0777);   /* also holds settings.txt */
+    load_settings();
 
     while (browser() != 0)
         wait_button();   /* error: wait, then retry the listing */
