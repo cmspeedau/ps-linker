@@ -5,6 +5,10 @@ Reads a queue file of CDN items, downloads each into its category folder
 under the games library, then removes the queue. The catalog generator
 picks the new files up on its next pass — clients see one unified library.
 
+Zip archives are extracted in place (the archive is removed after a
+successful extraction), so clients download ready-to-run files and never
+need on-device unzip support.
+
 Queue file format (default: ${GAMES_DIR}/.store-queue.json):
 [
   {"title": "Example Homebrew", "category": "Homebrew",
@@ -18,6 +22,19 @@ import os
 import sys
 import tempfile
 import urllib.request
+import zipfile
+
+
+def _extract_zip(zip_path: str, dest_dir: str) -> None:
+    """Extract zip_path into dest_dir, rejecting path traversal ("zip slip")."""
+    with zipfile.ZipFile(zip_path) as zf:
+        dest_real = os.path.realpath(dest_dir)
+        for info in zf.infolist():
+            # Normalize the target path and require it to stay inside dest_dir.
+            target = os.path.realpath(os.path.join(dest_dir, info.filename))
+            if target != dest_real and not target.startswith(dest_real + os.sep):
+                raise ValueError(f"unsafe zip entry: {info.filename}")
+        zf.extractall(dest_dir)
 
 
 def fetch(item: dict, games_dir: str) -> None:
@@ -29,6 +46,7 @@ def fetch(item: dict, games_dir: str) -> None:
     dest_dir = os.path.join(games_dir, category)
     os.makedirs(dest_dir, exist_ok=True)
     dest = os.path.join(dest_dir, filename)
+    is_zip = filename.lower().endswith(".zip")
 
     print(f"[store] fetching {item.get('title', filename)} -> {dest}")
     # Download to a temp file first so the catalog/browser never sees a
@@ -41,7 +59,14 @@ def fetch(item: dict, games_dir: str) -> None:
                 if not chunk:
                     break
                 out.write(chunk)
-        os.replace(tmp_path, dest)
+        if is_zip:
+            # Extract while still under the .part name so the catalog never
+            # lists either the archive or a half-extracted set.
+            print(f"[store] extracting {filename} into {dest_dir}")
+            _extract_zip(tmp_path, dest_dir)
+            os.remove(tmp_path)
+        else:
+            os.replace(tmp_path, dest)
     except BaseException:
         if os.path.exists(tmp_path):
             os.remove(tmp_path)
