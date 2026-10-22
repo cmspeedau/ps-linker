@@ -28,7 +28,7 @@ docker compose up -d --build
 
 Then:
 - **PS3 (webMAN MOD):** `webMAN MOD -> Setup -> Network Servers` → add your Docker host's IP.
-- **PSP/PS3 NASDL app:** set the NAS URL to `http://<docker-host-ip>:8000`.
+- **PSP/PS3 NASDL app:** set the NAS URL to `http://<docker-host-ip>:8000` — editable on-device in the Settings view (no recompile needed).
 
 ### Manual build (without compose)
 
@@ -74,7 +74,7 @@ make
 # Copy EBOOT.PBP to ms0:/PSP/GAME/NASDL/
 ```
 
-Edit the server address (`SERVER`) / file list in `psp/main.c` to point at the Docker host's HTTP share (`http://<ip>:8000`).
+The server address defaults to `http://192.168.1.50:8000` and can be changed on-device: press **Select** in the browser to open the Settings view, edit the URL with the character picker, then press **Start** to save. The URL persists to `ms0:/PSP/GAME/NASDL/settings.txt`.
 
 ## PS3 app (nasdl)
 
@@ -85,6 +85,8 @@ cd ps3
 make          # produces nasdl.self
 make pkg      # optional: installable .pkg
 ```
+
+Same Settings view as the PSP app (**Select** in the browser); the URL persists to `/dev_hdd0/NASDL/settings.txt`.
 
 See [docs/UI-REFERENCE.md](docs/UI-REFERENCE.md) for the app UI design reference.
 
@@ -98,11 +100,11 @@ See [docs/UI-REFERENCE.md](docs/UI-REFERENCE.md) for the app UI design reference
 - [x] Server: Docker image + docker-compose (ps3netsrv++ + HTTP share, one command)
 - [x] PS3: subdirectory navigation (enter dirs with Cross, Circle goes up; root Circle quits)
 - [x] PSP: subdirectory navigation (parity with PS3 app — X enters dirs, O goes up)
+- [x] Both apps: functional Settings view (on-device NAS URL editing, persisted to settings.txt)
 - [ ] PSP/PS3: unzip downloads with zlib
 - [ ] GTK/Qt GUI front-end for Linux
 - [ ] HTTP Range resume in PSP/PS3 apps
 - [ ] PS3: RSX pixel-graphics renderer (currently ANSI console output)
-- [ ] Both apps: functional Settings view (on-device NAS URL editing)
 - [ ] Compile-verify both builds on real toolchains (pspdev / PSL1GHT)
 
 ## License
