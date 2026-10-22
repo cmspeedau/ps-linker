@@ -32,6 +32,8 @@
 #include <string.h>
 #include <stdlib.h>
 
+#include "resume.h"
+
 #define printf pspDebugScreenPrintf
 #define SCREEN_ROWS 33
 #define SCREEN_COLS 68
@@ -337,65 +339,38 @@ static int fetch_listing(void) {
 
 /* ------------------------------------------------------------------ */
 /* Download with Media Go-style progress bar                           */
+/* Downloading goes through resume.c, which sends Range headers and    */
+/* continues an interrupted transfer from the partial file on disk.    */
 /* ------------------------------------------------------------------ */
 
+/* Progress callback from resume.c: redraw the bar in place.
+   pct is 0-100, or -1 when the total size is unknown. */
+static void download_progress(int pct, long total) {
+    const int bar_w = SCREEN_COLS - 16;
+    int fill = (pct >= 0 && pct <= 100) ? (pct * bar_w) / 100 : 0;
+    char info[48];
+    if (pct >= 0)
+        snprintf(info, sizeof(info), "%d%%  (%ld KB)", pct, total / 1024);
+    else
+        snprintf(info, sizeof(info), "(%ld KB)", total / 1024);
+
+    Style st = { COL_BG, COL_TEXT };
+    field(0, SCREEN_ROWS - 6, SCREEN_COLS, &st, "Downloading...");
+
+    pspDebugScreenSetXY(0, SCREEN_ROWS - 5);
+    set_style(&STYLE_ROW);
+    pad(bar_w);                             /* empty track */
+    pspDebugScreenSetXY(0, SCREEN_ROWS - 5);
+    Style sp = { COL_PROGRESS, COL_PROGRESS };
+    field(0, SCREEN_ROWS - 5, fill, &sp, "");
+
+    Style si = { COL_BG, COL_TEXT_DIM };
+    field(bar_w + 1, SCREEN_ROWS - 5, 15, &si, info);
+}
+
 static int download_file(const char *url, const char *dest_path) {
-    int tpl = sceHttpCreateTemplate("PSLinker", 1, 1);
-    if (tpl < 0) return -1;
-
-    int status = -1;
-    int conn = sceHttpCreateConnectionWithURL(tpl, url, 0);
-    if (conn >= 0) {
-        int req = sceHttpCreateRequestWithURL(conn, PSP_HTTP_METHOD_GET, url, 0);
-        if (req >= 0 && sceHttpSendRequest(req, NULL, 0) >= 0) {
-            int clen = 0;
-            sceHttpGetContentLength(req, &clen);
-
-            SceUID fd = sceIoOpen(dest_path,
-                                  PSP_O_WRONLY | PSP_O_CREAT | PSP_O_TRUNC, 0777);
-            if (fd >= 0) {
-                static char buf[DL_BUF_SIZE];
-                int n, total = 0, ok = 1;
-                char label[64];
-                snprintf(label, sizeof(label), "Saving %s", dest_path);
-                draw_header("PS Linker", "Downloading...");
-                while ((n = sceHttpReadData(req, buf, sizeof(buf))) > 0) {
-                    if (sceIoWrite(fd, buf, n) != n) { ok = 0; break; }
-                    total += n;
-
-                    /* Progress bar: filled track on a fixed row */
-                    int pct = clen > 0 ? (total * 100) / clen : 0;
-                    if (pct > 100) pct = 100;
-                    int bar_w = SCREEN_COLS - 16;
-                    int fill = clen > 0 ? (total * bar_w) / clen : 0;
-                    char info[48];
-                    snprintf(info, sizeof(info), "%d%%  (%d KB)", pct, total / 1024);
-
-                    pspDebugScreenSetXY(0, SCREEN_ROWS - 6);
-                    Style st = { COL_BG, COL_TEXT };
-                    field(0, SCREEN_ROWS - 6, SCREEN_COLS, &st, label);
-
-                    pspDebugScreenSetXY(0, SCREEN_ROWS - 5);
-                    set_style(&STYLE_ROW);
-                    pad(bar_w);                 /* empty track */
-                    pspDebugScreenSetXY(0, SCREEN_ROWS - 5);
-                    Style sp = { COL_PROGRESS, COL_PROGRESS };
-                    field(0, SCREEN_ROWS - 5, fill, &sp, "");
-
-                    Style si = { COL_BG, COL_TEXT_DIM };
-                    field(bar_w + 1, SCREEN_ROWS - 5, 15, &si, info);
-                }
-                sceIoClose(fd);
-                status = ok ? 0 : -2;
-            } else {
-                status = -3;   /* could not open destination file */
-            }
-        }
-        if (req >= 0) sceHttpDeleteRequest(req);
-        sceHttpDeleteConnection(conn);
-    }
-    sceHttpDeleteTemplate(tpl);
-    return status;
+    draw_header("PS Linker", "Downloading...");
+    return psp_resume_download(url, dest_path, download_progress);
 }
 
 /* ------------------------------------------------------------------ */
