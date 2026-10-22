@@ -1,0 +1,45 @@
+{
+  "_readme": "PS Linker Store catalog. All entries MUST point at content that is legally distributable (homebrew, freeware, demos, or your own legally-obtained files). This catalog is served over the PS Linker HTTP share; the PSP/PS3 apps fetch it at /catalog.json. Copy this file into your games/content directory (or the HTTP share root). 'icon' is optional and may be an empty string.",
+  "schema": 1,
+  "categories": [
+    "Games",
+    "Emulators",
+    "Demos",
+    "Utilities"
+  ],
+  "items": [
+    {
+      "id": "example-doom-port",
+      "title": "Doom PSP (Homebrew Port)",
+      "category": "Games",
+      "description": "Open-source Doom port for PSP. Requires a WAD file you legally own, placed next to the EBOOT.",
+      "version": "1.0",
+      "size_hint": "2 MB",
+      "icon": "",
+      "url": "http://192.168.1.50:8000/store/doom-psp/EBOOT.PBP",
+      "install_path": "ms0:/PSP/GAME/DOOM/"
+    },
+    {
+      "id": "example-cave-story",
+      "title": "Cave Story PSP (Freeware Port)",
+      "category": "Games",
+      "description": "Port of the freeware classic Cave Story (Pixel's original freeware release).",
+      "version": "1.0",
+      "size_hint": "5 MB",
+      "icon": "",
+      "url": "http://192.168.1.50:8000/store/cave-story/EBOOT.PBP",
+      "install_path": "ms0:/PSP/GAME/CAVESTORY/"
+    },
+    {
+      "id": "example-psp-clock",
+      "title": "PSP Clock (Homebrew Utility)",
+      "category": "Utilities",
+      "description": "Simple fullscreen clock homebrew. Replace with any homebrew utility you download from its official site.",
+      "version": "1.0",
+      "size_hint": "0.2 MB",
+      "icon": "",
+      "url": "http://192.168.1.50:8000/store/psp-clock/EBOOT.PBP",
+      "install_path": "ms0:/PSP/GAME/PSPCLOCK/"
+    }
+  ]
+}
