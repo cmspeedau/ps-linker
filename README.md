@@ -44,6 +44,8 @@ Uploads and Store downloads land in the **same** games folder, so clients see on
 
 The container fetches each URL into `games/<category>/` (atomic temp-file writes, so partial downloads are never visible), then removes the queue file. The catalog regenerates automatically.
 
+`.zip` downloads are **extracted on the server** (with zip-slip protection) and the archive is deleted, so clients download ready-to-run files and never need on-device unzip support.
+
 ### Catalog metadata (optional)
 
 Each `catalog.json` entry includes `title`, `category`, `url`, and `size`. Two optional extras are picked up automatically:
@@ -133,6 +135,8 @@ See [docs/UI-REFERENCE.md](docs/UI-REFERENCE.md) for the app UI design reference
 - [x] Catalog niceties: optional `icon` (cover art next to game file),
       `version`/`description` via `<name>.meta.json` sidecars; categories
       already derived from folder structure
+- [x] Server-side unzip: Store extracts `.zip` downloads in place (zip-slip
+      protected) so PSP/PS3 clients never need zlib/unzip support
 
 ### In progress
 - [ ] Compile-verify both device builds on real toolchains (pspdev / PSL1GHT)
@@ -141,7 +145,6 @@ See [docs/UI-REFERENCE.md](docs/UI-REFERENCE.md) for the app UI design reference
 ### Next
 - [ ] Optional minimal Store view on PSP/PS3 (render `catalog.json` with
       titles/categories/icons — client stays thin, server does the work)
-- [ ] PSP/PS3: unzip downloads with zlib
 - [ ] HTTP Range resume in PSP/PS3 apps
 
 ### Later
