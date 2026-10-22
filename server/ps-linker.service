@@ -1,0 +1,23 @@
+# PS Linker server: ps3netsrv++ (PS3 streaming) + HTTP share (PSP downloads)
+# Install: copy to /etc/systemd/system/, edit paths, then:
+#   sudo systemctl enable --now ps-linker
+
+[Unit]
+Description=PS Linker - PS3 net server + PSP HTTP share
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# Path to your game library
+WorkingDirectory=/srv/games
+# PS3 streaming (webMAN MOD connects here, port 38008)
+ExecStart=/opt/ps-linker/ps3netsrv++ -d /srv/games
+Restart=on-failure
+
+# Optional second unit for the PSP HTTP share:
+#   python3 -m http.server 8000 --directory /srv/games
+# (or use nginx/caddy; see README)
+
+[Install]
+WantedBy=multi-user.target
