@@ -96,11 +96,12 @@ See [docs/UI-REFERENCE.md](docs/UI-REFERENCE.md) for the app UI design reference
 - [x] UI reference doc (`docs/UI-REFERENCE.md`)
 - [x] PS3 port (`ps3/` — PSL1GHT, socket HTTP, same browse/download flow)
 - [x] Server: Docker image + docker-compose (ps3netsrv++ + HTTP share, one command)
+- [x] PS3: subdirectory navigation (enter dirs with Cross, Circle goes up; root Circle quits)
 - [ ] PSP/PS3: unzip downloads with zlib
 - [ ] GTK/Qt GUI front-end for Linux
 - [ ] HTTP Range resume in PSP/PS3 apps
 - [ ] PS3: RSX pixel-graphics renderer (currently ANSI console output)
-- [ ] Both apps: subdirectory navigation in the NAS browser
+- [ ] PSP: subdirectory navigation (parity with PS3 app)
 - [ ] Both apps: functional Settings view (on-device NAS URL editing)
 - [ ] Compile-verify both builds on real toolchains (pspdev / PSL1GHT)
 
