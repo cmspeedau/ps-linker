@@ -1,32 +1,34 @@
 /*
  * PS Linker - PS3 NAS Downloader (PSL1GHT port of the PSP version)
  *
- * Same Media Go-inspired workflow as the PSP build: connect to the
+ * Same Media Go-inspired workflow as the PSP build: initialize the
  * network, fetch the NAS HTTP share's directory listing, pick a file
  * with the D-pad, and download it to the HDD.
  *
  * Files land in /dev_hdd0/NASDL/<filename>.
  *
- * Build with PSL1GHT toolchain: make  (produces nasdl.self / nasdl.pkg)
- * Requires CFW/HEN to install and run.
+ * Build with the PSL1GHT toolchain: make
+ * Requires CFW/HEN to install and run the generated package.
  *
- * Controls:  Up/Down = move, X (Cross) = download, O (Circle) = quit
+ * Controls:  Up/Down = move, Cross = download, Circle = quit
  *
- * Notes vs the PSP version:
+ * Differences from the PSP version:
  *  - Networking uses BSD sockets (PSL1GHT), not sceHttp.
- *  - Output uses the console (stdout); wire in a RSX renderer later
- *    for true on-screen graphics.
+ *  - Output is ANSI-colored terminal text (netdebug/TV console);
+ *    wire in an RSX renderer later for true on-screen graphics.
  */
 
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 #include <unistd.h>
-#include <malloc.h>
+#include <sys/stat.h>
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <netdb.h>
 
 #include <net/net.h>
-#include <net/dbg.h>   /* netPrintf -> stdout when netDebugInit is used */
-
 #include <io/pad.h>
 
 /* ------------------------------------------------------------------ */
@@ -41,7 +43,7 @@
 
 #define MAX_FILES     128
 #define MAX_PATH_LEN  256
-#define DL_BUF_SIZE   64 * 1024   /* 64 KB chunks */
+#define DL_BUF_SIZE   (64 * 1024)   /* 64 KB chunks */
 
 /* Console "screen" metrics for the Media Go-style layout */
 #define SCREEN_ROWS 33
@@ -52,16 +54,14 @@
 /* ------------------------------------------------------------------ */
 
 #define ANSI_RESET   "\x1b[0m"
-#define ANSI_BG_BG   "\x1b[48;5;234m"   /* charcoal background    */
-#define ANSI_BG_PANE "\x1b[48;5;236m"   /* sidebar/panel          */
-#define ANSI_BG_SEL  "\x1b[48;5;25m"    /* blue selection bar     */
-#define ANSI_BG_HDR  "\x1b[48;5;25m"    /* header bar             */
-#define ANSI_BG_ST   "\x1b[48;5;237m"   /* status bar             */
-#define ANSI_BG_OK   "\x1b[48;5;22m"
-#define ANSI_BG_ERR  "\x1b[48;5;52m"
+#define ANSI_BG_BG   "\x1b[48;5;234m"   /* charcoal background  */
+#define ANSI_BG_PANE "\x1b[48;5;236m"   /* sidebar/panel        */
+#define ANSI_BG_SEL  "\x1b[48;5;25m"    /* blue selection bar   */
+#define ANSI_BG_HDR  "\x1b[48;5;25m"    /* header bar           */
+#define ANSI_BG_ST   "\x1b[48;5;237m"   /* status bar           */
 #define ANSI_FG_TXT  "\x1b[38;5;250m"
 #define ANSI_FG_DIM  "\x1b[38;5;243m"
-#define ANSI_FG_SEL  "\x1b[97m"         /* bright white on blue   */
+#define ANSI_FG_SEL  "\x1b[97m"         /* bright white on blue */
 #define ANSI_FG_OK   "\x1b[38;5;114m"
 #define ANSI_FG_ERR  "\x1b[38;5;203m"
 
@@ -70,11 +70,11 @@ typedef struct {
     const char *fg;
 } Style;
 
-static const Style STYLE_HEADER = { ANSI_BG_HDR, ANSI_FG_SEL  };
-static const Style STYLE_SIDE   = { ANSI_BG_PANE, ANSI_FG_DIM };
-static const Style STYLE_ROW    = { ANSI_BG_BG,  ANSI_FG_TXT  };
-static const Style STYLE_SEL    = { ANSI_BG_SEL, ANSI_FG_SEL  };
-static const Style STYLE_STATUS = { ANSI_BG_ST,  ANSI_FG_DIM  };
+static const Style STYLE_HEADER = { ANSI_BG_HDR,  ANSI_FG_SEL   };
+static const Style STYLE_SIDE   = { ANSI_BG_PANE, ANSI_FG_DIM   };
+static const Style STYLE_ROW    = { ANSI_BG_BG,   ANSI_FG_TXT   };
+static const Style STYLE_SEL    = { ANSI_BG_SEL,  ANSI_FG_SEL   };
+static const Style STYLE_STATUS = { ANSI_BG_ST,   ANSI_FG_DIM   };
 
 typedef struct {
     char name[MAX_PATH_LEN];
@@ -89,15 +89,17 @@ static int g_file_count = 0;
 /* ------------------------------------------------------------------ */
 
 static void ui_begin(void) {
-    /* Hide cursor, clear screen */
-    printf("\x1b[?25l\x1b[2J");
+    /* Hide cursor, clear screen, home cursor */
+    printf("\x1b[?25l\x1b[2J\x1b[1;1H");
 }
 
+/* Print text left-aligned inside a width-w field on row (0-based). */
 static void field(int row, int width, const Style *s, const char *text) {
     printf("%s%s\x1b[%d;1H%s", s->bg, s->fg, row + 1, text);
     int len = (int)strlen(text);
     for (int i = len; i < width; i++) putchar(' ');
     printf(ANSI_RESET);
+    fflush(stdout);
 }
 
 /* Full-width header bar, like Media Go's title strip. */
@@ -107,21 +109,22 @@ static void draw_header(const char *title, const char *subtitle) {
     field(0, SCREEN_COLS, &STYLE_HEADER, buf);
 }
 
-/* Left sidebar, Media Go style. */
+/* Left sidebar, Media Go style. active = currently highlighted item. */
 static const char *SIDEBAR[] = { "Games", "Downloads", "Settings" };
 
 static void draw_sidebar(int row_from, int row_to, int active) {
+    char line[32];
     for (int r = row_from; r <= row_to; r++) {
-        char line[SCREEN_COLS + 1];
         int idx = r - row_from - 2;
         if (idx >= 0 && idx < (int)(sizeof(SIDEBAR) / sizeof(SIDEBAR[0])))
-            snprintf(line, sizeof(line), "   %s%s", idx == active ? "> " : "  ",
-                     SIDEBAR[idx]);
+            snprintf(line, sizeof(line), "   %s%s",
+                     idx == active ? "> " : "  ", SIDEBAR[idx]);
         else
             line[0] = '\0';
-        printf("%s%s\x1b[%d;1H%s%s", STYLE_SIDE.bg, STYLE_SIDE.fg, r + 1,
-               line, ANSI_RESET);
+        printf("%s%s\x1b[%d;1H%-14s%s",
+               STYLE_SIDE.bg, STYLE_SIDE.fg, r + 1, line, ANSI_RESET);
     }
+    fflush(stdout);
 }
 
 /* Bottom status bar with hint text and an optional status message. */
@@ -132,11 +135,17 @@ static void draw_status(const char *msg) {
     field(SCREEN_ROWS - 1, SCREEN_COLS, &STYLE_STATUS, buf);
 }
 
+/* One-line message inside the list panel area. */
+static void show_msg(int row, const Style *s, const char *msg) {
+    printf("%s%s\x1b[%d;15H %s %s", s->bg, s->fg, row + 1, msg, ANSI_RESET);
+    fflush(stdout);
+}
+
 /* ------------------------------------------------------------------ */
 /* HTTP over BSD sockets (PSL1GHT)                                     */
 /* ------------------------------------------------------------------ */
 
-/* Strip "http://host[:port]" from url; returns path or NULL. */
+/* Strip scheme+host; returns path portion of url ("/" at minimum). */
 static const char *url_path(const char *url) {
     const char *p = strstr(url, "://");
     if (!p) return NULL;
@@ -152,29 +161,23 @@ static int url_host(const char *url, char *hostbuf, size_t len) {
     p += 3;
     const char *slash = strchr(p, '/');
     size_t n = slash ? (size_t)(slash - p) : strlen(p);
-    if (n >= len) return -1;
+    if (n == 0 || n >= len) return -1;
     memcpy(hostbuf, p, n);
     hostbuf[n] = '\0';
     return 0;
 }
 
-/* Perform HTTP GET; stream body to write_cb until completion. */
-static int http_get(const char *url,
-                    int (*write_cb)(const char *buf, int len, int total,
-                                    int content_len, void *user),
-                    void *user) {
+/* Resolve host (with optional :port), connect, return socket or <0. */
+static int http_connect(const char *url) {
     char host[128];
     if (url_host(url, host, sizeof(host)) != 0) return -1;
-    const char *path = url_path(url);
-    if (!path) return -1;
 
-    struct hostent *he = gethostbyname(host);
-    if (!he || !he->h_addr_list[0]) return -2;
-
-    /* Assume port 80 unless host contains "host:port" */
     int port = 80;
     char *colon = strchr(host, ':');
     if (colon) { port = atoi(colon + 1); *colon = '\0'; }
+
+    struct hostent *he = gethostbyname(host);
+    if (!he || !he->h_addr_list[0]) return -2;
 
     int s = socket(AF_INET, SOCK_STREAM, 0);
     if (s < 0) return -3;
@@ -189,6 +192,23 @@ static int http_get(const char *url,
         close(s);
         return -4;
     }
+    return s;
+}
+
+/*
+ * Send a GET request. On success the socket is left positioned at
+ * the START of the response (status line included), so callers can
+ * parse headers and read the body themselves.
+ */
+static int http_send_get(const char *url) {
+    const char *path = url_path(url);
+    if (!path) return -1;
+
+    char host[128];
+    if (url_host(url, host, sizeof(host)) != 0) return -1;
+
+    int s = http_connect(url);
+    if (s < 0) return s;
 
     char req[512];
     int rl = snprintf(req, sizeof(req),
@@ -197,54 +217,33 @@ static int http_get(const char *url,
                       "User-Agent: PSLinker/1.0\r\n"
                       "Connection: close\r\n\r\n", path, host);
     if (send(s, req, rl, 0) != rl) { close(s); return -5; }
-
-    /* Read the full response into memory (simple, like the PSP version) */
-    size_t cap = 512 * 1024, total = 0;
-    char *resp = (char *)malloc(cap);
-    if (!resp) { close(s); return -6; }
-
-    int n;
-    while (total < cap - 1 && (n = recv(s, resp + total, cap - 1 - total, 0)) > 0)
-        total += n;
-    close(s);
-    resp[total] = '\0';
-
-    /* Split headers/body */
-    char *body = strstr(resp, "\r\n\r\n");
-    if (!body) { free(resp); return -7; }
-    *body = '\0';
-    body += 4;
-
-    int content_len = -1;
-    char *cl = strcasestr(resp, "Content-Length:");
-    if (cl) content_len = atoi(cl + 15);
-
-    int rc = 0;
-    if (write_cb)
-        rc = write_cb(body, (int)strlen(body), 0, content_len, user);
-    free(resp);
-    return rc;
+    return s;
 }
 
-/* Buffered file-writing callback for downloads with progress. */
-static SceUInt64 g_written;   /* not used; kept for future streaming */
+/* Skip the response headers on socket s. Returns content length
+   (-1 if unknown) or <0 on error. */
+static int http_skip_headers(int s) {
+    char hdr[4096];
+    int hdr_total = 0, n;
+    while (hdr_total < (int)sizeof(hdr) - 1) {
+        n = recv(s, hdr + hdr_total, 1, 0);
+        if (n <= 0) { close(s); return -7; }
+        hdr_total++;
+        if (hdr_total > 4 &&
+            memcmp(hdr + hdr_total - 4, "\r\n\r\n", 4) == 0)
+            break;
+    }
+    hdr[hdr_total] = '\0';
 
-static int write_to_file(const char *buf, int len, int total,
-                         int content_len, void *user) {
-    FILE *f = (FILE *)user;
-    if (fwrite(buf, 1, len, f) != (size_t)len) return -1;
-
-    int pct = content_len > 0 ? (total * 100) / content_len : 0;
-    if (pct > 100) pct = 100;
-    char info[48];
-    snprintf(info, sizeof(info), "%d%%  (%d KB)", pct, total / 1024);
-    printf("%s%s\x1b[%d;1H%s" ANSI_RESET,
-           STYLE_ROW.bg, STYLE_ROW.fg, SCREEN_ROWS - 4, info);
-    return 0;
+    int clen = -1;
+    char *cl = strcasestr(hdr, "Content-Length:");
+    if (cl) clen = atoi(cl + 15);
+    return clen;
 }
 
 /* ------------------------------------------------------------------ */
-/* Directory-listing parser (same as PSP version)                      */
+/* Directory-listing parser (same logic as the PSP version)            */
+/* Works with python3 -m http.server, nginx autoindex, Synology shares */
 /* ------------------------------------------------------------------ */
 
 static void url_decode(char *dst, const char *src, size_t dstlen) {
@@ -262,9 +261,10 @@ static void url_decode(char *dst, const char *src, size_t dstlen) {
 }
 
 static int add_file(const char *href) {
+    /* Skip parent links and anything that isn't a file in this dir */
     if (href[0] == '\0') return 0;
-    if (strstr(href, "../") == href) return 0;
-    if (strchr(href, '/') != NULL) return 0;
+    if (strncmp(href, "../", 3) == 0) return 0;
+    if (strchr(href, '/') != NULL) return 0;   /* nested dir or absolute */
     size_t hl = strlen(href);
     if (hl > 0 && href[hl - 1] == '/') return 0;
 
@@ -279,24 +279,60 @@ static int add_file(const char *href) {
     return 1;
 }
 
-static int parse_listing_cb(const char *body, int len, int total,
-                            int content_len, void *user) {
-    (void)len; (void)total; (void)content_len; (void)user;
+static int parse_listing(const char *html) {
     g_file_count = 0;
-    const char *p = body;
+    const char *p = html;
     while (g_file_count < MAX_FILES && (p = strstr(p, "href=\"")) != NULL) {
-        p += 6;
+        p += 6;                              /* skip href=" */
         const char *end = strchr(p, '"');
         if (!end) break;
-        int hl = end - p;
-        if (hl > 0 && hl < MAX_PATH_LEN) {
+        int len = end - p;
+        if (len > 0 && len < MAX_PATH_LEN) {
             char href[MAX_PATH_LEN];
-            memcpy(href, p, hl);
-            href[hl] = '\0';
+            memcpy(href, p, len);
+            href[len] = '\0';
             add_file(href);
         }
         p = end + 1;
     }
+    return g_file_count;
+}
+
+/* GET a URL and pass the body to a callback. Returns 0 or <0. */
+static int http_get_body(const char *url,
+                         int (*cb)(const char *body, void *user),
+                         void *user) {
+    int s = http_send_get(url);
+    if (s < 0) return s;
+
+    if (http_skip_headers(s) < 0) return -7;
+
+    char buf[8192];
+    char *acc = NULL;
+    size_t total = 0, cap = 0;
+    int n;
+    while ((n = recv(s, buf, sizeof(buf), 0)) > 0) {
+        if (total + n + 1 > cap) {
+            cap = (total + n) * 2 + 1024;
+            char *tmp = (char *)realloc(acc, cap);
+            if (!tmp) { free(acc); close(s); return -6; }
+            acc = tmp;
+        }
+        memcpy(acc + total, buf, n);
+        total += n;
+    }
+    close(s);
+    if (!acc) return -6;
+    acc[total] = '\0';
+
+    int rc = cb(acc, user);
+    free(acc);
+    return rc;
+}
+
+static int listing_cb(const char *body, void *user) {
+    (void)user;
+    parse_listing(body);
     return 0;
 }
 
@@ -306,97 +342,39 @@ static int fetch_listing(void) {
         snprintf(url, sizeof(url), "%s", NAS_BASE_URL);
     else
         snprintf(url, sizeof(url), "%s/", NAS_BASE_URL);
-    return http_get(url, parse_listing_cb, NULL);
+    return http_get_body(url, listing_cb, NULL);
 }
 
 /* ------------------------------------------------------------------ */
-/* Download one file                                                   */
+/* Download one file with a Media Go-style progress bar                */
 /* ------------------------------------------------------------------ */
 
 static int download_file(const char *url, const char *dest_path) {
-    /* For simplicity we re-fetch into memory then write; the
-       streaming callback path (write_to_file) is kept for a future
-       chunked-download upgrade. */
-    char url_slash[MAX_PATH_LEN + 2];
-    snprintf(url_slash, sizeof(url_slash), "%s", url);
+    int s = http_send_get(url);
+    if (s < 0) return s;
 
-    /* Use the generic getter but write via a temp FILE */
-    struct { FILE *f; int rc; } ctx;
-    ctx.rc = 0;
-
-    /* We need raw access; do a simple blocking fetch: */
-    char host[128];
-    if (url_host(url, host, sizeof(host)) != 0) return -1;
-    const char *path = url_path(url);
-    if (!path) return -1;
-
-    struct hostent *he = gethostbyname(host);
-    if (!he || !he->h_addr_list[0]) return -2;
-
-    int port = 80;
-    char *colon = strchr(host, ':');
-    if (colon) { port = atoi(colon + 1); *colon = '\0'; }
-
-    int s = socket(AF_INET, SOCK_STREAM, 0);
-    if (s < 0) return -3;
-
-    struct sockaddr_in sa;
-    memset(&sa, 0, sizeof(sa));
-    sa.sin_family = AF_INET;
-    sa.sin_port = htons(port);
-    memcpy(&sa.sin_addr, he->h_addr_list[0], he->h_length);
-    if (connect(s, (struct sockaddr *)&sa, sizeof(sa)) < 0) { close(s); return -4; }
-
-    char req[512];
-    int rl = snprintf(req, sizeof(req),
-                      "GET %s HTTP/1.0\r\nHost: %s\r\n"
-                      "User-Agent: PSLinker/1.0\r\nConnection: close\r\n\r\n",
-                      path, host);
-    if (send(s, req, rl, 0) != rl) { close(s); return -5; }
-
-    /* Read headers */
-    char hdr[4096];
-    int hdr_total = 0, n;
-    while (hdr_total < (int)sizeof(hdr) - 1 &&
-           (n = recv(s, hdr + hdr_total, 1, 0)) == 1) {
-        hdr_total++;
-        if (hdr_total > 4 &&
-            !memcmp(hdr + hdr_total - 4, "\r\n\r\n", 4)) break;
-    }
-    hdr[hdr_total] = '\0';
-    if (hdr_total == 0) { close(s); return -7; }
-
-    int content_len = -1;
-    char *cl = strcasestr(hdr, "Content-Length:");
-    if (cl) content_len = atoi(cl + 15);
+    int content_len = http_skip_headers(s);
+    if (content_len < -1) return content_len;   /* header read error */
 
     FILE *f = fopen(dest_path, "wb");
     if (!f) { close(s); return -3; }
 
     static char buf[DL_BUF_SIZE];
     long total = 0;
-    int ok = 1;
-
-    /* Drain any body bytes already in hdr buffer */
-    char *body = strstr(hdr, "\r\n\r\n");
-    if (body && *(body + 4)) {
-        size_t blen = hdr_total - (int)(body + 4 - hdr);
-        if (fwrite(body + 4, 1, blen, f) != blen) ok = 0;
-        total += blen;
-    }
+    int ok = 1, n;
 
     while (ok && (n = recv(s, buf, sizeof(buf), 0)) > 0) {
         if (fwrite(buf, 1, n, f) != (size_t)n) { ok = 0; break; }
         total += n;
+
         int pct = content_len > 0 ? (int)((total * 100) / content_len) : 0;
         if (pct > 100) pct = 100;
         char info[64];
-        snprintf(info, sizeof(info), "%s%d%%  (%ld KB)%s",
-                 STYLE_ROW.bg, pct, total / 1024, ANSI_RESET);
-        printf("\x1b[%d;1H%s%s", SCREEN_ROWS - 4, info,
-               (int)sizeof(info) < SCREEN_COLS ? "" : "");
-        fflush(stdout);
+        snprintf(info, sizeof(info), "%d%%  (%ld KB)", pct, total / 1024);
+        Style st = { ANSI_BG_BG, ANSI_FG_DIM };
+        field(SCREEN_ROWS - 5, 30, &st, info);
     }
+
     fclose(f);
     close(s);
     return ok ? 0 : -2;
@@ -407,33 +385,22 @@ static int download_file(const char *url, const char *dest_path) {
 /* ------------------------------------------------------------------ */
 
 static void wait_button(void) {
-    padInfo(0);
-    padData pd;
-    while (1) {
-        ioPadGetInfo(&padInfo_global_stub: ;);
-    }
-}
-
-/* Correct wait_button implementation (the stub above is a placeholder
-   removed at build time via #if 0) */
-#if 0
-static void wait_button(void) {
     padInfo pad_inf;
     padData pd;
     unsigned prev = 0;
     while (1) {
-        ioPadGetInfo(&pad_inf);
-        if (pad_inf.status[0]) {
-            ioPadGetData(0, &pd);
-            unsigned pressed = pd.BTN & ~prev;
-            prev = pd.BTN;
-            if (pressed) return;
+        if (ioPadGetInfo(&pad_inf) == 0 && pad_inf.status[0]) {
+            if (ioPadGetData(0, &pd) == 0) {
+                unsigned pressed = pd.BTN & ~prev;
+                prev = pd.BTN;
+                if (pressed) return;
+            }
         }
         usleep(16000);
     }
 }
-#endif
 
+/* Edge-detected button read; returns 0 and fills *pressed on change. */
 static int get_pressed(unsigned *pressed) {
     static unsigned prev = 0;
     padInfo pad_inf;
@@ -449,51 +416,37 @@ static int get_pressed(unsigned *pressed) {
 }
 
 /* ------------------------------------------------------------------ */
-/* Splash / browser screens (Media Go layout, same as PSP)             */
+/* Splash / browser screens (Media Go layout, same as the PSP build)   */
 /* ------------------------------------------------------------------ */
 
 static void draw_splash(const char *msg) {
     ui_begin();
     draw_header("PS Linker", "v1.0 PS3");
     draw_sidebar(1, SCREEN_ROWS - 2, 0);
-    printf("%s%s\x1b[%d;13H P S   L I N K E R " ANSI_RESET,
-           STYLE_ROW.bg, STYLE_ROW.fg, 13);
-    printf("%s%s\x1b[%d;13H %s " ANSI_RESET,
-           STYLE_ROW.bg, STYLE_ROW.fg, 15, msg);
-    draw_status("Starting...");
-}
 
-static void show_msg(int row, const Style *s, const char *msg) {
-    printf("%s%s\x1b[%d;15H %s " ANSI_RESET, s->bg, s->fg, row + 1, msg);
+    Style big = { ANSI_BG_BG, ANSI_FG_TXT };
+    field(12, 50, &big, "P S   L I N K E R");
+    field(14, 50, &big, msg);
+    draw_status("Starting...");
 }
 
 static int browser(void) {
     draw_splash("Fetching listing from NAS...");
 
-    if (fetch_listing() != 0) {
+    if (fetch_listing() != 0 || g_file_count == 0) {
+        Style err = { ANSI_BG_ERR, ANSI_FG_ERR };
         char msg[96];
         snprintf(msg, sizeof(msg), "Could not reach %s", NAS_BASE_URL);
-        Style err = { ANSI_BG_ERR, ANSI_FG_ERR };
         show_msg(17, &err, msg);
         show_msg(18, &err, "Press any button to retry.");
-        fflush(stdout);
         wait_button();
         return -1;
-    }
-
-    if (g_file_count == 0) {
-        char msg[96];
-        snprintf(msg, sizeof(msg), "No files found at %s", NAS_BASE_URL);
-        Style err = { ANSI_BG_ERR, ANSI_FG_ERR };
-        show_msg(17, &err, msg);
-        fflush(stdout);
-        wait_button();
-        return -2;
     }
 
     int sel = 0, top = 0;
     while (1) {
         ui_begin();
+
         const int list_top = 2;
         const int list_rows = SCREEN_ROWS - 7 - list_top;
         if (sel < top) top = sel;
@@ -507,10 +460,10 @@ static int browser(void) {
         for (int i = top; i < g_file_count && i < top + list_rows; i++) {
             snprintf(line, sizeof(line), "%s", g_files[i].name);
             if ((int)strlen(line) > w) line[w] = '\0';
-            printf("%s%s\x1b[%d;16H %-*s " ANSI_RESET,
+            printf("%s%s\x1b[%d;15H %-*s %s",
                    i == sel ? STYLE_SEL.bg : STYLE_ROW.bg,
                    i == sel ? STYLE_SEL.fg : STYLE_ROW.fg,
-                   list_top + (i - top) + 1, w, line);
+                   list_top + (i - top) + 1, w, line, ANSI_RESET);
         }
 
         draw_sidebar(1, SCREEN_ROWS - 2, 0);
@@ -522,7 +475,8 @@ static int browser(void) {
         fflush(stdout);
 
         unsigned pressed;
-        do { usleep(16000); } while (get_pressed(&pressed) != 0 || !pressed);
+        do { usleep(16000); }
+        while (get_pressed(&pressed) != 0 || pressed == 0);
 
         if (pressed & PAD_BTN_DOWN) {
             sel = (sel + 1) % g_file_count;
@@ -540,7 +494,6 @@ static int browser(void) {
             else         snprintf(msg, sizeof(msg), "Failed (%d): %s", rc, e->name);
             show_msg(SCREEN_ROWS - 3, &res, msg);
             draw_status(rc == 0 ? "Download complete" : "Download failed");
-            fflush(stdout);
             wait_button();
         } else if (pressed & PAD_BTN_CIRCLE) {
             return 0;
@@ -553,32 +506,27 @@ static int browser(void) {
 /* ------------------------------------------------------------------ */
 
 int main(void) {
-    /* Init pad */
     ioPadInit(1);
-
-    /* Init network (PSL1GHT automatically brings up eth/wlan with
-       settings from nvram when netInit is called) */
-    if (netInit("PSLinker", NULL, NULL) < 0) {
-        draw_splash("Network init failed.");
-        printf("Check network settings in the XMB.\n");
-        sleep(5);
-        return 1;
-    }
-    netDebugInit();   /* route stdout over network for remote debugging */
-
-    /* Ensure destination directory exists */
-    mkdir(DEST_DIR, 0777);
 
     draw_splash("Starting...");
 
+    if (netInitialize() < 0) {   /* uses XMB network settings */
+        Style err = { ANSI_BG_ERR, ANSI_FG_ERR };
+        show_msg(17, &err, "Network init failed. Check XMB network settings.");
+        sleep(5);
+        ioPadEnd();
+        return 1;
+    }
+
+    mkdir(DEST_DIR, 0777);
+
     while (browser() != 0)
-        wait_button();
+        wait_button();   /* error: wait, then retry the listing */
 
     draw_splash("Goodbye!");
-    fflush(stdout);
     sleep(2);
 
-    netDeinit();
+    netDeinitialize();
     ioPadEnd();
     return 0;
 }
