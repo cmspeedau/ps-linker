@@ -15,8 +15,7 @@ ps3netsrv++ -d "${GAMES_DIR}" &
 NETSRV_PID=$!
 
 echo "[ps-linker] starting HTTP share on :8000 (library: ${GAMES_DIR})"
-cd "${GAMES_DIR}"
-python3 -m http.server 8000 --bind 0.0.0.0 &
+python3 /opt/store/http_server.py "${GAMES_DIR}" 8000 &
 HTTP_PID=$!
 
 # Server-side Store loop: fetch queued CDN titles into the library,
