@@ -4,7 +4,7 @@
 TARGET		:= nasdl
 AUTHOR		:= cmspeedou
 
-SRC		:= main.c
+SRC		:= main.c resume.c
 OBJS		:= $(SRC:.c=.o)
 
 TITLE		:= PS Linker NASDL

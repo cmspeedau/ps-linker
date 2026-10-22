@@ -1,5 +1,5 @@
 TARGET = nasdl
-OBJS = main.o
+OBJS = main.o resume.o
 
 INCDIR =
 CFLAGS = -O2 -G0 -Wall
