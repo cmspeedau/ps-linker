@@ -5,10 +5,14 @@
  * lets you pick a file with the D-pad, and downloads it to the
  * Memory Stick. Files land in ms0:/PSP/GAME/NASDL/<filename>.
  *
+ * UI is styled after Sony's Media Go: dark charcoal panels, a left
+ * sidebar, blue selection highlight, and an accent-colored header and
+ * status bar.
+ *
  * Build with pspdev toolchain: make
  * Requires CFW (ARK-4 / PRO) to run.
  *
- * Controls in browser:  Up/Down = move, X = select, O = quit
+ * Controls in browser:  Up/Down = move, X = download, O = quit
  */
 
 #include <pspsdk.h>
@@ -26,8 +30,9 @@
 
 #define printf pspDebugScreenPrintf
 #define SCREEN_ROWS 33
+#define SCREEN_COLS 68
 
-PSP_MODULE_INFO("PSLinker", 0, 1, 1);
+PSP_MODULE_INFO("PSLinker", 0, 1, 2);
 PSP_MAIN_THREAD_ATTR(THREAD_ATTR_USER | THREAD_ATTR_VFPU);
 
 /* ------------------------------------------------------------------ */
@@ -44,13 +49,83 @@ PSP_MAIN_THREAD_ATTR(THREAD_ATTR_USER | THREAD_ATTR_VFPU);
 #define MAX_PATH_LEN  256
 #define DL_BUF_SIZE   64 * 1024   /* 64 KB chunks */
 
-typedef struct {
-    char name[MAX_PATH_LEN];
-    char url[MAX_PATH_LEN];   /* full URL to download */
-} FileEntry;
+/* ------------------------------------------------------------------ */
+/* Media Go-style palette                                              */
+/* (PSP debug screen colors are 0xAABBGGRR)                            */
+/* ------------------------------------------------------------------ */
 
-static FileEntry g_files[MAX_FILES];
-static int g_file_count = 0;
+#define COL_BG        0xFF1D1D1D   /* charcoal background            */
+#define COL_PANEL     0xFF262626   /* sidebar / panel background     */
+#define COL_HEADER    0xFFCC7A00   /* accent bar (Media Go blue-ish) */
+#define COL_SELECT    0xFF714706   /* selection highlight            */
+#define COL_TEXT      0xFFCCCCCC   /* normal text                    */
+#define COL_TEXT_DIM  0xFF808080   /* muted text                     */
+#define COL_TEXT_SEL  0xFFFFFFFF   /* text on selection              */
+#define COL_STATUS    0xFF333333   /* status bar background          */
+#define COL_OK        0xFF3EC13E   /* success green                  */
+#define COL_ERR       0xFF3D3DD5   /* error red                      */
+#define COL_PROGRESS  0xFFCC7A00   /* progress fill                  */
+
+typedef struct {
+    u32 bg, fg;
+} Style;
+
+static const Style STYLE_HEADER = { COL_HEADER,   0xFF000000 };
+static const Style STYLE_SIDE   = { COL_PANEL,    COL_TEXT_DIM };
+static const Style STYLE_SIDE_H = { COL_PANEL,    0xFFFFFFFF };
+static const Style STYLE_ROW    = { COL_BG,       COL_TEXT };
+static const Style STYLE_SEL    = { COL_SELECT,   COL_TEXT_SEL };
+static const Style STYLE_STATUS = { COL_STATUS,   COL_TEXT_DIM };
+
+static void set_style(const Style *s) {
+    pspDebugScreenSetBackColor(s->bg);
+    pspDebugScreenSetTextColor(s->fg);
+}
+
+/* Print n background-colored spaces (used to draw panels/bars). */
+static void pad(int n) {
+    for (int i = 0; i < n; i++) putchar(' ');
+}
+
+/* Move to (col,row) and print text left-aligned inside a width-w field. */
+static void field(int col, int row, int width, const Style *s, const char *text) {
+    pspDebugScreenSetXY(col, row);
+    set_style(s);
+    int len = (int)strlen(text);
+    printf("%s", text);
+    if (len < width) pad(width - len);
+}
+
+/* Full-width header bar, like Media Go's title strip. */
+static void draw_header(const char *title, const char *subtitle) {
+    char buf[SCREEN_COLS + 1];
+    snprintf(buf, sizeof(buf), "  %s  %s", title, subtitle);
+    field(0, 0, SCREEN_COLS, &STYLE_HEADER, buf);
+}
+
+/* Left sidebar, Media Go style. active = currently highlighted item. */
+static const char *SIDEBAR[] = { "Games", "Downloads", "Settings" };
+
+static void draw_sidebar(int row_from, int row_to, int active) {
+    for (int r = row_from; r <= row_to; r++) {
+        pspDebugScreenSetXY(0, r);
+        set_style(&STYLE_SIDE);
+        pad(14);
+        int idx = r - row_from - 2;
+        if (idx >= 0 && idx < (int)(sizeof(SIDEBAR) / sizeof(SIDEBAR[0]))) {
+            pspDebugScreenSetXY(2, r);
+            printf("%s%s", idx == active ? "> " : "  ", SIDEBAR[idx]);
+        }
+    }
+}
+
+/* Bottom status bar with hint text and an optional status message. */
+static void draw_status(const char *msg) {
+    char buf[SCREEN_COLS + 1];
+    snprintf(buf, sizeof(buf), " X:Download   O:Back   Up/Down:Move   | %s",
+             msg ? msg : "");
+    field(0, SCREEN_ROWS - 1, SCREEN_COLS, &STYLE_STATUS, buf);
+}
 
 /* ------------------------------------------------------------------ */
 /* Simple parser: extract href entries from an HTML directory listing  */
@@ -143,7 +218,7 @@ static int parse_listing(const char *html) {
 }
 
 /* ------------------------------------------------------------------ */
-/* Download with progress bar                                          */
+/* Download with Media Go-style progress bar                           */
 /* ------------------------------------------------------------------ */
 
 static int download_file(const char *url, const char *dest_path) {
@@ -163,19 +238,35 @@ static int download_file(const char *url, const char *dest_path) {
             if (fd >= 0) {
                 static char buf[DL_BUF_SIZE];
                 int n, total = 0, ok = 1;
+                char label[64];
+                snprintf(label, sizeof(label), "Saving %s", dest_path);
+                draw_header("PS Linker", "Downloading...");
                 while ((n = sceHttpReadData(req, buf, sizeof(buf))) > 0) {
                     if (sceIoWrite(fd, buf, n) != n) { ok = 0; break; }
                     total += n;
-                    if (clen > 0) {
-                        int bar = (total * 30) / clen;
-                        printf("[");
-                        for (int i = 0; i < 30; i++) printf(i < bar ? "=" : " ");
-                        printf("] %d%% (%d KB)\r", (total * 100) / clen, total / 1024);
-                    } else {
-                        printf("Downloaded %d KB...\r", total / 1024);
-                    }
+
+                    /* Progress bar: filled track on a fixed row */
+                    int pct = clen > 0 ? (total * 100) / clen : 0;
+                    if (pct > 100) pct = 100;
+                    int bar_w = SCREEN_COLS - 16;
+                    int fill = clen > 0 ? (total * bar_w) / clen : 0;
+                    char info[48];
+                    snprintf(info, sizeof(info), "%d%%  (%d KB)", pct, total / 1024);
+
+                    pspDebugScreenSetXY(0, SCREEN_ROWS - 6);
+                    Style st = { COL_BG, COL_TEXT };
+                    field(0, SCREEN_ROWS - 6, SCREEN_COLS, &st, label);
+
+                    pspDebugScreenSetXY(0, SCREEN_ROWS - 5);
+                    set_style(&STYLE_ROW);
+                    pad(bar_w);                 /* empty track */
+                    pspDebugScreenSetXY(0, SCREEN_ROWS - 5);
+                    Style sp = { COL_PROGRESS, COL_PROGRESS };
+                    field(0, SCREEN_ROWS - 5, fill, &sp, "");
+
+                    Style si = { COL_BG, COL_TEXT_DIM };
+                    field(bar_w + 1, SCREEN_ROWS - 5, 15, &si, info);
                 }
-                printf("\n");
                 sceIoClose(fd);
                 status = ok ? 0 : -2;
             } else {
@@ -199,14 +290,28 @@ static void wait_button(void) {
     while (pad.Buttons == 0);
 }
 
-static int browser(void) {
+/* Splash screen shown while connecting, Media Go style. */
+static void draw_splash(const char *msg) {
+    set_style(&(Style){ COL_BG, COL_TEXT });
     pspDebugScreenClear();
-    printf("Fetching listing from NAS...\n");
+    draw_header("PS Linker", "v1.2");
+    draw_sidebar(1, SCREEN_ROWS - 2, 0);
+    Style big = { COL_BG, COL_TEXT };
+    field(16, 12, 50, &big, "P S   L I N K E R");
+    field(16, 14, 50, &big, msg);
+    draw_status("Starting...");
+}
+
+static int browser(void) {
+    draw_splash("Fetching listing from NAS...");
 
     char *html = fetch_to_memory(NAS_BASE_URL "/", NULL);
     if (!html) {
-        printf("Could not reach %s\n", NAS_BASE_URL);
-        printf("Press any button to retry.\n", NAS_BASE_URL);
+        char msg[96];
+        snprintf(msg, sizeof(msg), "Could not reach %s", NAS_BASE_URL);
+        Style err = { COL_BG, COL_ERR };
+        field(16, 16, 50, &err, msg);
+        field(16, 17, 50, &err, "Press any button to retry.");
         wait_button();
         return -1;
     }
@@ -214,7 +319,10 @@ static int browser(void) {
     free(html);
 
     if (g_file_count == 0) {
-        printf("No files found at %s\nPress any button.\n", NAS_BASE_URL);
+        Style err = { COL_BG, COL_ERR };
+        char msg[96];
+        snprintf(msg, sizeof(msg), "No files found at %s", NAS_BASE_URL);
+        field(16, 16, 50, &err, msg);
         wait_button();
         return -2;
     }
@@ -223,16 +331,33 @@ static int browser(void) {
     unsigned prev = 0;
     while (1) {
         pspDebugScreenClear();
-        printf("== PS Linker: %d files on NAS ==\n\n", g_file_count);
 
-        const int visible = SCREEN_ROWS - 6;
+        /* Layout: rows 1..30 list area, sidebar cols 0..13 */
+        const int list_top = 2;
+        const int list_rows = SCREEN_ROWS - 7 - list_top;
         if (sel < top) top = sel;
-        if (sel >= top + visible) top = sel - visible + 1;
+        if (sel >= top + list_rows) top = sel - list_rows + 1;
 
-        for (int i = top; i < g_file_count && i < top + visible; i++)
-            printf("%s %s\n", i == sel ? ">" : " ", g_files[i].name);
+        /* List panel background + header row */
+        Style head = { COL_BG, COL_TEXT_DIM };
+        field(14, 1, SCREEN_COLS - 14, &head, " NAS LIBRARY");
 
-        printf("\nX=download  O=quit\n");
+        for (int i = top; i < g_file_count && i < top + list_rows; i++) {
+            char line[MAX_PATH_LEN];
+            snprintf(line, sizeof(line), "%s", g_files[i].name);
+            /* Truncate to the list panel width */
+            int w = SCREEN_COLS - 16;
+            if ((int)strlen(line) > w) line[w] = '\0';
+            field(15, list_top + (i - top), w,
+                  i == sel ? &STYLE_SEL : &STYLE_ROW, line);
+        }
+
+        draw_sidebar(1, SCREEN_ROWS - 2, 0);
+
+        char status[64];
+        snprintf(status, sizeof(status), "%d files - %d selected",
+                 g_file_count, sel + 1);
+        draw_status(status);
 
         /* Simple edge-detect: poll until a new button press appears */
         SceCtrlData pad;
@@ -252,12 +377,14 @@ static int browser(void) {
             FileEntry *e = &g_files[sel];
             char dest[MAX_PATH_LEN + 32];
             snprintf(dest, sizeof(dest), DEST_DIR "%s", e->name);
-            pspDebugScreenClear();
-            printf("Downloading %s\n-> %s\n\n", e->name, dest);
             int rc = download_file(e->url, dest);
-            if (rc == 0) printf("Done!\n");
-            else         printf("Failed (error %d).\n", rc);
-            printf("\nPress any button.\n");
+
+            Style res = { COL_BG, rc == 0 ? COL_OK : COL_ERR };
+            char msg[96];
+            snprintf(msg, sizeof(msg), rc == 0 ? "Done: %s" : "Failed (%d): %s",
+                     rc == 0 ? 0 : rc, e->name);
+            field(14, SCREEN_ROWS - 3, SCREEN_COLS - 14, &res, msg);
+            draw_status(rc == 0 ? "Download complete" : "Download failed");
             wait_button();
         } else if (pressed & PSP_CTRL_CIRCLE) {
             return 0;
@@ -273,10 +400,7 @@ static int wait_for_ip(unsigned int timeout_us) {
     unsigned int start = sceKernelGetSystemTimeWide();
     SceNetApctlInfo info;
     do {
-        if (sceNetApctlGetInfo(1, &info) == 0) {
-            printf("Connected: %s (%s)\n", info.ssid, info.ip);
-            return 0;
-        }
+        if (sceNetApctlGetInfo(1, &info) == 0) return 0;
         sceKernelDelayThread(200 * 1000);
     } while (sceKernelGetSystemTimeWide() - start < timeout_us);
     return -2;
@@ -289,19 +413,33 @@ static int net_init(void) {
     if (sceNetInetInit()    != 0) return -4;
     if (sceNetApctlInit(0x10000, 48) != 0) return -5;
 
-    printf("Connecting to Wi-Fi (profile 1)...\n");
+    draw_splash("Connecting to Wi-Fi (profile 1)...");
     if (sceNetApctlConnect(1) != 0) return -6;   /* Wi-Fi profile 1 */
     if (wait_for_ip(20 * 1000 * 1000) != 0) return -7;
+
+    SceNetApctlInfo info;
+    if (sceNetApctlGetInfo(1, &info) == 0) {
+        Style ok = { COL_BG, COL_OK };
+        char msg[96];
+        snprintf(msg, sizeof(msg), "Connected: %s (%s)", info.ssid, info.ip);
+        field(16, 16, 50, &ok, msg);
+        sceKernelDelayThread(800 * 1000);
+    }
     return 0;
 }
 
 int main(void) {
     pspDebugScreenInit();
-    printf("PS Linker v1.1 - PSP NAS Downloader\n\n");
+    set_style(&(Style){ COL_BG, COL_TEXT });
+    pspDebugScreenClear();
+    draw_splash("Starting...");
 
     int rc = net_init();
     if (rc != 0) {
-        printf("Network init failed (%d). Check Wi-Fi settings.\n", rc);
+        Style err = { COL_BG, COL_ERR };
+        char msg[80];
+        snprintf(msg, sizeof(msg), "Network init failed (%d). Check Wi-Fi.", rc);
+        field(16, 17, 50, &err, msg);
         sceKernelDelayThread(5 * 1000 * 1000);
         sceKernelExitGame();
         return 1;
@@ -314,7 +452,7 @@ int main(void) {
         wait_button();
     }
 
-    printf("Goodbye!\n");
+    draw_splash("Goodbye!");
     sceKernelDelayThread(2 * 1000 * 1000);
     sceKernelExitGame();
     return 0;
