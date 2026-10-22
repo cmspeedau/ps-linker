@@ -14,6 +14,9 @@
  *
  * Controls in browser:  Up/Down = move, X = download (or enter dir),
  *                       O = parent dir (quit at root)
+ * Controls in settings: Left/Right = pick char, X = insert/OK,
+ *                       O = delete char, Start = save & back,
+ *                       Select = back without saving
  */
 
 #include <pspsdk.h>
@@ -33,21 +36,26 @@
 #define SCREEN_ROWS 33
 #define SCREEN_COLS 68
 
-PSP_MODULE_INFO("PSLinker", 0, 1, 2);
+PSP_MODULE_INFO("PSLinker", 0, 1, 3);
 PSP_MAIN_THREAD_ATTR(THREAD_ATTR_USER | THREAD_ATTR_VFPU);
 
 /* ------------------------------------------------------------------ */
 /* Config                                                              */
 /* ------------------------------------------------------------------ */
 
-/* Base URL of the NAS share, e.g. "http://192.168.1.50:8000/files" */
-#define NAS_BASE_URL "http://192.168.1.50:8000"
+/* Default base URL of the NAS share; editable at runtime via Settings
+   and persisted to SETTINGS_PATH. */
+#define DEFAULT_NAS_URL "http://192.168.1.50:8000"
 
 /* Destination directory on the Memory Stick */
 #define DEST_DIR "ms0:/PSP/GAME/NASDL/"
 
+/* Settings file (plain text: one line, the base URL) */
+#define SETTINGS_PATH "ms0:/PSP/GAME/NASDL/settings.txt"
+
 #define MAX_FILES     128
 #define MAX_PATH_LEN  256
+#define MAX_URL_LEN   128
 #define DL_BUF_SIZE   64 * 1024   /* 64 KB chunks */
 
 /* ------------------------------------------------------------------ */
@@ -123,9 +131,43 @@ static void draw_sidebar(int row_from, int row_to, int active) {
 /* Bottom status bar with hint text and an optional status message. */
 static void draw_status(const char *msg) {
     char buf[SCREEN_COLS + 1];
-    snprintf(buf, sizeof(buf), " X:Dl/Enter  O:Up  Up/Down:Move | %s",
+    snprintf(buf, sizeof(buf), " X:Dl/Enter  O:Up  Select:Settings | %s",
              msg ? msg : "");
     field(0, SCREEN_ROWS - 1, SCREEN_COLS, &STYLE_STATUS, buf);
+}
+
+/* ------------------------------------------------------------------ */
+/* Settings: runtime NAS URL, persisted to the Memory Stick            */
+/* ------------------------------------------------------------------ */
+
+/* Base URL of the NAS share, e.g. "http://192.168.1.50:8000".
+   Editable in the Settings view; lives in RAM after load. */
+static char g_nas_base[MAX_URL_LEN] = DEFAULT_NAS_URL;
+
+/* Load the saved URL. Silently keeps the default if absent/invalid. */
+static void load_settings(void) {
+    SceUID fd = sceIoOpen(SETTINGS_PATH, PSP_O_RDONLY, 0777);
+    if (fd < 0) return;
+    char buf[MAX_URL_LEN];
+    int n = sceIoRead(fd, buf, sizeof(buf) - 1);
+    sceIoClose(fd);
+    if (n <= 0) return;
+    buf[n] = '\0';
+    /* trim trailing whitespace/newlines */
+    while (n > 0 && (buf[n-1] == '\n' || buf[n-1] == '\r' || buf[n-1] == ' '))
+        buf[--n] = '\0';
+    if (n > 7 && strncmp(buf, "http://", 7) == 0)
+        snprintf(g_nas_base, sizeof(g_nas_base), "%s", buf);
+}
+
+static int save_settings(void) {
+    SceUID fd = sceIoOpen(SETTINGS_PATH,
+                          PSP_O_WRONLY | PSP_O_CREAT | PSP_O_TRUNC, 0777);
+    if (fd < 0) return -1;
+    int len = (int)strlen(g_nas_base);
+    int w = sceIoWrite(fd, g_nas_base, len);
+    sceIoClose(fd);
+    return (w == len) ? 0 : -2;
 }
 
 /* ------------------------------------------------------------------ */
@@ -141,7 +183,7 @@ typedef struct {
 static FileEntry g_files[MAX_FILES];
 static int g_file_count = 0;
 
-/* Current directory relative to NAS_BASE_URL, "" = root.
+/* Current directory relative to g_nas_base, "" = root.
    Always stored WITH a trailing slash when non-empty. */
 static char g_cwd[MAX_PATH_LEN] = "";
 
@@ -195,9 +237,9 @@ static char *fetch_to_memory(const char *url, int *out_len) {
     return result;
 }
 
-/* Join NAS_BASE_URL + g_cwd + name into out. Returns 0 on success. */
+/* Join g_nas_base + g_cwd + name into out. Returns 0 on success. */
 static int build_url(const char *name, char *out, size_t outlen) {
-    const char *base = NAS_BASE_URL;
+    const char *base = g_nas_base;
     size_t bl = strlen(base);
     int n;
     if (bl > 0 && base[bl - 1] == '/')
@@ -366,11 +408,20 @@ static void wait_button(void) {
     while (pad.Buttons == 0);
 }
 
+/* Edge-detected button read; fills *pressed, returns 0 on new press. */
+static int get_pressed(unsigned *pressed, unsigned *prev_out) {
+    SceCtrlData pad;
+    sceCtrlReadBufferPositive(&pad, 1);
+    *pressed = pad.Buttons & ~*prev_out;
+    *prev_out = pad.Buttons;
+    return (*pressed != 0) ? 0 : -1;
+}
+
 /* Splash screen shown while connecting, Media Go style. */
 static void draw_splash(const char *msg) {
     set_style(&(Style){ COL_BG, COL_TEXT });
     pspDebugScreenClear();
-    draw_header("PS Linker", "v1.2");
+    draw_header("PS Linker", "v1.3");
     draw_sidebar(1, SCREEN_ROWS - 2, 0);
     Style big = { COL_BG, COL_TEXT };
     field(16, 12, 50, &big, "P S   L I N K E R");
@@ -378,12 +429,111 @@ static void draw_splash(const char *msg) {
     draw_status("Starting...");
 }
 
+/* ------------------------------------------------------------------ */
+/* Settings view: edit the NAS URL with an on-screen character picker  */
+/* ------------------------------------------------------------------ */
+
+/* Single-row character strip, Media Go style. */
+static const char SETTINGS_CHARS[] =
+    "abcdefghijklmnopqrstuvwxyz0123456789-.:/_";
+#define SETTINGS_NCHARS ((int)(sizeof(SETTINGS_CHARS) - 1))
+/* Special slots after the chars: 0=delete, 1=save & exit */
+#define SP_DEL  SETTINGS_NCHARS
+#define SP_OK   (SETTINGS_NCHARS + 1)
+#define SETTINGS_NSLOTS (SETTINGS_NCHARS + 2)
+
+static int settings_view(void) {
+    char url[MAX_URL_LEN];
+    int pick = 0, view = 0;
+    unsigned prev = 0;
+
+    /* Visible window of the strip: pick stays inside [view, view+W) */
+    const int strip_w = SCREEN_COLS - 16;      /* list panel width */
+    const int picker_row = SCREEN_ROWS - 4;
+
+    while (1) {
+        pspDebugScreenClear();
+        draw_header("PS Linker", "Settings");
+        draw_sidebar(1, SCREEN_ROWS - 2, 2);   /* highlight "Settings" */
+
+        snprintf(url, sizeof(url), "%s", g_nas_base);
+        Style lbl = { COL_BG, COL_TEXT_DIM };
+        field(14, 4, strip_w, &lbl, " NAS SERVER URL");
+        Style val = { COL_BG, COL_TEXT };
+        /* truncate URL to fit the panel */
+        char shown[MAX_URL_LEN];
+        snprintf(shown, sizeof(shown), "%s", url);
+        if ((int)strlen(shown) > strip_w - 2) shown[strip_w - 2] = '\0';
+        field(15, 6, strip_w, &val, shown);
+
+        Style hint = { COL_BG, COL_TEXT_DIM };
+        field(14, 8, strip_w, &hint,
+              " <>:pick  X:insert  O:delete  Start:save  Select:cancel");
+
+        /* Character picker strip */
+        for (int i = 0; i < strip_w / 2 && view + i < SETTINGS_NSLOTS; i++) {
+            int slot = view + i;
+            char ch[2];
+            Style *st = (slot == pick) ? &STYLE_SEL : &STYLE_ROW;
+            if (slot < SETTINGS_NCHARS) {
+                ch[0] = SETTINGS_CHARS[slot];
+                ch[1] = '\0';
+            } else if (slot == SP_DEL) {
+                ch[0] = '<'; ch[1] = '\0';
+            } else {
+                field(14 + i * 2, picker_row, 2, st, "OK");
+                continue;
+            }
+            field(14 + i * 2, picker_row, 2, st, ch);
+        }
+
+        draw_status("Settings");
+
+        unsigned pressed;
+        do { sceKernelDelayThread(16000); }
+        while (get_pressed(&pressed, &prev) != 0);
+
+        if (pressed & PSP_CTRL_RIGHT) {
+            if (pick < SETTINGS_NSLOTS - 1) pick++;
+            if (pick >= view + strip_w / 2) view = pick - strip_w / 2 + 1;
+        } else if (pressed & PSP_CTRL_LEFT) {
+            if (pick > 0) pick--;
+            if (pick < view) view = pick;
+        } else if (pressed & PSP_CTRL_CROSS) {
+            if (pick < SETTINGS_NCHARS) {
+                size_t l = strlen(g_nas_base);
+                if (l + 1 < MAX_URL_LEN) {
+                    g_nas_base[l] = SETTINGS_CHARS[pick];
+                    g_nas_base[l + 1] = '\0';
+                }
+            } else if (pick == SP_DEL) {
+                size_t l = strlen(g_nas_base);
+                if (l > 0) g_nas_base[l - 1] = '\0';
+            } else {                          /* SP_OK: save & exit */
+                if (save_settings() == 0) return 1;
+            }
+        } else if (pressed & PSP_CTRL_CIRCLE) {
+            size_t l = strlen(g_nas_base);    /* delete last char */
+            if (l > 0) g_nas_base[l - 1] = '\0';
+        } else if (pressed & PSP_CTRL_START) {
+            save_settings();
+            return 1;
+        } else if (pressed & PSP_CTRL_SELECT) {
+            return 0;                         /* cancel */
+        }
+    }
+}
+
+/* ------------------------------------------------------------------ */
+/* Browser                                                             */
+/* ------------------------------------------------------------------ */
+
 static int browser(void) {
     draw_splash("Fetching listing from NAS...");
 
     if (fetch_listing() != 0) {
         char msg[96];
-        snprintf(msg, sizeof(msg), "Could not reach %s", NAS_BASE_URL);
+        snprintf(msg, sizeof(msg), "Could not reach %s", g_nas_base);
         Style err = { COL_BG, COL_ERR };
         field(16, 16, 50, &err, msg);
         field(16, 17, 50, &err, "Press any button to retry.");
@@ -394,7 +544,7 @@ static int browser(void) {
     if (g_file_count == 0) {
         Style err = { COL_BG, COL_ERR };
         char msg[96];
-        snprintf(msg, sizeof(msg), "No files found at %s", NAS_BASE_URL);
+        snprintf(msg, sizeof(msg), "No files found at %s", g_nas_base);
         field(16, 16, 50, &err, msg);
         wait_button();
         return -2;
@@ -438,16 +588,14 @@ static int browser(void) {
         draw_status(status);
 
         /* Simple edge-detect: poll until a new button press appears */
-        SceCtrlData pad;
-        unsigned pressed = 0;
+        unsigned pressed;
         do {
-            sceCtrlReadBufferPositive(&pad, 1);
-            pressed = pad.Buttons & ~prev;
-            prev = pad.Buttons;
-            if (!pressed) sceKernelDelayThread(16000);
-        } while (!pressed);
+            sceKernelDelayThread(16000);
+        } while (get_pressed(&pressed, &prev) != 0);
 
-        if (pressed & PSP_CTRL_DOWN) {
+        if (pressed & PSP_CTRL_SELECT) {
+            settings_view();
+        } else if (pressed & PSP_CTRL_DOWN) {
             sel = (sel + 1) % g_file_count;
         } else if (pressed & PSP_CTRL_UP) {
             sel = (sel - 1 + g_file_count) % g_file_count;
@@ -541,6 +689,9 @@ int main(void) {
     pspDebugScreenClear();
     draw_splash("Starting...");
 
+    load_settings();
+    sceIoMkdir(DEST_DIR, 0777);   /* also holds settings.txt */
+
     int rc = net_init();
     if (rc != 0) {
         Style err = { COL_BG, COL_ERR };
@@ -551,8 +702,6 @@ int main(void) {
         sceKernelExitGame();
         return 1;
     }
-
-    sceIoMkdir(DEST_DIR, 0777);
 
     while (browser() != 0) {
         /* browser() returned an error: retry after any button press */
