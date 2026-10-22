@@ -1,0 +1,50 @@
+# --- Build artifacts: PSP (pspdev / build.mak) ---
+psp/*.o
+psp/nasdl.elf
+psp/nasdl_strip.elf
+psp/EBOOT.PBP
+psp/PARAM.SFO
+psp/*.map
+
+# --- Build artifacts: PS3 (PSL1GHT / ppu_rules) ---
+ps3/*.o
+ps3/nasdl.elf
+ps3/nasdl.self
+ps3/nasdl.fake.self
+ps3/nasdl.pkg
+ps3/nasdl.gnpdrm.pkg
+ps3/nasdl.map
+ps3/build/
+
+# --- Generic compiler / linker junk ---
+*.o
+*.d
+*.elf
+*.self
+*.pkg
+
+# --- Server / Python ---
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+env/
+*.egg-info/
+
+# --- Local server data (game library, scratch, partials) ---
+/games/
+server/games/
+*.part
+*.store-queue.json
+
+# --- Logs & test output ---
+*.log
+test_*.txt
+tmp/
+
+# --- Editor / OS noise ---
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db

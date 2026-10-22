@@ -29,7 +29,9 @@
 #include <pspnet_apctl.h>
 #include <psphttp.h>
 #include <pspiofilemgr.h>
+#include <psputility_netmodules.h>
 #include <string.h>
+#include <stdio.h>
 #include <stdlib.h>
 
 #include "resume.h"
@@ -83,7 +85,6 @@ typedef struct {
 
 static const Style STYLE_HEADER = { COL_HEADER,   0xFF000000 };
 static const Style STYLE_SIDE   = { COL_PANEL,    COL_TEXT_DIM };
-static const Style STYLE_SIDE_H = { COL_PANEL,    0xFFFFFFFF };
 static const Style STYLE_ROW    = { COL_BG,       COL_TEXT };
 static const Style STYLE_SEL    = { COL_SELECT,   COL_TEXT_SEL };
 static const Style STYLE_STATUS = { COL_STATUS,   COL_TEXT_DIM };
@@ -133,7 +134,8 @@ static void draw_sidebar(int row_from, int row_to, int active) {
 /* Bottom status bar with hint text and an optional status message. */
 static void draw_status(const char *msg) {
     char buf[SCREEN_COLS + 1];
-    snprintf(buf, sizeof(buf), " X:Dl/Enter  O:Up  Select:Settings | %s",
+    /* Leave room for the fixed hint prefix; long messages are clipped. */
+    snprintf(buf, sizeof(buf), " X:Dl/Enter  O:Up  Select:Settings | %.28s",
              msg ? msg : "");
     field(0, SCREEN_ROWS - 1, SCREEN_COLS, &STYLE_STATUS, buf);
 }
@@ -216,11 +218,13 @@ static char *fetch_to_memory(const char *url, int *out_len) {
     char *result = NULL;
     int conn = sceHttpCreateConnectionWithURL(tpl_id, url, 0);
     if (conn >= 0) {
-        int req = sceHttpCreateRequestWithURL(conn, PSP_HTTP_METHOD_GET, url, 0);
+        int req = sceHttpCreateRequestWithURL(conn, PSP_HTTP_METHOD_GET,
+                                              (char *)url, 0);
         if (req >= 0 && sceHttpSendRequest(req, NULL, 0) >= 0) {
-            int clen = 0;
-            sceHttpGetContentLength(req, &clen);
-            if (clen <= 0) clen = 512 * 1024;   /* assume up to 512 KB */
+            SceULong64 clen64 = 0;
+            sceHttpGetContentLength(req, &clen64);
+            int clen = (clen64 > 0 && clen64 <= 1024 * 1024)
+                ? (int)clen64 : 512 * 1024;   /* assume up to 512 KB */
 
             char *buf = (char *)malloc(clen + 1);
             if (buf) {
@@ -317,13 +321,17 @@ static int cwd_enter(const char *dir_name) {
 /* Remove the last path component from g_cwd. */
 static void cwd_up(void) {
     char *slash = strrchr(g_cwd, '/');
-    if (slash) {
-        /* drop the slash and the component before it */
-        if (slash == g_cwd)
-            g_cwd[0] = '\0';               /* was "/x/" -> root */
-        else
-            *slash = '\0';
+    if (!slash) return;
+    if (slash == g_cwd) {
+        g_cwd[0] = '\0';               /* was "/x/" -> root */
+        return;
     }
+    *slash = '\0';                     /* drop the trailing slash */
+    char *parent = strrchr(g_cwd, '/');
+    if (parent)
+        parent[1] = '\0';              /* keep the parent's slash */
+    else
+        g_cwd[0] = '\0';               /* one component -> root */
 }
 
 /* Fetch the listing for g_cwd. Returns 0 or <0. */
@@ -449,7 +457,7 @@ static int settings_view(void) {
         for (int i = 0; i < strip_w / 2 && view + i < SETTINGS_NSLOTS; i++) {
             int slot = view + i;
             char ch[2];
-            Style *st = (slot == pick) ? &STYLE_SEL : &STYLE_ROW;
+            const Style *st = (slot == pick) ? &STYLE_SEL : &STYLE_ROW;
             if (slot < SETTINGS_NCHARS) {
                 ch[0] = SETTINGS_CHARS[slot];
                 ch[1] = '\0';
@@ -601,8 +609,10 @@ static int browser(void) {
 
                 Style res = { COL_BG, rc == 0 ? COL_OK : COL_ERR };
                 char msg[96];
-                snprintf(msg, sizeof(msg), rc == 0 ? "Done: %s" : "Failed (%d): %s",
-                         rc == 0 ? 0 : rc, e->name);
+                if (rc == 0)
+                    snprintf(msg, sizeof(msg), "Done: %s", e->name);
+                else
+                    snprintf(msg, sizeof(msg), "Failed (%d): %s", rc, e->name);
                 field(14, SCREEN_ROWS - 3, SCREEN_COLS - 14, &res, msg);
                 draw_status(rc == 0 ? "Download complete" : "Download failed");
                 wait_button();
@@ -639,13 +649,17 @@ static int wait_for_ip(unsigned int timeout_us) {
 static int net_init(void) {
     if (sceUtilityLoadNetModule(PSP_NET_MODULE_COMMON) != 0) return -1;
     if (sceUtilityLoadNetModule(PSP_NET_MODULE_INET)   != 0) return -2;
-    if (sceNetInit(128 * 1024, 42, 4 * 1024, 42, 4 * 1024) != 0) return -3;
-    if (sceNetInetInit()    != 0) return -4;
-    if (sceNetApctlInit(0x10000, 48) != 0) return -5;
+    if (sceUtilityLoadNetModule(PSP_NET_MODULE_HTTP)   != 0) return -3;
+    if (sceNetInit(128 * 1024, 42, 4 * 1024, 42, 4 * 1024) != 0) return -4;
+    if (sceNetInetInit()    != 0) return -5;
+    if (sceNetApctlInit(0x10000, 48) != 0) return -6;
 
     draw_splash("Connecting to Wi-Fi (profile 1)...");
-    if (sceNetApctlConnect(1) != 0) return -6;   /* Wi-Fi profile 1 */
-    if (wait_for_ip(20 * 1000 * 1000) != 0) return -7;
+    if (sceNetApctlConnect(1) != 0) return -7;   /* Wi-Fi profile 1 */
+    if (wait_for_ip(20 * 1000 * 1000) != 0) return -8;
+
+    /* libhttp needs its own memory pool before any template is created. */
+    if (sceHttpInit(20000) != 0) return -9;
 
     SceNetApctlInfo info;
     if (sceNetApctlGetInfo(1, &info) == 0) {

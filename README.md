@@ -120,6 +120,18 @@ Same Settings view as the PSP app (**Select** in the browser); the URL persists 
 
 See [docs/UI-REFERENCE.md](docs/UI-REFERENCE.md) for the app UI design reference.
 
+## Build verification
+
+Both device builds are verified against real toolchains:
+
+```bash
+docker run --rm -v "$PWD:/src" -w /src/psp pspdev/pspdev:latest make
+docker run --rm -v "$PWD:/src" -w /src/ps3 ps3dev/ps3dev:submodules make pkg
+```
+
+Verified with pspdev (GCC 15.2) and ps3toolchain/PSL1GHT (GCC 7.2).
+Artifacts: `psp/EBOOT.PBP`, `ps3/nasdl.self`, and `ps3/nasdl.pkg`.
+
 ## Roadmap
 
 ### Done
@@ -145,9 +157,10 @@ See [docs/UI-REFERENCE.md](docs/UI-REFERENCE.md) for the app UI design reference
 - [x] Client resume: self-contained `resume.c/h` modules for both apps —
       send `Range: bytes=<size>-` when a partial file exists, append on 206,
       restart cleanly on 200; wired into both Makefiles
+- [x] Compile-verify both device builds on real toolchains (pspdev / PSL1GHT):
+      `psp/EBOOT.PBP`, `ps3/nasdl.self` and `ps3/nasdl.pkg` compile successfully
 
 ### In progress
-- [ ] Compile-verify both device builds on real toolchains (pspdev / PSL1GHT)
 - [ ] Test Store flow end-to-end with a real queue file + local HTTP CDN
       (including a Range-resume transfer against the container share)
 

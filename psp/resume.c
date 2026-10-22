@@ -35,13 +35,13 @@ int psp_resume_download(const char *url, const char *dest_path,
     int conn = sceHttpCreateConnectionWithURL(tpl, url, 0);
     if (conn >= 0) {
         int req = sceHttpCreateRequestWithURL(conn, PSP_HTTP_METHOD_GET,
-                                              url, 0);
+                                              (char *)url, 0);
         if (req >= 0) {
             char range[48];
             if (resume_from > 0) {
                 snprintf(range, sizeof(range), "bytes=%lld-",
                          (long long)resume_from);
-                sceHttpAddRequestHeader(req, "Range", range);
+                sceHttpAddExtraHeader(req, "Range", range, 0);
             }
 
             if (sceHttpSendRequest(req, NULL, 0) >= 0) {
@@ -63,7 +63,9 @@ int psp_resume_download(const char *url, const char *dest_path,
                 /* Content-Length from the server is the REMAINING
                    size on a 206, full size on a 200. */
                 int clen = 0;
-                sceHttpGetContentLength(req, &clen);
+                SceULong64 clen64 = 0;
+                sceHttpGetContentLength(req, &clen64);
+                if (clen64 > 0) clen = (int)clen64;
                 long full_size = resume_from + (clen > 0 ? clen : 0);
 
                 int open_flags = appending

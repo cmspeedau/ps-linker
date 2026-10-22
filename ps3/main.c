@@ -24,6 +24,7 @@
 
 #include <stdio.h>
 #include <stdlib.h>
+#include <stdbool.h>
 #include <string.h>
 #include <strings.h>
 #include <unistd.h>
@@ -75,6 +76,7 @@
 #define ANSI_FG_SEL  "\x1b[97m"         /* bright white on blue */
 #define ANSI_FG_OK   "\x1b[38;5;114m"
 #define ANSI_FG_ERR  "\x1b[38;5;203m"
+#define ANSI_BG_ERR  "\x1b[48;5;52m"    /* dark red error panel */
 
 typedef struct {
     const char *bg;
@@ -452,6 +454,30 @@ static int download_file(const char *url, const char *dest_path) {
 /* Pad input                                                           */
 /* ------------------------------------------------------------------ */
 
+/* PSL1GHT exposes pad buttons as individual bitfields on padData; the
+   UI works with a simple edge-detected bitmask instead. */
+#define PAD_BTN_LEFT   (1u << 0)
+#define PAD_BTN_DOWN   (1u << 1)
+#define PAD_BTN_RIGHT  (1u << 2)
+#define PAD_BTN_UP     (1u << 3)
+#define PAD_BTN_START  (1u << 4)
+#define PAD_BTN_SELECT (1u << 5)
+#define PAD_BTN_CROSS  (1u << 6)
+#define PAD_BTN_CIRCLE (1u << 7)
+
+static unsigned pad_buttons(const padData *pd) {
+    unsigned b = 0;
+    if (pd->BTN_LEFT)   b |= PAD_BTN_LEFT;
+    if (pd->BTN_DOWN)   b |= PAD_BTN_DOWN;
+    if (pd->BTN_RIGHT)  b |= PAD_BTN_RIGHT;
+    if (pd->BTN_UP)     b |= PAD_BTN_UP;
+    if (pd->BTN_START)  b |= PAD_BTN_START;
+    if (pd->BTN_SELECT) b |= PAD_BTN_SELECT;
+    if (pd->BTN_CROSS)  b |= PAD_BTN_CROSS;
+    if (pd->BTN_CIRCLE) b |= PAD_BTN_CIRCLE;
+    return b;
+}
+
 static void wait_button(void) {
     padInfo pad_inf;
     padData pd;
@@ -459,8 +485,9 @@ static void wait_button(void) {
     while (1) {
         if (ioPadGetInfo(&pad_inf) == 0 && pad_inf.status[0]) {
             if (ioPadGetData(0, &pd) == 0) {
-                unsigned pressed = pd.BTN & ~prev;
-                prev = pd.BTN;
+                unsigned buttons = pad_buttons(&pd);
+                unsigned pressed = buttons & ~prev;
+                prev = buttons;
                 if (pressed) return;
             }
         }
@@ -478,8 +505,9 @@ static int get_pressed(unsigned *pressed) {
     if (!pad_inf.status[0]) return -1;
     if (ioPadGetData(0, &pd) != 0) return -1;
 
-    *pressed = pd.BTN & ~prev;
-    prev = pd.BTN;
+    unsigned buttons = pad_buttons(&pd);
+    *pressed = buttons & ~prev;
+    prev = buttons;
     return 0;
 }
 
@@ -500,13 +528,17 @@ static int cwd_enter(const char *name) {
 /* Remove the last path component from g_cwd ("" if already at root). */
 static void cwd_up(void) {
     char *slash = strrchr(g_cwd, '/');
-    if (slash && slash >= g_cwd) {
-        /* keep the trailing slash of the parent, if any */
-        if (slash == g_cwd)
-            g_cwd[0] = '\0';
-        else
-            *slash = '\0';
+    if (!slash) return;
+    if (slash == g_cwd) {
+        g_cwd[0] = '\0';
+        return;
     }
+    *slash = '\0';                     /* drop the trailing slash */
+    char *parent = strrchr(g_cwd, '/');
+    if (parent)
+        parent[1] = '\0';              /* keep the parent's slash */
+    else
+        g_cwd[0] = '\0';               /* one component -> root */
 }
 
 /* ------------------------------------------------------------------ */
@@ -539,7 +571,6 @@ static const char SETTINGS_CHARS[] =
 
 static void settings_view(void) {
     int pick = 0, view = 0;
-    unsigned prev = 0;
 
     /* Visible window of the strip: pick stays inside [view, view+W) */
     const int strip_w = SCREEN_COLS - 16;      /* list panel width */
@@ -567,7 +598,7 @@ static void settings_view(void) {
         char cell[4];
         for (int i = 0; i < strip_w / 2 && view + i < SETTINGS_NSLOTS; i++) {
             int slot = view + i;
-            Style *st = (slot == pick) ? &STYLE_SEL : &STYLE_ROW;
+            const Style *st = (slot == pick) ? &STYLE_SEL : &STYLE_ROW;
             if (slot < SETTINGS_NCHARS) {
                 cell[0] = SETTINGS_CHARS[slot];
                 cell[1] = '\0';

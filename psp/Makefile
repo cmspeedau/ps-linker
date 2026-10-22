@@ -6,8 +6,7 @@ CFLAGS = -O2 -G0 -Wall
 CXXFLAGS = $(CFLAGS) -fno-exceptions -fno-rtti
 ASFLAGS = $(CFLAGS)
 
-LIBS = -lpsphttp -lpspnet_apctl -lpspnet_inet -lpspnet \
-       -lpsputility -lpspsdk
+LIBS = -lpsphttp -lpspnet_inet -lpsputility
 
 EXTRA_TARGETS = EBOOT.PBP
 PSP_EBOOT_TITLE = PS Linker NASDL

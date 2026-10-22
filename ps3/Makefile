@@ -2,37 +2,40 @@
 # Requires the PSL1GHT toolchain and ps3toolchain env vars loaded.
 
 TARGET		:= nasdl
-AUTHOR		:= cmspeedou
-
-SRC		:= main.c resume.c
-OBJS		:= $(SRC:.c=.o)
-
 TITLE		:= PS Linker NASDL
 APPID		:= PSNK00001
 
-CFLAGS		:= -O2 -Wall -std=gnu99
-LIBS		:= -lnet -lio -lm
+SRC		:= main.c resume.c
+OBJS		:= $(SRC:.c=.o)
+OFILES		:= $(OBJS)
 
-BIN		:= $(TARGET).self
-PKG		:= $(TARGET).pkg
+# Locate the toolchain from the usual environment variables.  The
+# compiler is invoked through the ppu- wrapper so this works with both
+# the classic powerpc64-ps3-elf- prefix and newer ps3toolchain layouts.
+PS3DEV		?= /usr/local/ps3dev
+PSL1GHT		?= $(PS3DEV)
 
-all: $(BIN)
+# make has a built-in LD=ld, so point it at the target compiler before
+# PSL1GHT's rules are evaluated.
+LD		:= $(PS3DEV)/ppu/bin/ppu-gcc
+include $(PSL1GHT)/ppu_rules
 
-$(BIN): $(OBJS)
-	$(CC) $(CFLAGS) -o $@ $^ $(LIBS)
+CFLAGS		:= -O2 -Wall -std=gnu99 -mcpu=cell $(MACHDEP) $(LIBPSL1GHT_INC)
+LDFLAGS		:= $(MACHDEP) -Wl,-Map,$(TARGET).map
+LIBPATHS	:= $(LIBPSL1GHT_LIB)
+LIBS		:= -lnet -lsysmodule -lio -lm
 
-%.o: %.c
-	$(CC) $(CFLAGS) -c -o $@ $<
+all: $(TARGET).self
 
-# Build an installable package (requires pkg.py from psl1ght-utils)
-pkg: $(BIN)
-	pkg.py --contentid $(APPID)01-$(APPID) \
-	       $(TARGET).$(APPID) $(PKG)
+# Installable package (PSL1GHT's ppu_rules supplies the %.pkg recipe).
+pkg: $(TARGET).pkg
+
+run: $(TARGET).self
+	ps3load $(TARGET).self
 
 clean:
-	rm -f $(OBJS) $(BIN) $(PKG)
-
-run: $(BIN)
-	ps3load $(BIN)
+	rm -f $(OBJS) $(TARGET).elf $(TARGET).self $(TARGET).fake.self \
+	      $(TARGET).pkg $(TARGET).gnpdrm.pkg $(TARGET).map
+	rm -rf build
 
 .PHONY: all clean pkg run
