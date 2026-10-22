@@ -6,7 +6,7 @@ Two components:
 
 | Component | Target | What it does |
 |---|---|---|
-| `server/` | Docker / Linux / NAS (host) | Streams games to PS3 via the ps3netsrv protocol, serves files over HTTP for PSP/PS3 download, and runs the server-side Store (downloads queued CDN titles into the same unified library) |
+| `server/` | Docker / Linux / NAS (host) | Streams games to PS3 via the ps3netsrv protocol, serves files over HTTP for PSP/PS3 download (with Range/resume), and runs the server-side Store (downloads queued CDN titles into the same unified library) |
 | `psp/` | PSP (homebrew) | `NAS Downloader` app: connects to Wi-Fi, browses/downloads files from the PS Linker server to the Memory Stick |
 | `ps3/` | PS3 (homebrew, PSL1GHT) | `nasdl` app: browses/downloads files from the PS Linker server to the HDD |
 
@@ -16,7 +16,7 @@ Two components:
 
 The server runs both services in one container:
 - **ps3netsrv++** on port `38008` (PS3 game streaming)
-- **HTTP share** on port `8000` (PSP/PS3 NASDL app downloads)
+- **HTTP share** on port `8000` (PSP/PS3 NASDL app downloads; supports `Range`/resume)
 - **Server-side Store**: fetches queued CDN titles into the same games library and regenerates `catalog.json` (served at `/catalog.json`) every `STORE_INTERVAL` seconds
 
 ### Quick start
@@ -80,8 +80,8 @@ cd server/ps3netsrv-- && make
 # 2. Point it at your game library
 ./ps3netsrv++ -d /path/to/games        # PS3 streaming (port 38008)
 
-# 3. HTTP share for the PSP app
-python3 -m http.server 8000 --directory /path/to/games
+# 3. HTTP share for the PSP/PS3 apps (Range/resume capable)
+python3 server/store/http_server.py /path/to/games 8000
 ```
 
 ### Run at boot (systemd)
@@ -137,15 +137,19 @@ See [docs/UI-REFERENCE.md](docs/UI-REFERENCE.md) for the app UI design reference
       already derived from folder structure
 - [x] Server-side unzip: Store extracts `.zip` downloads in place (zip-slip
       protected) so PSP/PS3 clients never need zlib/unzip support
+- [x] Server: Range-capable HTTP share (`server/store/http_server.py`) replacing
+      stock http.server — `Accept-Ranges`/`206` support, path-traversal safe,
+      compatible directory listings, so client resume can be enabled next
 
 ### In progress
 - [ ] Compile-verify both device builds on real toolchains (pspdev / PSL1GHT)
 - [ ] Test Store flow end-to-end with a real queue file + local HTTP CDN
+- [ ] HTTP Range resume in PSP/PS3 apps (server now sends 206/Accept-Ranges;
+      clients need retry-with-Range logic)
 
 ### Next
 - [ ] Optional minimal Store view on PSP/PS3 (render `catalog.json` with
       titles/categories/icons — client stays thin, server does the work)
-- [ ] HTTP Range resume in PSP/PS3 apps
 
 ### Later
 - [ ] Store queue interface: simple web UI endpoint to queue CDN downloads
