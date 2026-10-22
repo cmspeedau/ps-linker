@@ -20,8 +20,12 @@ PSL1GHT		?= $(PS3DEV)
 LD		:= $(PS3DEV)/ppu/bin/ppu-gcc
 include $(PSL1GHT)/ppu_rules
 
-CFLAGS		:= -O2 -Wall -std=gnu99 -mcpu=cell $(MACHDEP) $(LIBPSL1GHT_INC)
-LDFLAGS		:= $(MACHDEP) -Wl,-Map,$(TARGET).map
+# -mminimal-toc: keep the TOC small so r2 is set up consistently at
+# C-startup.  Fixes the "access violation executing 0x7c0802a4" crash
+# seen in RPCS3 (indirect call from CRT init with a garbage r2 / no
+# .TOC. symbol in the linked ELF).
+CFLAGS		:= -O2 -Wall -std=gnu99 -mcpu=cell -mminimal-toc $(MACHDEP) $(LIBPSL1GHT_INC)
+LDFLAGS		:= $(MACHDEP) -mminimal-toc -Wl,-Map,$(TARGET).map
 LIBPATHS	:= $(LIBPSL1GHT_LIB)
 LIBS		:= -lnet -lsysmodule -lio -lm
 
