@@ -1,7 +1,5 @@
 # PS Linker
 
-Cross-platform LAN game streaming and downloading for **PS3** and **PSP**, with first-class **Linux** support.
-
 Two components:
 
 | Component | Target | What it does |
@@ -23,17 +21,21 @@ The server runs both services in one container:
 
 ```bash
 cd server
-mkdir games                       # put your games here (or edit compose path)
+git clone https://github.com/dirkvdb/ps3netsrv-- ps3netsrv--
 docker compose up -d --build
 ```
 
 Then:
-- **PS3 (webMAN MOD):** `webMAN MOD -> Setup -> Network Servers` → add your Docker host's IP.
-- **PSP/PS3 NASDL app:** set the NAS URL to `http://<docker-host-ip>:8000` — editable on-device in the Settings view (no recompile needed).
+
+- Put game files under `./games/` (or change the volume in `docker-compose.yml`)
+- Open `http://<server>:8000/` to browse/download
+- Point your PS3 at `<server>:38008` for game streaming
 
 ### Store (server-side only)
 
-Uploads and Store downloads land in the **same** games folder, so clients see one unified library — no client changes required. To queue a download, drop a `.store-queue.json` into the games directory:
+The Store is intentionally server-side: it downloads queue entries into `/games`, so the PSP and PS3 apps remain thin clients and see one unified library.
+
+The queue file is `/games/.store-queue.json` (inside the container; bind-mounted from the host). Example:
 
 ```json
 [
@@ -42,19 +44,17 @@ Uploads and Store downloads land in the **same** games folder, so clients see on
 ]
 ```
 
-The container fetches each URL into `games/<category>/` (atomic temp-file writes, so partial downloads are never visible), then removes the queue file. The catalog regenerates automatically.
-
-`.zip` downloads are **extracted on the server** (with zip-slip protection) and the archive is deleted, so clients download ready-to-run files and never need on-device unzip support.
+The entrypoint fetches queued titles on boot and every `STORE_INTERVAL` seconds (default `300`). Each item may also include `icon`, `version`, and `description`; these are written into `catalog.json` for clients to display. Zip downloads are extracted in place; archive paths are zip-slip protected, and `.part` files are never included in the catalog.
 
 ### Catalog metadata (optional)
 
-Each `catalog.json` entry includes `title`, `category`, `url`, and `size`. Two optional extras are picked up automatically:
+For uploaded games, place `<name>.meta.json` next to the game file:
 
-- **Cover art:** drop an image named `ICON0.png`, `cover.png`/`.jpg`, `boxart.*`, or `thumb.*` next to the game file — the entry gains an `"icon"` URL clients can display.
-- **Version / description:** drop a sidecar `<gamename>.meta.json` next to the game file:
   ```json
-  {"version": "1.2", "description": "Optional blurb shown in the client"}
+  {"icon": "covers/example.png", "version": "1.0", "description": "Homebrew example"}
   ```
+
+`generate_catalog.py` merges these sidecars with folder-derived categories and serves the result as `/catalog.json`.
 
 ### Manual build (without compose)
 
@@ -65,8 +65,6 @@ docker run -d --name ps-linker \
   -v /path/to/games:/games \
   ps-linker-server
 ```
-
-Note: the games volume is read-write so the Store can save downloads into it.
 
 ## Server (bare-metal Linux, alternative)
 
@@ -86,7 +84,7 @@ python3 server/store/http_server.py /path/to/games 8000
 
 ### Run at boot (systemd)
 
-Copy `server/ps-linker.service` to `/etc/systemd/system/`, edit the paths, then:
+Install `server/ps-linker.service` (edit paths/user as needed), then:
 
 ```bash
 sudo systemctl enable --now ps-linker
@@ -94,7 +92,7 @@ sudo systemctl enable --now ps-linker
 
 ## PSP app (NAS Downloader)
 
-Requires the [pspdev toolchain](https://github.com/pspdev/psptoolchain) and a PSP with CFW (ARK-4 / PRO), or PPSSPP for testing.
+The PSP app browses the HTTP share, shows optional catalog icons/metadata, and downloads with resume support.
 
 ```bash
 cd psp
@@ -102,13 +100,9 @@ make
 # Copy EBOOT.PBP to ms0:/PSP/GAME/NASDL/
 ```
 
-The server address defaults to `http://192.168.1.50:8000` and can be changed on-device: press **Select** in the browser to open the Settings view, edit the URL with the character picker, then press **Start** to save. The URL persists to `ms0:/PSP/GAME/NASDL/settings.txt`.
-
-Downloads are **resumable**: if a transfer is interrupted, re-selecting the file resumes from where it left off (`Range` request; the server must support 206 responses, which the PS Linker share does).
-
 ## PS3 app (nasdl)
 
-Requires the [PSL1GHT toolchain](https://github.com/PS3Dev/ps3toolchain) and a PS3 with CFW/HEN.
+The PS3 app browses the HTTP share and downloads to the HDD with resume support. It can be run in RPCS3 or installed on a jailbroken PS3.
 
 ```bash
 cd ps3
@@ -116,15 +110,15 @@ make          # produces nasdl.self
 make pkg      # optional: installable .pkg
 ```
 
-On RPCS3, boot `nasdl.self` or install the generated `.pkg`; RPCS3 rejects the loose `nasdl.elf`.
+## PS3 / RPCS3 notes
 
-Same Settings view as the PSP app (**Select** in the browser); the URL persists to `/dev_hdd0/NASDL/settings.txt`. Downloads are resumable the same way as on PSP.
-
-See [docs/UI-REFERENCE.md](docs/UI-REFERENCE.md) for the app UI design reference.
+- RPCS3 loads `nasdl.self` directly (File → Boot SELF) or via the generated `.pkg`.
+- Real-hardware PS3s need the `.pkg` installed; run the app from the XMB.
+- Set the server URL in the app's Settings view (persisted to `settings.txt`).
 
 ## Build verification
 
-Both device builds are verified against real toolchains:
+The repository includes a Docker-based build path for both device toolchains:
 
 ```bash
 docker run --rm -v "$PWD:/src" -w /src/psp pspdev/pspdev:latest make
@@ -142,11 +136,50 @@ Artifacts: `psp/EBOOT.PBP`, `ps3/nasdl.self`, and `ps3/nasdl.pkg` compile succes
 - [x] PSP: Media Go-style UI + UI reference doc (`docs/UI-REFERENCE.md`)
 - [x] PS3 port (`ps3/` — PSL1GHT, socket HTTP, same browse/download flow)
 - [x] Server: Docker image + docker-compose (ps3netsrv++ + HTTP share, one command)
-- [x] Both device builds verified against real toolchains
+- [x] Both apps: subdirectory navigation (X enters dirs, O goes up)
+- [x] Both apps: Settings view (on-device NAS URL editing, persisted to settings.txt)
+- [x] Store (server-side): Store fetcher downloads CDN titles directly into /games so
+      uploaded and store-sourced games appear in one unified client view;
+      `generate_catalog.py` keeps catalog.json in sync (atomic writes, skips .part files);
+      wired into the container entrypoint (boot + every STORE_INTERVAL seconds)
+- [x] Catalog niceties: optional `icon` (cover art next to game file),
+      `version`/`description` via `<name>.meta.json` sidecars; categories
+      already derived from folder structure
+- [x] Server-side unzip: Store extracts `.zip` downloads in place (zip-slip
+      protected) so PSP/PS3 clients never need zlib/unzip support
+- [x] Server: Range-capable HTTP share (`server/store/http_server.py`) replacing
+      stock http.server — `Accept-Ranges`/`206` support, path-traversal safe,
+      compatible directory listings
+- [x] Client resume: self-contained `resume.c/h` modules for both apps —
+      send `Range: bytes=<size>-` when a partial file exists, append on 206,
+      restart cleanly on 200; wired into both Makefiles
+- [x] Compile-verify both device builds on real toolchains (pspdev / PSL1GHT):
+      `psp/EBOOT.PBP`, `ps3/nasdl.self` and `ps3/nasdl.pkg` compile successfully
 
 ### In progress
 - [ ] Test Store flow end-to-end with a real queue file + local HTTP CDN
+      (including a Range-resume transfer against the container share)
+
+### Planned
+- [ ] **Server web GUI (Sony Media Go style)** — a browser-based desktop-class UI served by the HTTP server, modeled on Sony's Media Go:
+  - Dark multi-pane layout: library sidebar (categories/covers), game grid with cover art, and a detail/download pane
+  - Library view of the unified games folder (`catalog.json`), with cover art and metadata (version/description)
+  - Store management: view/paste CDN URLs, edit and submit the `.store-queue.json` queue, watch fetch progress, trigger catalog refresh
+  - Download activity view (recent transfers, resume events) driven by the existing HTTP access log
+  - Read/write stays scoped to the games volume; no auth changes to the existing share (optional simple access key for the admin actions)
+  - Reuse the Media Go visual language already established in `docs/UI-REFERENCE.md` (same palette, spacing, and pane structure as the on-console apps)
 - [ ] Rewrite ps3netsrv in-house and integrate it into our own Docker image
+
+### Next
+- [ ] Optional minimal Store view on PSP/PS3 (render `catalog.json` with
+      titles/categories/icons — client stays thin, server does the work)
+
+### Later
+- [ ] Store queue interface: simple web UI endpoint to queue CDN downloads
+      (watched `.store-queue.json` works today)
+- [ ] GTK/Qt GUI front-end for Linux (manage games + edit catalog metadata)
+- [ ] PS3: RSX pixel-graphics renderer (currently ANSI console output)
+- [ ] HTTPS support on the HTTP share
 
 ## License
 
