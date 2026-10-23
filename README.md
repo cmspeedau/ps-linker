@@ -146,15 +146,7 @@ Artifacts: `psp/EBOOT.PBP`, `ps3/nasdl.self`, and `ps3/nasdl.pkg` compile succes
 
 ### In progress
 - [ ] Test Store flow end-to-end with a real queue file + local HTTP CDN
-
-### Planned
-- [ ] **Server web GUI (Sony Media Go style)** — a browser-based desktop-class UI served by the HTTP server, modeled on Sony's Media Go:
-  - Dark multi-pane layout: library sidebar (categories/covers), game grid with cover art, and a detail/download pane
-  - Library view of the unified games folder (`catalog.json`), with cover art and metadata (version/description)
-  - Store management: view/paste CDN URLs, edit and submit the `.store-queue.json` queue, watch fetch progress, trigger catalog refresh
-  - Download activity view (recent transfers, resume events) driven by the existing HTTP access log
-  - Read/write stays scoped to the games volume; no auth changes to the existing share (optional simple access key for the admin actions)
-  - Reuse the Media Go visual language already established in `docs/UI-REFERENCE.md` (same palette, spacing, and pane structure as the on-console apps)
+- [ ] Rewrite ps3netsrv in-house and integrate it into our own Docker image
 
 ## License
 
