@@ -24,7 +24,7 @@ include $(PSL1GHT)/ppu_rules
 # C-startup.  Fixes the "access violation executing 0x7c0802a4" crash
 # seen in RPCS3 (indirect call from CRT init with a garbage r2 / no
 # .TOC. symbol in the linked ELF).
-CFLAGS		:= -O2 -Wall -std=gnu99 -mcpu=cell -mminimal-toc $(MACHDEP) $(LIBPSL1GHT_INC)
+CFLAGS		:= -O2 -Wall -std=gnu99 -mcpu=cell -mminimal-toc $(MACHDEP) $(LIBPSL1GHT_INC) $(EXTRA_CFLAGS)
 LDFLAGS		:= $(MACHDEP) -mminimal-toc -Wl,-Map,$(TARGET).map
 LIBPATHS	:= $(LIBPSL1GHT_LIB)
 LIBS		:= -lnet -lsysmodule -lio -lm
