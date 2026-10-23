@@ -30,6 +30,7 @@ Then:
 
 - Put game files under `./games/` (or change the volume in `docker-compose.yml`)
 - Open `http://<server>:8000/` to browse/download
+- Open `http://<server>:8000/gui/` for the web library (Cover Flow / grid, catalog, uploads)
 - Point your PS3 at `<server>:38008` for game streaming
 
 ### Store (server-side only)
@@ -129,6 +130,23 @@ docker run --rm -v "$PWD:/src" -w /src/ps3 ps3dev/ps3dev:submodules make pkg
 Verified with pspdev (GCC 15.2) and ps3toolchain/PSL1GHT (GCC 7.2).
 Artifacts: `psp/EBOOT.PBP`, `ps3/nasdl.self`, and `ps3/nasdl.pkg` compile successfully
 
+## Checks
+
+The shared UI module and the HTTP share both have host-side checks that need no
+console or emulator:
+
+```bash
+make -C ui test                 # Cover Flow module: assertions + render sweep
+make -C ui test-asan            # same under AddressSanitizer + UBSan
+server/store/check_share.sh     # HTTP share: listings, Range/206, GUI, uploads
+server/store/check_share.sh --with-dl   # + runs ps3/resume.c against the server
+```
+
+`check_share.sh --with-dl` compiles the console's real downloader
+(`ps3/resume.c`, which needs nothing but BSD sockets) and proves a cold
+download, a resume from a half-file (206, byte-identical result), and that a
+wrong `X-SHA256` is rejected with `rc=-11`.
+
 ## Roadmap
 
 ### Done
@@ -157,7 +175,8 @@ Artifacts: `psp/EBOOT.PBP`, `ps3/nasdl.self`, and `ps3/nasdl.pkg` compile succes
 - [x] Compile-verify both device builds on real toolchains (pspdev / PSL1GHT):
       `psp/EBOOT.PBP`, `ps3/nasdl.self` and `ps3/nasdl.pkg` compile successfully
 - [x] **Server web GUI (Sony Media Go style)** — browser-based UI served by the
-      HTTP server: dark multi-pane layout, cover grid, detail/download pane,
+      HTTP server at `/gui/` (`docs/WEB-GUI.md`): dark multi-pane layout, cover
+      grid, detail/download pane,
       Store queue management, and download activity view
 - [x] Web GUI library sections: All Games / Local PSP / PS3 Games filters over
       the unified catalog, plus an **Add Games** upload feature

@@ -6,7 +6,7 @@ it records *what was actually run and observed*, including bugs found while test
 
 ---
 
-## 2026-10-23 (server) — origin/main's HTTP-share rewrite breaks the device download path (reproduced)
+## 2026-10-23 (server) — HTTP-share rewrite broke browsing and resume; fixed and checked
 
 Rebasing the Cover Flow work onto `origin/main` pulled in nine commits, one of
 which (`Add Cover Flow UI with category menu bar` and its neighbours) rewrote
@@ -48,12 +48,57 @@ Two causes, both readable in the file:
    is likewise not the control-character class it looks like, so the upload
    filename guard is not doing what its name suggests either.
 
-Not fixed yet — this is somebody else's freshly written file and a fix touches
-the verified server, so it waits for a decision. The shape of it: keep the
-`/api/*` and `/ui/*` branches, route everything else to `root` (the games dir)
-with the old listing + Range code path, and single-escape the two regexes. The
-`7923e27` version is the reference for behaviour: 206 with `Content-Range`,
-suffix ranges, `416`, `Accept-Ranges`, listings.
+### Fixed
+
+`server/store/http_server.py` rewritten (readable, stdlib-only): routing is
+`/api/*` → `/gui/` (with `/ui/*` as an alias) → the library, where files and
+listings come back through the `7923e27` code path. The two regexes are
+single-escaped so `RANGE_RE` matches digits and `BAD_NAME_RE` a control-char
+class. Bodies are streamed in 256 KiB chunks — the rewrite did
+`f.read(end - start + 1)`, i.e. a whole 10 GB ISO into RAM per request. A
+`<name>.sha256` sidecar is now served as `X-SHA256`, which closes the open item
+"the shipped share never sends a digest". Uploads land via `.part` + rename, and
+`catalog.json` is rewritten in whatever top-level shape it already had instead
+of being flattened to `{"games": …}`.
+
+The GUI moved to `/gui/` because `/` cannot be both the library listing (what
+the apps request first, and what the README tells people to open) and the
+browser shell.
+
+**The web GUI never worked either.** `ui.js` fetched the *relative* URL
+`catalog.json`, which resolved against the shell's own path — and the handler
+answered `{"games": …}` while `ui.js` read `data.items`. Loading `/gui/` showed
+"Failed to load catalog: HTTP 404" for any catalogue. It now fetches
+`/api/catalog`, which answers `{"items": [...], "categories": [...]}`. In the
+browser, `/gui/` renders the carousel with all four fixture titles, and clicking
+`PS3 Games` narrows it to *Demon's Souls* + *Journey* with the metadata panel
+filled in.
+
+**Also restored:** `docs/UI-REFERENCE.md` had been overwritten — its 175-line
+device UI specification (design tokens, the NAS browser and download-view
+layouts that `psp/main.c`'s colour `#defines` implement) replaced by an 11-line
+web-GUI note. The spec is back from `7923e27`; the web-GUI notes live in
+`docs/WEB-GUI.md`.
+
+### Checks (in the repo now: `server/store/check_share.sh`, 42 assertions)
+
+```
+library   / is the listing · DIR/ and bare-name hrefs · catalog.json and
+          .part hidden · Accept-Ranges · X-SHA256 from sidecar · HEAD
+          headers-only · 404 for a missing file
+Range     206 + Content-Range · closed / open-ended / suffix slices are
+          byte-identical to the file · past-EOF 416 · unparseable → full body
+GUI + API /gui/ · /gui/ui.css content type · /api/catalog items and categories
+upload    201, file on disk, catalog shape preserved · bad extension 400 ·
+          encoded and double-encoded traversal refused
+--with-dl compiles ps3/resume.c for the host (it needs nothing but BSD
+          sockets; its <net/net.h> include is unused there) and runs the
+          console's own downloader against the share:
+            cold 16,777,216 B → rc=0, digest equals the sidecar
+            resume from 8,388,608 B → "Range offset=8388608", status=206,
+              exactly 8,388,608 bytes sent, result byte-identical
+            lying sidecar → rc=-11 · no sidecar → rc=0, "no response digest"
+```
 
 ## 2026-10-23 (coverflow) — shared Cover Flow module landed in `ui/`, verified on host + both toolchains
 

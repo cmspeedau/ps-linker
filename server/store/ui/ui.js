@@ -5,7 +5,7 @@
 (function () {
   'use strict';
 
-  var CATALOG_URL = 'catalog.json';
+  var CATALOG_URL = '/api/catalog';   /* absolute: the shell is served under /gui/ */
   var LS_FAVS = 'pslinker.favorites.v1';
 
   var state = {

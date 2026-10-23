@@ -52,3 +52,6 @@ url_cwd_test.exe
 *.swp
 .DS_Store
 Thumbs.db
+
+# Local OpenChamber session artifacts (screenshots, etc.)
+.openchamber/
