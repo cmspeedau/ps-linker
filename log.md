@@ -6,6 +6,138 @@ it records *what was actually run and observed*, including bugs found while test
 
 ---
 
+## 2026-10-23 (server) — origin/main's HTTP-share rewrite breaks the device download path (reproduced)
+
+Rebasing the Cover Flow work onto `origin/main` pulled in nine commits, one of
+which (`Add Cover Flow UI with category menu bar` and its neighbours) rewrote
+`server/store/http_server.py` to serve the new web GUI. `server/entrypoint.sh`
+runs *that* file as the port-8000 share the PSP and PS3 apps use:
+
+```
+entrypoint.sh:18  python3 /opt/store/http_server.py "${GAMES_DIR}" 8000 &
+```
+
+So I ran it. Both servers, same `games/` tree (a 5,000,000-byte
+`PSP/test.iso`), same URLs — the shape the apps actually request:
+
+| Request | `7923e27` (RPCS3-verified) | `origin/main` |
+|---|---|---|
+| `GET /` | 200 directory listing | 200 web GUI |
+| `GET /PSP/` | 200 directory listing | **404** |
+| `GET /PSP/test.iso` | 200, 5000000 bytes | **404** |
+| `GET` + `Range: bytes=1000-2999` | **206**, `Content-Range: bytes 1000-2999/5000000`, 2000 bytes | **200**, full body (6756 of 6756) |
+
+**Both device apps are unusable against the current share**: they parse the
+directory listing at the share root to build their file list, and there is no
+longer one, nor any file to fetch. Resume is dead independently of that: the
+new `file()` never returns 206, so `ps3_resume_download()` / the PSP equivalent
+fall back to the full-GET restart every time (that fallback is the behaviour we
+verified on RPCS3, so a download would restart from zero rather than fail —
+except there is nothing to download).
+
+Two causes, both readable in the file:
+
+1. `do_GET` hands the **`ui/` directory** to `self.file()` for *every* path
+   (`self.file(ui, '/index.html' if p=='/' else p[3:] if p.startswith('/ui/') else p)`),
+   so `root`/the games tree is only ever consulted for `catalog.json`. There is
+   no directory-listing branch at all.
+2. The regexes are double-escaped, as if a JSON-escaped payload were written
+   into the file verbatim:
+   `RANGE_RE=re.compile(r'^bytes=(\\d*)-(\\d*)$')` matches a literal `\` then
+   `d`, never a real `bytes=1000-2999`; `BAD=re.compile(r'[\\x00-\\x1f\\x7f/\\\\]')`
+   is likewise not the control-character class it looks like, so the upload
+   filename guard is not doing what its name suggests either.
+
+Not fixed yet — this is somebody else's freshly written file and a fix touches
+the verified server, so it waits for a decision. The shape of it: keep the
+`/api/*` and `/ui/*` branches, route everything else to `root` (the games dir)
+with the old listing + Range code path, and single-escape the two regexes. The
+`7923e27` version is the reference for behaviour: 206 with `Content-Range`,
+suffix ranges, `416`, `Accept-Ranges`, listings.
+
+## 2026-10-23 (coverflow) — shared Cover Flow module landed in `ui/`, verified on host + both toolchains
+
+An uploaded `coverflow.{c,h}` + smoke test arrived with an `INTEGRATION.md`
+describing wiring into `psp/` and `ps3/`, and claiming the module mirrored
+"the web GUI Cover Flow listed in the README Done section". My working base
+(`7923e27`) had no web GUI and no such roadmap line, so I started out writing
+this entry to correct the premise — and then the push was rejected: origin had
+nine new commits, including `server/store/ui/*` (Media Go-style web GUI) and
+"Cover Flow UI (web GUI)" in Done. The premise was right, my checkout was
+stale. Rebased onto `origin/main`; the module's category labels, view toggle
+and favourite semantics line up with `ui.js`, so `ui/INTEGRATION.md` now
+records the two places where the two implementations differ on purpose.
+
+What was not right was the code: as delivered it did not run. Landed it as
+`ui/` (shared by both apps; the per-directory copy convention only holds where
+the APIs really differ), fixed what was broken, and covered each fix with an
+assertion.
+
+**Reproduced first, then fixed** (each is now an assertion in
+`ui/coverflow_test.c`):
+
+1. **Favourite toggle → SIGSEGV.** `items` was declared `const` while
+   `COVERFLOW_KEY_FAVORITE` wrote through a cast-away const. The delivered
+   smoke test pressed FAVORITE on a `static const` table:
+   `gdb` → `Program received signal SIGSEGV … in coverflow_handle_key`,
+   `nm` → `0000000000003220 r kItems` (read-only `.rodata`). Items are
+   writable through the API now, and the header says why.
+2. **Re-filter kept the wrong cover.** `coverflow_recompute_filter()` compared
+   the old *slot* against new *item ids*. Slot 2 of the 5-item PS3 list is
+   item 9 ("Uncharted 1"); switching to `All Games` selected item 2. It looked
+   right only in `All Games`, where slot == id. Capturing the selected item id
+   before the rebuild fixes it; the test asserts both the carry-over and the
+   documented fallback (item absent → first entry of the new list).
+3. **Centre cover chopped in half.** `render_flow()` looped over the side-tile
+   height (7) while the centre tile is 11 rows, so rows 7–10 — its bottom
+   border included — were never printed. Loop now walks the centre height and
+   blank-pads the shorter neighbours (visible in the frame dump).
+4. **Selected category could be invisible.** The menu row clipped to
+   `screen_w` *bytes*, ANSI escapes included, and the 7 labels total 91
+   columns: at 80 columns `Settings` was dropped, reachable but never shown.
+   `coverflow_menu_row()` now windows around the current category with ASCII
+   `<` / `>` markers; test asserts every category is visible and the row never
+   exceeds the width at 1/8/20/24/40/60/80/120 columns.
+5. **Grid ignored `screen_h`** and printed every item (`row` set but never
+   used — the one `-Wall` warning the drop shipped with). Now one screenful
+   around the selection plus a `[ page x / y ]` strip.
+6. **Edge presses reported a change** (`LEFT` on the first cover returned
+   "redraw"), so every stray press repainted the screen. Movement keys return
+   0 when nothing moved.
+7. Hardening: `strncmp` instead of fixed `category[0..2]` reads, label table
+   only reachable via `coverflow_category_label()`, out-of-range category
+   clamped, `cap` guards on every tile/row builder.
+
+**Verified:**
+
+```
+make -C ui test        -std=c11 -Wall -Wextra -Wpedantic -Werror → clean
+                       197 assertions pass
+make -C ui test-asan   ASan + UBSan, incl. 1×1…400×40 render sweep → clean
+psp-gcc  -c -O2 -G0 -Wall -Wextra                    → no warnings (ELF32 LE)
+ppu-gcc  -c -O2 -Wall -Wextra -std=gnu99 -mcpu=cell -mminimal-toc
+                                                       → no warnings (ELF62 BE)
+```
+
+The psp-gcc pass caught a `-Wformat-truncation` the host gcc missed on the
+`%*s%s%*s` centring in `cover_title()` (it cannot bound an incoming
+`const char *`); that now builds its padded text by hand.
+
+Not claimed: that this appears on a device. The module is **not wired into
+either app** and is deliberately kept out of `psp/Makefile`'s `OBJS` and
+`ps3/Makefile`'s `SRC` — nothing calls it, so it would only cost space in
+`EBOOT.PBP` / `nasdl.self`. The blocker is a product decision, recorded in
+`ui/INTEGRATION.md`: both browsers list `FileEntry {name,url,is_dir}`
+(`psp/main.c:181`, `ps3/main.c:97`) — no size, category, favourite — while
+`psp/store.c` has the right
+shape but is neither in `OBJS` nor called anywhere, so `docs/STORE.md`
+documents a view that has never been built. Option A (Cover Flow as the Store
+renderer, catalog metadata already generated server-side) is recommended over
+Option B (Cover Flow as the browser, which needs the HTTP share to start
+reporting sizes/categories). `ps3/main.c`'s `pad_buttons()` also maps only 8
+bits today — L1/R1/Triangle must be added before the category and favourite
+keys are reachable.
+
 ## 2026-10-23 (resume) — PS3 Range resume restored + verified on RPCS3 (206, SHA-256)
 
 *Closes the "PS3 resume (Range/206) is gone" item flagged in the netdebug entry

@@ -7,6 +7,7 @@ Two components:
 | `server/` | Docker / Linux / NAS (host) | Streams games to PS3 via the ps3netsrv protocol, serves files over HTTP for PSP/PS3 download (with Range/resume), and runs the server-side Store (downloads queued CDN titles into the same unified library) |
 | `psp/` | PSP (homebrew) | `NAS Downloader` app: connects to Wi-Fi, browses/downloads files from the PS Linker server to the Memory Stick (resumable downloads) |
 | `ps3/` | PS3 (homebrew, PSL1GHT) | `nasdl` app: browses/downloads files from the PS Linker server to the HDD (resumable downloads) |
+| `ui/` | shared source | Cover Flow renderer + key state machine both device apps can build against (ANSI only, no GPU); see `ui/INTEGRATION.md` |
 
 > Intended for homebrew and legally-owned content. This project does not provide or encourage piracy.
 
@@ -167,10 +168,16 @@ Artifacts: `psp/EBOOT.PBP`, `ps3/nasdl.self`, and `ps3/nasdl.pkg` compile succes
       Settings) filtering the flow, metadata panel with favorite toggle below the
       carousel, and a grid ⇄ cover-flow view toggle. Arrow keys to flip,
       Enter/click to select
+- [x] Shared Cover Flow module for the device apps (`ui/coverflow.c/h`, ANSI, no
+      GPU): 197 host assertions + ASan/UBSan clean, and compiles warning-free
+      under `psp-gcc` and `ppu-gcc` with each app's flags (`make -C ui test`)
 
 ### In progress
 - [ ] **Cover Flow UI on the PSP/PS3 device apps** — port the carousel + category
-      menu bar interaction from the web GUI to the on-device UIs
+      menu bar interaction from the web GUI to the on-device UIs. The shared
+      module is in (`ui/`, checked by `make -C ui test`) but not wired into
+      either app yet: `ui/INTEGRATION.md` lists the two wiring points and the
+      metadata each needs
 - [ ] Real cover art: extract ICON0.PNG from PSP ISO/CSO and PS3 game folders
       into the catalog so tiles show real covers instead of placeholders
 - [ ] Test Store flow end-to-end with a real queue file + local HTTP CDN
