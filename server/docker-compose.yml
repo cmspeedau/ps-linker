@@ -7,6 +7,11 @@
 # The container IP/host is what you enter in the PSP/PS3 NASDL app
 # and in webMAN MOD's network server settings.
 #
+# Port 38008 is served by our own Python netiso server by default. Set NETSRV
+# to ps3netsrv++ in both places below (the build arg and the environment) to
+# build and run dirkvdb's C++ binary instead — only needed for folder games,
+# which the Python server does not serve through /***PS3***/.
+#
 # Server-side Store: drop a .store-queue.json into ./games with CDN
 # URLs to download; the container fetches them into the same library
 # and regenerates catalog.json every STORE_INTERVAL seconds.
@@ -14,14 +19,20 @@
 
 services:
   ps-linker:
-    build: .
+    build:
+      context: .
+      args:
+        NETSRV: python        # python | ps3netsrv++
     container_name: ps-linker
     restart: unless-stopped
     ports:
-      - "38008:38008"   # ps3netsrv++ (PS3 game streaming)
+      - "38008:38008"   # netiso: PS3 game streaming
       - "8000:8000"     # HTTP share (PSP/PS3 NASDL downloads)
     volumes:
       - ./games:/games
     environment:
       - GAMES_DIR=/games
+      - NETSRV=python         # which binary entrypoint.sh should exec
+      - NETSRV_WHITELIST=     # e.g. 192.168.1.* to accept only that subnet
+      - NETSRV_WRITE=         # 1 to let PS3 clients create/write/delete
       - STORE_INTERVAL=300   # seconds between store fetch + catalog regen

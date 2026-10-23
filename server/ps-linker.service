@@ -1,6 +1,17 @@
-# PS Linker server: ps3netsrv++ (PS3 streaming) + HTTP share (PSP downloads)
+# PS Linker server: netiso server for PS3 streaming + HTTP share for PSP downloads
 # Install: copy to /etc/systemd/system/, edit paths, then:
 #   sudo systemctl enable --now ps-linker
+#
+# The netiso server is server/netsrv/ps3netsrv.py (stdlib Python 3, no daemon to
+# install). It shares one directory, read-only, on port 38008, and that is what
+# webMAN MOD's "network server" setting points at.
+#
+# Positional arguments are: games_dir [port] [whitelist], where the whitelist is
+# an IPv4 pattern with * octets, e.g. 192.168.1.*. Add --write to allow
+# CREATE_FILE/WRITE_FILE/DELETE_FILE/MKDIR/RMDIR.
+#
+# Folder games (/***PS3***/) are not implemented by this server; if the library
+# has any, use the ps3netsrv++ ExecStart at the bottom instead.
 
 [Unit]
 Description=PS Linker - PS3 net server + PSP HTTP share
@@ -12,12 +23,20 @@ Type=simple
 # Path to your game library
 WorkingDirectory=/srv/games
 # PS3 streaming (webMAN MOD connects here, port 38008)
-ExecStart=/opt/ps-linker/ps3netsrv++ -d /srv/games
+ExecStart=/usr/bin/python3 /opt/ps-linker/netsrv/ps3netsrv.py /srv/games 38008 192.168.1.*
 Restart=on-failure
 
-# Optional second unit for the PSP HTTP share:
-#   python3 -m http.server 8000 --directory /srv/games
+# Optional second unit for the PSP HTTP share, from the same tree:
+#   ExecStart=/usr/bin/python3 /opt/ps-linker/store/http_server.py /srv/games 8000
 # (or use nginx/caddy; see README)
+
+# Folder games instead of ISOs: build dirkvdb's ps3netsrv++ (it needs its utils
+# submodule, clang++ or "make CXX=g++", and an #include <cstdint> at the top of
+# ps3netsrv.cpp) and replace ExecStart with:
+#   ExecStart=/opt/ps-linker/ps3netsrv++ -p 38008 /srv/games
+# Its -w whitelist is advertised in the usage text but unimplemented — passing it
+# prints the usage and exits — so confine it some other way (a firewall rule, or
+# a container with a published port on the LAN bridge only).
 
 [Install]
 WantedBy=multi-user.target

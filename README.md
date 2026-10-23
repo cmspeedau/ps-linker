@@ -14,7 +14,9 @@ Two components:
 ## Server (Docker — recommended)
 
 The server runs both services in one container:
-- **ps3netsrv++** on port `38008` (PS3 game streaming)
+- **netiso server** on port `38008` (PS3 game streaming) — `server/netsrv/ps3netsrv.py`,
+  our own implementation of the ps3netsrv protocol. Stdlib Python 3, nothing to
+  compile, no third-party binary in the image.
 - **HTTP share** on port `8000` (PSP/PS3 NASDL app downloads; supports `Range`/resume)
 - **Server-side Store**: fetches queued CDN titles into the same games library and regenerates `catalog.json` (served at `/catalog.json`) every `STORE_INTERVAL` seconds
 
@@ -22,7 +24,6 @@ The server runs both services in one container:
 
 ```bash
 cd server
-git clone https://github.com/dirkvdb/ps3netsrv-- ps3netsrv--
 docker compose up -d --build
 ```
 
@@ -32,6 +33,16 @@ Then:
 - Open `http://<server>:8000/` to browse/download
 - Open `http://<server>:8000/gui/` for the web library (Cover Flow / grid, catalog, uploads)
 - Point your PS3 at `<server>:38008` for game streaming
+
+The netiso server shares `GAMES_DIR` read-only. Set `NETSRV_WHITELIST=192.168.1.*`
+to accept only that subnet, or `NETSRV_WRITE=1` to let PS3 clients create, write
+and delete files. If the library has *folder* games (a directory with a
+`PS3_GAME/` inside, which webMAN mounts through `/***PS3***/`), those are not
+served yet — build the fallback instead:
+
+```bash
+docker build -t ps-linker --build-arg NETSRV=ps3netsrv++ server/
+```
 
 ### Store (server-side only)
 
@@ -73,16 +84,23 @@ docker run -d --name ps-linker \
 ### Quick start
 
 ```bash
-# 1. Build ps3netsrv++
-git clone https://github.com/dirkvdb/ps3netsrv-- server/ps3netsrv--
-cd server/ps3netsrv-- && make
+# 1. PS3 streaming: our netiso server. Stdlib Python 3, nothing to build.
+python3 server/netsrv/ps3netsrv.py /path/to/games 38008
 
-# 2. Point it at your game library
-./ps3netsrv++ -d /path/to/games        # PS3 streaming (port 38008)
+#    an optional third argument limits clients by address, --write allows writes
+python3 server/netsrv/ps3netsrv.py /path/to/games 38008 192.168.1.*
+python3 server/netsrv/ps3netsrv.py /path/to/games 38008 "" --write
 
-# 3. HTTP share for the PSP/PS3 apps (Range/resume capable)
+# 2. HTTP share for the PSP/PS3 apps (Range/resume capable)
 python3 server/store/http_server.py /path/to/games 8000
 ```
+
+To check the server against the real thing instead of trusting this README, two
+harnesses come with it: `python3 server/netsrv/netsrv_test.py` runs the unit and
+end-to-end suite, and `python3 server/netsrv/netsrv_diff.py --reference BIN`
+sends the same command script to our server and to an upstream `ps3netsrv`
+binary and compares the bytes (`docs/PS3NETSRV-PROTOCOL.md` §8 has what it
+found).
 
 ### Run at boot (systemd)
 
@@ -154,7 +172,8 @@ wrong `X-SHA256` is rejected with `rc=-11`.
 - [x] PSP: interactive NAS browser (parse directory listing, on-device file picker)
 - [x] PSP: Media Go-style UI + UI reference doc (`docs/UI-REFERENCE.md`)
 - [x] PS3 port (`ps3/` — PSL1GHT, socket HTTP, same browse/download flow)
-- [x] Server: Docker image + docker-compose (ps3netsrv++ + HTTP share, one command)
+- [x] Server: Docker image + docker-compose (netiso server + HTTP share, one
+      command, nothing third-party in the image)
 - [x] Both apps: subdirectory navigation (X enters dirs, O goes up)
 - [x] Both apps: Settings view (on-device NAS URL editing, persisted to settings.txt)
 - [x] Store (server-side): Store fetcher downloads CDN titles directly into /games so
@@ -208,6 +227,13 @@ wrong `X-SHA256` is rejected with `rc=-11`.
 - [x] Shared Cover Flow module for the device apps (`ui/coverflow.c/h`, ANSI, no
       GPU): 197 host assertions + ASan/UBSan clean, and compiles warning-free
       under `psp-gcc` and `ppu-gcc` with each app's flags (`make -C ui test`)
+- [x] **ps3netsrv rewritten in house** (`server/netsrv/ps3netsrv.py`, stdlib
+      Python 3): the netiso protocol on port 38008, no third-party binary in the
+      image. Checked byte-for-byte against upstream's own binaries on one tree
+      with `server/netsrv/netsrv_diff.py` — 48 identical answers, 15 declared
+      deviations, 0 undeclared — plus 62 tests in `netsrv_test.py`; spec and
+      findings in `docs/PS3NETSRV-PROTOCOL.md`. Ships in the image as the default,
+      with `--build-arg NETSRV=ps3netsrv++` kept as the fallback
 
 ### In progress
 - [ ] **Store view on the PSP, rendered by the Cover Flow module** — build
@@ -232,7 +258,14 @@ wrong `X-SHA256` is rejected with `rc=-11`.
       port 8000 in the built image
 
 ### Planned
-- [ ] Rewrite ps3netsrv in-house and integrate it into our own Docker image
+- [ ] Validate the netiso server on a real PS3 with webMAN MOD: the open questions
+      at the end of `docs/PS3NETSRV-PROTOCOL.md` §8 (which opcodes a real client
+      sends, whether it holds one connection or several, what it makes of the
+      sector probe's 848 MiB ceiling)
+- [ ] Virtual ISO: serve folder games through `/***PS3***/`, which means
+      synthesising an ISO 9660 filesystem over a directory tree. Until then the
+      Docker image keeps `--build-arg NETSRV=ps3netsrv++` as the fallback, and a
+      library with folder games needs it
 
 ### Later
 - [ ] Web GUI: **Add Games** panel wired to `POST /api/upload` — the endpoint is
