@@ -155,19 +155,29 @@ Artifacts: `psp/EBOOT.PBP`, `ps3/nasdl.self`, and `ps3/nasdl.pkg` compile succes
       restart cleanly on 200; wired into both Makefiles
 - [x] Compile-verify both device builds on real toolchains (pspdev / PSL1GHT):
       `psp/EBOOT.PBP`, `ps3/nasdl.self` and `ps3/nasdl.pkg` compile successfully
+- [x] **Server web GUI (Sony Media Go style)** — browser-based UI served by the
+      HTTP server: dark multi-pane layout, cover grid, detail/download pane,
+      Store queue management, and download activity view
+- [x] Web GUI library sections: All Games / Local PSP / PS3 Games filters over
+      the unified catalog, plus an **Add Games** upload feature
+      (multi-file upload with platform selection, drag-and-drop, `POST /api/upload`)
 
 ### In progress
 - [ ] Test Store flow end-to-end with a real queue file + local HTTP CDN
       (including a Range-resume transfer against the container share)
 
 ### Planned
-- [ ] **Server web GUI (Sony Media Go style)** — a browser-based desktop-class UI served by the HTTP server, modeled on Sony's Media Go:
-  - Dark multi-pane layout: library sidebar (categories/covers), game grid with cover art, and a detail/download pane
-  - Library view of the unified games folder (`catalog.json`), with cover art and metadata (version/description)
-  - Store management: view/paste CDN URLs, edit and submit the `.store-queue.json` queue, watch fetch progress, trigger catalog refresh
-  - Download activity view (recent transfers, resume events) driven by the existing HTTP access log
-  - Read/write stays scoped to the games volume; no auth changes to the existing share (optional simple access key for the admin actions)
-  - Reuse the Media Go visual language already established in `docs/UI-REFERENCE.md` (same palette, spacing, and pane structure as the on-console apps)
+- [ ] **Cover Flow UI for the PSP/PS3 apps (and web GUI view mode)** —
+  - 3D-style horizontally scrolling cover carousel as the primary game browser:
+    covers flip through a perspective flow, the centered title enlarged and in focus
+  - **Menu bar across the top with all categories** —
+    All Games | PSP Games | PS3 Games | Recently Added | Favorites | Downloads | Settings —
+    the highlighted category filters the flow; navigate with left/right, confirm with enter
+  - Selected title's metadata (name, version, description, size) shown below the carousel;
+    selecting starts the download/stream
+  - Same Media Go palette and spacing as the existing UI (`docs/UI-REFERENCE.md`),
+    carried across web GUI and both device apps
+  - Web GUI keeps the cover grid as an alternate view mode (grid ⇄ cover flow toggle)
 - [ ] Rewrite ps3netsrv in-house and integrate it into our own Docker image
 
 ### Next
