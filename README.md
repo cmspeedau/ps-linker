@@ -161,23 +161,22 @@ Artifacts: `psp/EBOOT.PBP`, `ps3/nasdl.self`, and `ps3/nasdl.pkg` compile succes
 - [x] Web GUI library sections: All Games / Local PSP / PS3 Games filters over
       the unified catalog, plus an **Add Games** upload feature
       (multi-file upload with platform selection, drag-and-drop, `POST /api/upload`)
+- [x] **Cover Flow UI (web GUI)** — 3D-style horizontally scrolling cover carousel
+      (centered title enlarged/in focus), top menu bar with all categories
+      (All Games | PSP Games | PS3 Games | Recently Added | Favorites | Downloads |
+      Settings) filtering the flow, metadata panel with favorite toggle below the
+      carousel, and a grid ⇄ cover-flow view toggle. Arrow keys to flip,
+      Enter/click to select
 
 ### In progress
+- [ ] **Cover Flow UI on the PSP/PS3 device apps** — port the carousel + category
+      menu bar interaction from the web GUI to the on-device UIs
+- [ ] Real cover art: extract ICON0.PNG from PSP ISO/CSO and PS3 game folders
+      into the catalog so tiles show real covers instead of placeholders
 - [ ] Test Store flow end-to-end with a real queue file + local HTTP CDN
       (including a Range-resume transfer against the container share)
 
 ### Planned
-- [ ] **Cover Flow UI for the PSP/PS3 apps (and web GUI view mode)** —
-  - 3D-style horizontally scrolling cover carousel as the primary game browser:
-    covers flip through a perspective flow, the centered title enlarged and in focus
-  - **Menu bar across the top with all categories** —
-    All Games | PSP Games | PS3 Games | Recently Added | Favorites | Downloads | Settings —
-    the highlighted category filters the flow; navigate with left/right, confirm with enter
-  - Selected title's metadata (name, version, description, size) shown below the carousel;
-    selecting starts the download/stream
-  - Same Media Go palette and spacing as the existing UI (`docs/UI-REFERENCE.md`),
-    carried across web GUI and both device apps
-  - Web GUI keeps the cover grid as an alternate view mode (grid ⇄ cover flow toggle)
 - [ ] Rewrite ps3netsrv in-house and integrate it into our own Docker image
 
 ### Next
