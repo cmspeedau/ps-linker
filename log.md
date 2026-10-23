@@ -1,7 +1,7 @@
 # Development Log
 
 Running log of build, verification, and on-device testing work on PS Linker.
-Newest entries first. This complements the README roadmap — it records what was actually run and observed, including bugs found while testing.
+Newest entries first. This complements the [README roadmap](README.md#roadmap) — it records what was actually run and observed, including bugs found while testing.
 
 ---
 
