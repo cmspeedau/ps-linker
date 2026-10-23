@@ -6,6 +6,142 @@ it records *what was actually run and observed*, including bugs found while test
 
 ---
 
+## 2026-10-24 (server) — ps3netsrv rewritten in Python, checked against the real binaries
+
+The image used to `git clone` dirkvdb's `ps3netsrv--` and compile a C++ server
+whose behaviour we could only guess at. This replaces it with
+`server/netsrv/ps3netsrv.py` — stdlib asyncio, no build step — and settles what
+the protocol actually is by running the upstream binaries and reading the wire.
+Spec: [`docs/PS3NETSRV-PROTOCOL.md`](docs/PS3NETSRV-PROTOCOL.md).
+
+### How it was checked
+
+Two harnesses, both kept in the repo:
+
+```
+python3 server/netsrv/netsrv_test.py          # 62 unit + loopback end-to-end tests
+python3 server/netsrv/netsrv_diff.py \
+        --reference .../ps3netsrv --reference .../ps3netsrv++   # differential
+python3 server/netsrv/netsrv_bench.py --file <617MiB .bin> --reference .../ps3netsrv
+```
+
+The references are built outside the repo (`/tmp/opencode/ref/`); webMAN-MOD's
+`ps3netsrv` is the primary because that is what a PS3 talks to, and dirkvdb's
+`ps3netsrv++` the secondary. Same tree, same command script, compared with a
+normaliser where a difference is meaningless (timestamps on a listing, order
+while our sort is switched off for the run):
+
+```
+[diff] 48 match, 15 declared deviation, 0 unexpected
+Ran 62 tests in 11.380s — OK
+```
+
+Eight of the fifteen declared deviations are one cause: the symlink in the test
+share, which we refuse to follow and upstream follows out of the tree. Two are
+upstream's zero-length-trailer wedge, two the sector probe, one each for
+recursion depth, path checks, trailer length, and opening a directory.
+
+Throughput, loopback, one machine, 4 MiB `READ_FILE_CRITICAL` requests, the same
+617 MB `Driver 2` rip, and one loopback address per client (the server gives a
+slot per *IP*, so five connections from one address would be five clients taking
+each other's slot, not five clients streaming):
+
+| server | one client | five at once |
+|---|---|---|
+| ours | 1255–1358 MiB/s | 2267–2559 MiB/s |
+| `ps3netsrv` | 1625–1692 MiB/s | 1378–1775 MiB/s |
+
+Upstream wins one stream and loses the total. Both are 10× a gigabit link, so on
+a real network the row that matters is the second one, and there we are 1.3–1.6×
+ahead. A detour: an early run showed *my* server at 467 MiB/s, which was the
+measurement — `readexactly()` refills a 64 KiB buffer a read at a time, so the
+test client was the bottleneck. It also found a real bug: `serve()`'s
+`async with server` waited on `wait_closed()`, which waits for every handler, so
+one client that connected and never spoke blocked shutdown forever. The read path
+is `pread` per 1 MiB chunk off the event loop; the single-syscall fast path that
+avoids re-copying the chunk was worth 705 → 1261 MiB/s.
+
+### What the upstream binaries did that the source did not make obvious
+
+* **A zero-length trailer kills a slot permanently.** `opcode, len = 0` on
+  `CREATE_FILE`, `OPEN_DIR`, `DELETE_FILE`, `STAT_FILE` or `GET_DIR_SIZE` parks
+  the thread inside `recv(…, 0, MSG_WAITALL)`, which never returns: no answer,
+  connection left open, slot gone. Five requests — one browser tab with
+  keep-alive — and the server is dead. Only `OPEN_FILE` guards for it. Ours
+  answers `-1` and moves on.
+* **A failed `STAT_FILE` sends stack garbage.** Only `file_size` is assigned on
+  that path, so the three 8-byte timestamps and `is_directory` go out
+  uninitialised: `-752867497375432704` and `-56` in one run, something else in
+  the next. Ours zeroes them.
+* **`CREATE_FILE` on a directory answers `-1`.** Both binaries, consistently. An
+  earlier draft of the spec doc claimed it answered 0 with no handle; that was
+  wrong and the doc and the test now say `-1`.
+* **`RMDIR` of a non-empty directory deletes the tree** in webMAN's server
+  (returns 0, directory and contents gone, with the server's own permissions).
+  dirkvdb's returns `-1`. Ours is `rmdir(2)`.
+* **Neither upstream's sector probe can be shown to work**, and `ps3netsrv++`
+  has none (it hardcodes 2352). The discriminating fixture is the plain-2048
+  image, because it is the only one whose answer is not 2352; both binaries
+  answered 2352 there. webMAN's check inspects twelve bytes after reading twelve
+  into a shared 4 MiB buffer, so eight of the bytes it compares were never
+  fetched, and its follow-up read lands mid-volume-descriptor, so its `CD001`
+  check can never pass.
+* **The two upstreams disagree with each other in 23 of the 63 scenarios** —
+  `\`-separated paths, trailing slashes and `\r`, `STAT_FILE` of a directory,
+  unknown opcodes, `RMDIR`. "Byte-identical to upstream" needs a named upstream,
+  which is why the harness prints a cross-note for every one of them.
+
+A correction to keep, because the first version of these notes was wrong: an
+earlier harness run had webMAN reading the `Driver 2` rip at 2048 and dirkvdb at
+2368. That measurement came from a stride probe that assumed the image held a
+recognisable byte pattern, which is fine for the synthetic fixtures and
+meaningless for a real rip. Replaced with one that rebuilds the server's reply at
+each candidate stride from the file and takes the byte-identical match
+(`netsrv_diff.py --psx FILE`), the answer on the real rip is 2352 from all three
+servers — which proves nothing about anybody's probe, since 2352 is also
+everybody's default. §5 of the spec now carries the measured table.
+
+### Packaging
+
+`server/Dockerfile` no longer clones or compiles anything by default; the Python
+server is a `COPY`. The C++ fallback stays available as `--build-arg
+NETSRV=ps3netsrv++`, and that stage now carries the three things upstream's build
+needs and its Makefile does not do: `--recursive` for the `utils/` submodule,
+`make CXX=g++` (the Makefile hardcodes `clang++`, absent from Alpine's
+build-base), and `#include <cstdint>` at the top of `ps3netsrv.cpp` for g++ 13.
+Worth knowing separately: dirkvdb's `-w` whitelist is advertised in its own usage
+text and has no case in its `getopt` switch, so passing it prints the usage and
+exits. `entrypoint.sh` picks the implementation from `$NETSRV` and no longer
+starts the C++ one with `-d` — that daemonises, so the parent exits on purpose
+and `wait -n` was taking the container down with it.
+
+Built and run:
+
+```
+$ docker build -t ps-linker server/ && docker run -d -p 38008:38008 … ps-linker
+[ps-linker] starting ps3netsrv (python) on :38008 (library: /games, clients: any, read-only)
+[netsrv] listening on 0.0.0.0:38008  path: /games [READ-ONLY]
+```
+
+…then driven from the host with the test client against the running container:
+listing, `STAT_FILE`, `OPEN_FILE`, `READ_FILE_STATUS`, `READ_FILE_CRITICAL`,
+`READ_CD_2048_CRITICAL` and `GET_DIR_SIZE` all answered correctly, and
+`CREATE_FILE` was refused and logged as `server is read-only`.
+
+### Status / next steps
+
+- All of this is **uncommitted** (`docs/PS3NETSRV-PROTOCOL.md`, `server/netsrv/*`
+  new; `README.md`, `log.md`, `server/Dockerfile`, `server/entrypoint.sh`,
+  `server/ps-linker.service`, `server/docker-compose.yml` edited).
+- Nothing here has been seen by a PS3. The open questions at the end of spec §8 —
+  opcodes a real webMAN client sends, one connection or several, what it makes of
+  the probe's 848 MiB ceiling — need hardware, and the answers go in this log.
+- Folder games (`/***PS3***/) are not implemented: that means synthesising an ISO
+  9660 filesystem over a directory. A library with folder games needs
+  `--build-arg NETSRV=ps3netsrv++` until then.
+
+---
+
 ## 2026-10-23 (server) — HTTP-share rewrite broke browsing and resume; fixed and checked
 
 Rebasing the Cover Flow work onto `origin/main` pulled in nine commits, one of
