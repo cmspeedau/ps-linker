@@ -116,6 +116,8 @@ make          # produces nasdl.self
 make pkg      # optional: installable .pkg
 ```
 
+On RPCS3, boot `nasdl.self` or install the generated `.pkg`; RPCS3 rejects the loose `nasdl.elf`.
+
 Same Settings view as the PSP app (**Select** in the browser); the URL persists to `/dev_hdd0/NASDL/settings.txt`. Downloads are resumable the same way as on PSP.
 
 See [docs/UI-REFERENCE.md](docs/UI-REFERENCE.md) for the app UI design reference.
@@ -130,7 +132,7 @@ docker run --rm -v "$PWD:/src" -w /src/ps3 ps3dev/ps3dev:submodules make pkg
 ```
 
 Verified with pspdev (GCC 15.2) and ps3toolchain/PSL1GHT (GCC 7.2).
-Artifacts: `psp/EBOOT.PBP`, `ps3/nasdl.self`, and `ps3/nasdl.pkg`.
+Artifacts: `psp/EBOOT.PBP`, `ps3/nasdl.self`, and `ps3/nasdl.pkg` compile successfully
 
 ## Roadmap
 
@@ -140,40 +142,10 @@ Artifacts: `psp/EBOOT.PBP`, `ps3/nasdl.self`, and `ps3/nasdl.pkg`.
 - [x] PSP: Media Go-style UI + UI reference doc (`docs/UI-REFERENCE.md`)
 - [x] PS3 port (`ps3/` — PSL1GHT, socket HTTP, same browse/download flow)
 - [x] Server: Docker image + docker-compose (ps3netsrv++ + HTTP share, one command)
-- [x] Both apps: subdirectory navigation (X enters dirs, O goes up)
-- [x] Both apps: Settings view (on-device NAS URL editing, persisted to settings.txt)
-- [x] Store (server-side): Store fetcher downloads CDN titles directly into /games so
-      uploaded and store-sourced games appear in one unified client view;
-      `generate_catalog.py` keeps catalog.json in sync (atomic writes, skips .part files);
-      wired into the container entrypoint (boot + every STORE_INTERVAL seconds)
-- [x] Catalog niceties: optional `icon` (cover art next to game file),
-      `version`/`description` via `<name>.meta.json` sidecars; categories
-      already derived from folder structure
-- [x] Server-side unzip: Store extracts `.zip` downloads in place (zip-slip
-      protected) so PSP/PS3 clients never need zlib/unzip support
-- [x] Server: Range-capable HTTP share (`server/store/http_server.py`) replacing
-      stock http.server — `Accept-Ranges`/`206` support, path-traversal safe,
-      compatible directory listings
-- [x] Client resume: self-contained `resume.c/h` modules for both apps —
-      send `Range: bytes=<size>-` when a partial file exists, append on 206,
-      restart cleanly on 200; wired into both Makefiles
-- [x] Compile-verify both device builds on real toolchains (pspdev / PSL1GHT):
-      `psp/EBOOT.PBP`, `ps3/nasdl.self` and `ps3/nasdl.pkg` compile successfully
+- [x] Both device builds verified against real toolchains
 
 ### In progress
 - [ ] Test Store flow end-to-end with a real queue file + local HTTP CDN
-      (including a Range-resume transfer against the container share)
-
-### Next
-- [ ] Optional minimal Store view on PSP/PS3 (render `catalog.json` with
-      titles/categories/icons — client stays thin, server does the work)
-
-### Later
-- [ ] Store queue interface: simple web UI endpoint to queue CDN downloads
-      (watched `.store-queue.json` works today)
-- [ ] GTK/Qt GUI front-end for Linux (manage games + edit catalog metadata)
-- [ ] PS3: RSX pixel-graphics renderer (currently ANSI console output)
-- [ ] HTTPS support on the HTTP share
 
 ## License
 
