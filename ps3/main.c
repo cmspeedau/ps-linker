@@ -74,6 +74,7 @@
 #define ANSI_BG_SEL  "\x1b[48;5;25m"    /* blue selection bar   */
 #define ANSI_BG_HDR  "\x1b[48;5;25m"    /* header bar           */
 #define ANSI_BG_ST   "\x1b[48;5;237m"   /* status bar           */
+#define ANSI_BG_ERR  "\x1b[48;5;52m"    /* dark red error panel */
 #define ANSI_FG_TXT  "\x1b[38;5;250m"
 #define ANSI_FG_DIM  "\x1b[38;5;243m"
 #define ANSI_FG_SEL  "\x1b[97m"         /* bright white on blue */
@@ -483,6 +484,30 @@ static int download_file(const char *url, const char *dest_path) {
 /* Pad input                                                           */
 /* ------------------------------------------------------------------ */
 
+/* PSL1GHT exposes pad buttons as individual bitfields on padData; the
+   UI works with a simple edge-detected bitmask instead. */
+#define PAD_BTN_LEFT   (1u << 0)
+#define PAD_BTN_DOWN   (1u << 1)
+#define PAD_BTN_RIGHT  (1u << 2)
+#define PAD_BTN_UP     (1u << 3)
+#define PAD_BTN_START  (1u << 4)
+#define PAD_BTN_SELECT (1u << 5)
+#define PAD_BTN_CROSS  (1u << 6)
+#define PAD_BTN_CIRCLE (1u << 7)
+
+static unsigned pad_buttons(const padData *pd) {
+    unsigned b = 0;
+    if (pd->BTN_LEFT)   b |= PAD_BTN_LEFT;
+    if (pd->BTN_DOWN)   b |= PAD_BTN_DOWN;
+    if (pd->BTN_RIGHT)  b |= PAD_BTN_RIGHT;
+    if (pd->BTN_UP)     b |= PAD_BTN_UP;
+    if (pd->BTN_START)  b |= PAD_BTN_START;
+    if (pd->BTN_SELECT) b |= PAD_BTN_SELECT;
+    if (pd->BTN_CROSS)  b |= PAD_BTN_CROSS;
+    if (pd->BTN_CIRCLE) b |= PAD_BTN_CIRCLE;
+    return b;
+}
+
 static void wait_button(void) {
     padInfo pad_inf;
     padData pd;
@@ -490,8 +515,9 @@ static void wait_button(void) {
     while (1) {
         if (ioPadGetInfo(&pad_inf) == 0 && pad_inf.status[0]) {
             if (ioPadGetData(0, &pd) == 0) {
-                unsigned pressed = pd.BTN & ~prev;
-                prev = pd.BTN;
+                unsigned buttons = pad_buttons(&pd);
+                unsigned pressed = buttons & ~prev;
+                prev = buttons;
                 if (pressed) return;
             }
         }
@@ -509,8 +535,9 @@ static int get_pressed(unsigned *pressed) {
     if (!pad_inf.status[0]) return -1;
     if (ioPadGetData(0, &pd) != 0) return -1;
 
-    *pressed = pd.BTN & ~prev;
-    prev = pd.BTN;
+    unsigned buttons = pad_buttons(&pd);
+    *pressed = buttons & ~prev;
+    prev = buttons;
     return 0;
 }
 

@@ -6,6 +6,55 @@ it records *what was actually run and observed*, including bugs found while test
 
 ---
 
+## 2026-10-23 (even later) — netdebug console on RPCS3: clean URLs + HTTP 200
+
+Pulled the remote `ps3: add NETDEBUG logging` commits (`26214c7`, `5fe7d66`) and
+re-ran the PS3 app under RPCS3 booting `nasdl.self`, watching the netdebug
+console output.
+
+**Found and repaired a build regression in the netdebug rewrite.** The rewritten
+`ps3/main.c` did **not compile**: it reverted to `pd.BTN` and the `PAD_BTN_*`
+macros (which PSL1GHT's `padData` doesn't provide) and dropped the
+`#define ANSI_BG_ERR` while still using it. So the file was never actually built
+or run by whoever wrote it. Repaired it by re-adding the `pad_buttons()` bitmask
+helper + `PAD_BTN_*` defines and the `ANSI_BG_ERR` define (same fixes as
+`38722a5`); netdebug code untouched. Stock `make` and a `-DNASDL_NETDEBUG` build
+both succeed now.
+
+**Also dropped (not yet restored):** the rewrite replaced the `resume.c`
+download path with an inline socket `download_file()`, so **PS3 resume
+(Range/206) is gone** in the current code — it always does a full GET. Flagging
+for a decision (restore `ps3_resume_download` vs keep inline+netdebug). Not
+silently re-added because it changes download behaviour beyond the URL fix.
+
+**RPCS3 run — the URL fix is confirmed live.** Built with `-DNASDL_NETDEBUG`;
+stderr (where `NETDEBUG` writes) is routed by RPCS3 to the emulated TTY, so the
+lines show up in the RPCS3 log. The logged GET URLs are now **single-slash** and
+every request is **HTTP/1.0 200 OK**:
+
+- `http://127.0.0.1:18000/`                      → server `GET /`                      200
+- `http://127.0.0.1:18000/Homebrew/`             → server `GET /Homebrew/`             200
+- `http://127.0.0.1:18000/Homebrew/ResumeTest.bin`→ server `GET /Homebrew/ResumeTest.bin` 200
+- downloaded file **SHA-256 matches** the source.
+
+(The old `/Homebrew//…` double slash is gone — the normalized `build_url` works
+end-to-end, not just in the unit test.)
+
+**PSP side.** `psp/main.c` already carries the same normalized `build_url`
+(landed in `422b2fa`), so the `//` fix is present; the shared host unit test
+(`url_cwd_test.c`) passes and the PSP `make` still produces `EBOOT.PBP`. Did
+**not** port the `NETDEBUG` macro to PSP: on the PSP every `printf` already goes
+to the on-screen debug console (`pspDebugScreenPrintf`), and there is no
+BSD-stderr-over-UDP "netdebug" equivalent without `psplink`/`nethost` — so the
+macro would need a different mechanism and adds nothing over what the debug
+screen already shows. Left as-is (the request marked it optional).
+
+Net: PS3 netdebug run confirms clean paths + 200; PSP `//` fix verified. The
+PS3 build fixes (pad_buttons/ANSI_BG_ERR) are in the working tree; the lost PS3
+resume path is an open decision.
+
+---
+
 ## 2026-10-23 (later) — PS3 on-device E2E on RPCS3: PASSED via the `.self`
 
 *Supersedes the "PS3 blocked" finding in the entry below.* Pulled the remote
