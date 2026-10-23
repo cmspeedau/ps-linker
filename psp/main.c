@@ -243,16 +243,24 @@ static char *fetch_to_memory(const char *url, int *out_len) {
     return result;
 }
 
-/* Join g_nas_base + g_cwd + name into out. Returns 0 on success. */
+/* Join g_nas_base + g_cwd + name into out, collapsing duplicate slashes so a
+   URL never contains "//" except the "scheme://" separator. Returns 0, or -1
+   on overflow/truncation. */
 static int build_url(const char *name, char *out, size_t outlen) {
-    const char *base = g_nas_base;
-    size_t bl = strlen(base);
-    int n;
-    if (bl > 0 && base[bl - 1] == '/')
-        n = snprintf(out, outlen, "%s%s%s", base, g_cwd, name);
-    else
-        n = snprintf(out, outlen, "%s/%s%s", base, g_cwd, name);
-    return (n < 0 || (size_t)n >= outlen) ? -1 : 0;
+    char joined[MAX_PATH_LEN * 2];
+    int n = snprintf(joined, sizeof(joined), "%s/%s/%s", g_nas_base,
+                     g_cwd, name);
+    size_t i, o = 0;
+    if (n < 0 || (size_t)n >= sizeof(joined) || outlen == 0) return -1;
+    for (i = 0; joined[i] != '\0' && o + 1 < outlen; i++) {
+        /* keep a '/' unless it duplicates the previous one, but never
+           collapse the "//" that follows a ':' (scheme://) */
+        if (joined[i] != '/' || o == 0 || out[o - 1] != '/' ||
+            (o >= 2 && out[o - 2] == ':')) out[o++] = joined[i];
+    }
+    if (joined[i] != '\0') return -1;   /* out filled before joined drained */
+    out[o] = '\0';
+    return 0;
 }
 
 static int add_file(const char *href) {

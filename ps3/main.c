@@ -197,18 +197,23 @@ static int save_settings(void) {
 /* URL helpers                                                         */
 /* ------------------------------------------------------------------ */
 
-/* Build "BASE[/cwd][/name]". name may be NULL or end in '/'. */
+/* Build "BASE[/cwd][/name]". name may be NULL or end in '/'.
+   Duplicate slashes are collapsed so a URL never contains "//" except the
+   "scheme://" separator, no matter how g_cwd / name are terminated. */
 static void build_url(char *dst, size_t len, const char *name) {
-    size_t bl = strlen(g_nas_base);
-    bool base_slash = g_nas_base[bl - 1] == '/';
-    snprintf(dst, len, "%s%s%s%s%s",
-             g_nas_base,
-             base_slash || g_cwd[0] ? (base_slash ? "" : "/") : "",
-             g_cwd,
-             name ? (base_slash && !g_cwd[0] ? name
-                    : (g_cwd[0] ? name : (name[0] == '/' ? name + 1 : name)))
-                  : "",
-             "");
+    char joined[MAX_PATH_LEN * 2];
+    int n = snprintf(joined, sizeof(joined), "%s/%s/%s", g_nas_base,
+                     g_cwd, name ? name : "");
+    if (len == 0) return;
+    if (n < 0 || (size_t)n >= sizeof(joined)) { dst[0] = '\0'; return; }
+    size_t i, o = 0;
+    for (i = 0; joined[i] != '\0' && o + 1 < len; i++) {
+        /* keep a '/' unless it duplicates the previous one, but never
+           collapse the "//" that follows a ':' (scheme://) */
+        if (joined[i] != '/' || o == 0 || dst[o - 1] != '/' ||
+            (o >= 2 && dst[o - 2] == ':')) dst[o++] = joined[i];
+    }
+    dst[o] = '\0';
 }
 
 /* Strip scheme+host; returns path portion of url ("/" at minimum). */

@@ -42,6 +42,10 @@ server/games/
 test_*.txt
 tmp/
 
+# --- Host unit-test binary (keep the .c source) ---
+url_cwd_test
+url_cwd_test.exe
+
 # --- Editor / OS noise ---
 .vscode/
 .idea/
