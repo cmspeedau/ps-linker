@@ -24,7 +24,6 @@
 
 #include <stdio.h>
 #include <stdlib.h>
-#include <stdbool.h>
 #include <string.h>
 #include <strings.h>
 #include <unistd.h>
@@ -35,8 +34,6 @@
 
 #include <net/net.h>
 #include <io/pad.h>
-
-#include "resume.h"
 
 /* ------------------------------------------------------------------ */
 /* Config                                                              */
@@ -57,6 +54,12 @@
 #define MAX_URL_LEN   128
 #define DL_BUF_SIZE   (64 * 1024)   /* 64 KB chunks */
 
+#ifdef NASDL_NETDEBUG
+#define NETDEBUG(...) do { fprintf(stderr, "[NETDEBUG] "); fprintf(stderr, __VA_ARGS__); fprintf(stderr, "\n"); } while (0)
+#else
+#define NETDEBUG(...) do { } while (0)
+#endif
+
 /* Console "screen" metrics for the Media Go-style layout */
 #define SCREEN_ROWS 33
 #define SCREEN_COLS 80
@@ -76,7 +79,6 @@
 #define ANSI_FG_SEL  "\x1b[97m"         /* bright white on blue */
 #define ANSI_FG_OK   "\x1b[38;5;114m"
 #define ANSI_FG_ERR  "\x1b[38;5;203m"
-#define ANSI_BG_ERR  "\x1b[48;5;52m"    /* dark red error panel */
 
 typedef struct {
     const char *bg;
@@ -197,19 +199,15 @@ static int save_settings(void) {
 /* URL helpers                                                         */
 /* ------------------------------------------------------------------ */
 
-/* Build "BASE[/cwd][/name]". name may be NULL or end in '/'.
-   Duplicate slashes are collapsed so a URL never contains "//" except the
-   "scheme://" separator, no matter how g_cwd / name are terminated. */
+/* Build "BASE[/cwd][/name]". name may be NULL or end in '/'. */
 static void build_url(char *dst, size_t len, const char *name) {
     char joined[MAX_PATH_LEN * 2];
     int n = snprintf(joined, sizeof(joined), "%s/%s/%s", g_nas_base,
                      g_cwd, name ? name : "");
+    size_t i, o = 0;
     if (len == 0) return;
     if (n < 0 || (size_t)n >= sizeof(joined)) { dst[0] = '\0'; return; }
-    size_t i, o = 0;
     for (i = 0; joined[i] != '\0' && o + 1 < len; i++) {
-        /* keep a '/' unless it duplicates the previous one, but never
-           collapse the "//" that follows a ':' (scheme://) */
         if (joined[i] != '/' || o == 0 || dst[o - 1] != '/' ||
             (o >= 2 && dst[o - 2] == ':')) dst[o++] = joined[i];
     }
@@ -245,17 +243,19 @@ static int url_host(const char *url, char *hostbuf, size_t len) {
 /* Resolve host (with optional :port), connect, return socket or <0. */
 static int http_connect(const char *url) {
     char host[128];
-    if (url_host(url, host, sizeof(host)) != 0) return -1;
+    NETDEBUG("connect URL: %s", url);
+    if (url_host(url, host, sizeof(host)) != 0) { NETDEBUG("invalid URL host"); return -1; }
 
     int port = 80;
     char *colon = strchr(host, ':');
     if (colon) { port = atoi(colon + 1); *colon = '\0'; }
 
+    NETDEBUG("DNS host=%s port=%d", host, port);
     struct hostent *he = gethostbyname(host);
-    if (!he || !he->h_addr_list[0]) return -2;
+    if (!he || !he->h_addr_list[0]) { NETDEBUG("DNS failed for %s", host); return -2; }
 
     int s = socket(AF_INET, SOCK_STREAM, 0);
-    if (s < 0) return -3;
+    if (s < 0) { NETDEBUG("socket failed"); return -3; }
 
     struct sockaddr_in sa;
     memset(&sa, 0, sizeof(sa));
@@ -264,9 +264,11 @@ static int http_connect(const char *url) {
     memcpy(&sa.sin_addr, he->h_addr_list[0], he->h_length);
 
     if (connect(s, (struct sockaddr *)&sa, sizeof(sa)) < 0) {
+        NETDEBUG("connect failed host=%s port=%d", host, port);
         close(s);
         return -4;
     }
+    NETDEBUG("connected socket=%d", s);
     return s;
 }
 
@@ -277,7 +279,8 @@ static int http_connect(const char *url) {
  */
 static int http_send_get(const char *url) {
     const char *path = url_path(url);
-    if (!path) return -1;
+    NETDEBUG("GET URL: %s", url);
+    if (!path) { NETDEBUG("URL has no path"); return -1; }
 
     char host[128];
     if (url_host(url, host, sizeof(host)) != 0) return -1;
@@ -291,7 +294,9 @@ static int http_send_get(const char *url) {
                       "Host: %s\r\n"
                       "User-Agent: PSLinker/1.0\r\n"
                       "Connection: close\r\n\r\n", path, host);
-    if (send(s, req, rl, 0) != rl) { close(s); return -5; }
+    int sent = send(s, req, rl, 0);
+    NETDEBUG("send GET result=%d expected=%d", sent, rl);
+    if (sent != rl) { close(s); return -5; }
     return s;
 }
 
@@ -302,13 +307,14 @@ static int http_skip_headers(int s) {
     int hdr_total = 0, n;
     while (hdr_total < (int)sizeof(hdr) - 1) {
         n = recv(s, hdr + hdr_total, 1, 0);
-        if (n <= 0) { close(s); return -7; }
+        if (n <= 0) { NETDEBUG("receive headers failed socket=%d result=%d", s, n); close(s); return -7; }
         hdr_total++;
         if (hdr_total > 4 &&
             memcmp(hdr + hdr_total - 4, "\r\n\r\n", 4) == 0)
             break;
     }
     hdr[hdr_total] = '\0';
+    NETDEBUG("HTTP status: %.*s", (int)(strchr(hdr, '\r') ? strchr(hdr, '\r') - hdr : 0), hdr);
 
     int clen = -1;
     char *cl = strcasestr(hdr, "Content-Length:");
@@ -392,9 +398,9 @@ static int http_get_body(const char *url,
                          int (*cb)(const char *body, void *user),
                          void *user) {
     int s = http_send_get(url);
-    if (s < 0) return s;
+    if (s < 0) { NETDEBUG("listing request failed rc=%d", s); return s; }
 
-    if (http_skip_headers(s) < 0) return -7;
+    if (http_skip_headers(s) < 0) { NETDEBUG("listing header read failed"); return -7; }
 
     char buf[8192];
     char *acc = NULL;
@@ -411,6 +417,7 @@ static int http_get_body(const char *url,
         total += n;
     }
     close(s);
+    if (n < 0) NETDEBUG("listing body receive failed result=%d", n);
     if (!acc) return -6;
     acc[total] = '\0';
 
@@ -434,54 +441,47 @@ static int fetch_listing(void) {
 
 /* ------------------------------------------------------------------ */
 /* Download one file with a Media Go-style progress bar                */
-/* Downloading goes through resume.c, which sends Range headers and    */
-/* continues an interrupted transfer from the partial file on disk.    */
 /* ------------------------------------------------------------------ */
 
-/* Progress callback from resume.c: redraw the info line in place.
-   pct is 0-100, or -1 when the total size is unknown. */
-static void download_progress(int pct, long total) {
-    char info[64];
-    if (pct >= 0)
-        snprintf(info, sizeof(info), "%d%%  (%ld KB)", pct, total / 1024);
-    else
-        snprintf(info, sizeof(info), "(%ld KB)", total / 1024);
-    Style st = { ANSI_BG_BG, ANSI_FG_DIM };
-    field(SCREEN_ROWS - 5, 30, &st, info);
-}
-
 static int download_file(const char *url, const char *dest_path) {
-    draw_header("PS Linker", "Downloading...");
-    return ps3_resume_download(url, dest_path, download_progress);
+    NETDEBUG("download start URL=%s dest=%s", url, dest_path);
+    int s = http_send_get(url);
+    if (s < 0) { NETDEBUG("download connect/request failed rc=%d", s); return s; }
+
+    int content_len = http_skip_headers(s);
+    if (content_len < -1) { NETDEBUG("download header read failed rc=%d", content_len); return content_len; }
+    NETDEBUG("download body begin content_length=%d", content_len);   /* header read error */
+
+    FILE *f = fopen(dest_path, "wb");
+    if (!f) { close(s); return -3; }
+
+    static char buf[DL_BUF_SIZE];
+    long total = 0;
+    int ok = 1, n;
+
+    while (ok && (n = recv(s, buf, sizeof(buf), 0)) > 0) {
+        if (fwrite(buf, 1, n, f) != (size_t)n) { ok = 0; break; }
+        total += n;
+
+        int pct = content_len > 0 ? (int)((total * 100) / content_len) : 0;
+        if (pct > 100) pct = 100;
+        char info[64];
+        snprintf(info, sizeof(info), "%d%%  (%ld KB)", pct, total / 1024);
+        Style st = { ANSI_BG_BG, ANSI_FG_DIM };
+        field(SCREEN_ROWS - 5, 30, &st, info);
+    }
+
+    fclose(f);
+    close(s);
+    if (n < 0) NETDEBUG("download receive failed result=%d", n);
+    if (ok) NETDEBUG("download complete bytes=%ld", total);
+    else NETDEBUG("download failed bytes=%ld", total);
+    return ok ? 0 : -2;
 }
 
 /* ------------------------------------------------------------------ */
 /* Pad input                                                           */
 /* ------------------------------------------------------------------ */
-
-/* PSL1GHT exposes pad buttons as individual bitfields on padData; the
-   UI works with a simple edge-detected bitmask instead. */
-#define PAD_BTN_LEFT   (1u << 0)
-#define PAD_BTN_DOWN   (1u << 1)
-#define PAD_BTN_RIGHT  (1u << 2)
-#define PAD_BTN_UP     (1u << 3)
-#define PAD_BTN_START  (1u << 4)
-#define PAD_BTN_SELECT (1u << 5)
-#define PAD_BTN_CROSS  (1u << 6)
-#define PAD_BTN_CIRCLE (1u << 7)
-
-static unsigned pad_buttons(const padData *pd) {
-    unsigned b = 0;
-    if (pd->BTN_LEFT)   b |= PAD_BTN_LEFT;
-    if (pd->BTN_DOWN)   b |= PAD_BTN_DOWN;
-    if (pd->BTN_RIGHT)  b |= PAD_BTN_RIGHT;
-    if (pd->BTN_UP)     b |= PAD_BTN_UP;
-    if (pd->BTN_START)  b |= PAD_BTN_START;
-    if (pd->BTN_SELECT) b |= PAD_BTN_SELECT;
-    if (pd->BTN_CROSS)  b |= PAD_BTN_CROSS;
-    if (pd->BTN_CIRCLE) b |= PAD_BTN_CIRCLE;
-    return b;
-}
 
 static void wait_button(void) {
     padInfo pad_inf;
@@ -490,9 +490,8 @@ static void wait_button(void) {
     while (1) {
         if (ioPadGetInfo(&pad_inf) == 0 && pad_inf.status[0]) {
             if (ioPadGetData(0, &pd) == 0) {
-                unsigned buttons = pad_buttons(&pd);
-                unsigned pressed = buttons & ~prev;
-                prev = buttons;
+                unsigned pressed = pd.BTN & ~prev;
+                prev = pd.BTN;
                 if (pressed) return;
             }
         }
@@ -510,9 +509,8 @@ static int get_pressed(unsigned *pressed) {
     if (!pad_inf.status[0]) return -1;
     if (ioPadGetData(0, &pd) != 0) return -1;
 
-    unsigned buttons = pad_buttons(&pd);
-    *pressed = buttons & ~prev;
-    prev = buttons;
+    *pressed = pd.BTN & ~prev;
+    prev = pd.BTN;
     return 0;
 }
 
@@ -522,7 +520,9 @@ static int get_pressed(unsigned *pressed) {
 
 /* Append "name/" to g_cwd. Returns 0 or <0 if the path would overflow. */
 static int cwd_enter(const char *name) {
-    size_t cl = strlen(g_cwd), nl = strlen(name);
+    size_t cl = strlen(g_cwd);
+    while (*name == '/') name++;
+    size_t nl = strlen(name);
     if (cl + nl + 2 > sizeof(g_cwd)) return -1;
     memcpy(g_cwd + cl, name, nl);
     g_cwd[cl + nl] = '/';
@@ -533,17 +533,13 @@ static int cwd_enter(const char *name) {
 /* Remove the last path component from g_cwd ("" if already at root). */
 static void cwd_up(void) {
     char *slash = strrchr(g_cwd, '/');
-    if (!slash) return;
-    if (slash == g_cwd) {
-        g_cwd[0] = '\0';
-        return;
+    if (slash && slash >= g_cwd) {
+        /* keep the trailing slash of the parent, if any */
+        if (slash == g_cwd)
+            g_cwd[0] = '\0';
+        else
+            *slash = '\0';
     }
-    *slash = '\0';                     /* drop the trailing slash */
-    char *parent = strrchr(g_cwd, '/');
-    if (parent)
-        parent[1] = '\0';              /* keep the parent's slash */
-    else
-        g_cwd[0] = '\0';               /* one component -> root */
 }
 
 /* ------------------------------------------------------------------ */
@@ -576,6 +572,7 @@ static const char SETTINGS_CHARS[] =
 
 static void settings_view(void) {
     int pick = 0, view = 0;
+    unsigned prev = 0;
 
     /* Visible window of the strip: pick stays inside [view, view+W) */
     const int strip_w = SCREEN_COLS - 16;      /* list panel width */
@@ -603,7 +600,7 @@ static void settings_view(void) {
         char cell[4];
         for (int i = 0; i < strip_w / 2 && view + i < SETTINGS_NSLOTS; i++) {
             int slot = view + i;
-            const Style *st = (slot == pick) ? &STYLE_SEL : &STYLE_ROW;
+            Style *st = (slot == pick) ? &STYLE_SEL : &STYLE_ROW;
             if (slot < SETTINGS_NCHARS) {
                 cell[0] = SETTINGS_CHARS[slot];
                 cell[1] = '\0';
@@ -796,3 +793,4 @@ int main(void) {
     ioPadEnd();
     return 0;
 }
+
