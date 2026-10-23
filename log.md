@@ -6,6 +6,137 @@ it records *what was actually run and observed*, including bugs found while test
 
 ---
 
+## 2026-10-23 (resume) — PS3 Range resume restored + verified on RPCS3 (206, SHA-256)
+
+*Closes the "PS3 resume (Range/206) is gone" item flagged in the netdebug entry
+below.* Pulled the new `ps3/resume.c`, `ps3/resume.h` and updated `ps3/main.c`
+(the download path goes through `ps3_resume_download()` again), then built,
+ran, and tested it for real.
+
+**The new `resume.c` had never been compiled.** The first real `ppu-gcc` build
+failed on one line:
+
+```
+resume.c:56: error: invalid operands to binary + (have 'char *' and 'char *')
+```
+
+`NETDEBUG("... Range header=%s ...", from ? req + strstr(req, "Range: ") : "none")`
+adds a pointer to a pointer. Replaced with a plain `range_line[]` buffer
+(`bytes=<offset>-` / `none`) and a single request-building branch; the request
+text itself is unchanged. Also cleaned two pre-existing `main.c` warnings an
+earlier restore left behind (unused `prev`, `Style *` discarding `const`).
+
+**New:** `ps3/Makefile` accepts `EXTRA_CFLAGS`, so the netdebug build is
+`make EXTRA_CFLAGS=-DNASDL_NETDEBUG` instead of retyping the whole `CFLAGS`
+line. Both the netdebug build and a stock build are warning-free.
+
+### The SHA-256 is real (checked before trusting the emulator log)
+
+The app prints its own digest, so the digest code was checked against
+coreutils first, on the host:
+
+```
+n = 0 1 55 56 63 64 65 1000 1048576 bytes → all match sha256sum
+```
+
+### Bug found while reviewing the draft: a short body counted as complete
+
+`ps3_resume_download()` looped `while (recv(...) > 0)` and treated `n == 0` as
+success, so a connection closed early produced a truncated file that was hashed
+and reported as a finished download — exactly the failure mode resume must not
+have. Now the bytes actually received are compared with `Content-Length`:
+
+```
+download incomplete received=1835008 expected=16777216   → rc -9, UI "Failed (-9)"
+```
+
+The partial file is left on disk, so the next attempt resumes from it.
+
+### On-device E2E — PS3 / RPCS3
+
+Built with the real toolchain, booted as the `.self` (the loose ELF still
+crashes, see below):
+
+```bash
+docker run --rm -v /tmp/pslinker-build2:/src -w /src/ps3 \
+  ps3dev/ps3dev:submodules make EXTRA_CFLAGS=-DNASDL_NETDEBUG
+# → nasdl.self
+```
+
+Share: 16 MiB `Homebrew/ResumeTest.bin` on `127.0.0.1:18000`, served by the
+repo's own `server/store/http_server.py` handler (the Range/206 code under
+test), wrapped in a harness that only throttles body writes (so a transfer is
+long enough to interrupt) and logs the `Range` header. Guest keys injected via
+XTEST into the RPCS3 *game* window (`nasdl` title — focusing the main RPCS3
+window sends keys to the GUI and nothing happens).
+
+**1. Interrupt + resume (the requested test).** Started the download, killed
+RPCS3 mid-file at 14,941,184 bytes, relaunched, re-selected the same file.
+Netdebug output (`stderr` → RPCS3 `sys_tty_write`):
+
+```
+download start URL=http://127.0.0.1:18000/Homebrew/ResumeTest.bin dest=/dev_hdd0/NASDL/ResumeTest.bin resume_offset=14941184
+GET URL=http://127.0.0.1:18000/Homebrew/ResumeTest.bin Range=bytes=14941184- result=133
+HTTP status=206 Range offset=14941184 content_length=1836032 Accept-Ranges=present
+response status=206 mode=206 append resume_offset=14941184
+download complete bytes=16777216 sha256=936100238d71cabd2e1749644733a55cc90b333ac351a256060605b7d30b8874
+```
+
+Server access log for the same request:
+
+```
+[harness] /Homebrew/ResumeTest.bin Range=bytes=14941184-
+[http] 127.0.0.1 - "GET /Homebrew/ResumeTest.bin HTTP/1.0" 206 -
+```
+
+On-disk file: `16777216 bytes`, SHA-256
+`936100238d71cabd2e1749644733a55cc90b333ac351a256060605b7d30b8874` — **equal to
+the source file's `sha256sum`**. An earlier run of the same test interrupted at
+4,455,424 bytes and resumed from there with the same result.
+
+**2. Server ignores `Range` → safe restart.** Seeded a 3 MiB partial against a
+share that strips `Range` and answers `200`:
+
+```
+download start ... resume_offset=3145728
+HTTP status=200 Range offset=3145728 content_length=16777216 Accept-Ranges=present
+response status=200 mode=200 restart resume_offset=0
+download complete bytes=16777216 sha256=9361...8874
+```
+
+Final size is exactly 16 MiB (not 19 MiB), so the client truncated and rewrote
+instead of appending to a partial.
+
+**3. Response digest comparison.** With the harness sending `X-SHA256`:
+`SHA-256 verified=9361...8874`. With no header (the shipped server doesn't send
+one) it logs `SHA-256 computed (no response digest to compare)=...`, so the
+digest is still auditable.
+
+**4. Truncated transfer.** Harness advertised 16 MiB then aborted at ~1.8 MiB:
+`download incomplete received=1835008 expected=16777216`, UI `Failed (-9)` — no
+false "complete", no digest claim on a short file.
+
+### Still open
+
+- **HTTP 416 wedges a retry**: if the local partial is *larger* than the remote
+  file (share replaced/shrunk), the server answers 416 and the client returns
+  -7 without discarding the stale partial, so every retry fails the same way.
+  Not fixed here; the safe fix is to drop the partial and retry once.
+- `NETDEBUG("bytes written=…")` per 64 KiB chunk is ~250 lines for a 16 MiB
+  file. Fine for a test, noisy for a real log.
+- The shipped `http_server.py` does not emit `X-SHA256`; only the test harness
+  exercised the comparison path. Adding it server-side would make every
+  download self-verifying.
+- `nasdl.elf` still needs the `.self` (or `.pkg`) in RPCS3 — unchanged.
+
+### Regression check
+
+`psp/` untouched: `pspdev/pspdev:latest make` still produces `EBOOT.PBP`, and
+the host `url_cwd_test` passes. RPCS3 config was restored to
+`Internet enabled: Disconnected` and the emulator stopped afterwards.
+
+---
+
 ## 2026-10-23 (even later) — netdebug console on RPCS3: clean URLs + HTTP 200
 
 Pulled the remote `ps3: add NETDEBUG logging` commits (`26214c7`, `5fe7d66`) and
