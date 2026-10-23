@@ -80,6 +80,13 @@ layouts that `psp/main.c`'s colour `#defines` implement) replaced by an 11-line
 web-GUI note. The spec is back from `7923e27`; the web-GUI notes live in
 `docs/WEB-GUI.md`.
 
+**Roadmap wording corrected:** two Done lines described GUI features that are
+not in the code — an "Add Games" upload panel (multi-file, drag-and-drop) and
+"Store queue management, and download activity view". `ui.js` has no upload or
+queue code and `index.html` has exactly one control (the Grid toggle); the
+upload *endpoint* works, the panel does not exist. Roadmap now says what is
+there and the missing panels are open items.
+
 ### Checks (in the repo now: `server/store/check_share.sh`, 42 assertions)
 
 ```

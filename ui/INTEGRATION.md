@@ -86,7 +86,7 @@ then fixed and covered by an assertion:
    `cover_title()` cannot be bounded by that compiler. It builds the padded
    text by hand now; both device toolchains compile the file warning-free.
 
-## Wiring it into an app (not done yet — needs a product decision)
+## Wiring it into an app
 
 The renderer wants title / category / size / version / favourite per item.
 Neither app can feed it today:
@@ -99,18 +99,25 @@ Neither app can feed it today:
   from `/catalog.json`), but it is not in `OBJS` and nothing calls
   `store_run()`; `docs/STORE.md` documents a view that has never been built.
 
-So pick one before wiring:
-
-**A. Store view first (recommended).** Build `store.c` with Cover Flow as its
+**Decided: option A — the Store view.** Build `store.c` with Cover Flow as its
 renderer, add `Triangle -> store_run(g_nas_base)` as `psp/store.h` already
-documents, and get the categories/sizes from the catalog the server already
-generates. Favourites/recent would be stored as a small file next to the
-existing settings.
+documents, take categories/sizes from the catalog the server already generates,
+and keep favourites/recent in a small file next to `settings.txt`. Option B
+(Cover Flow as the browser) stays open as roadmap "Later": it needs
+`server/store/http_server.py` to report size and category per entry, which
+touches the verified download path.
 
-**B. Cover Flow as the browser.** Then the server has to supply the metadata:
-have `server/http_server.py` include size (it knows it) and optionally
-`X-SHA256`, and derive the category from the path segment the share already
-uses (`games/<category>/…`). Bigger change, touches the verified download path.
+Two things block A, both read off the code rather than assumed:
+
+1. `store.c` parses `size_hint` and `install_path`; `generate_catalog.py` emits
+   `size` (an integer) and **no** `install_path`, and `store_download(url,
+   install_path)` needs a destination. Either format `size` on the device and
+   derive the install path from platform/category, or have the generator emit
+   both. Deriving on-device keeps the server thin, which is this project's rule.
+2. `store.c` prints through `pspDebugScreenPrintf` (`#define printf` at the top
+   of the file), so pass `has_colors = 0` — the debug screen is a text console
+   and would show escape bytes. At 40 columns the flow tiles are 8+2+14+2+8,
+   which fits (40 is in the render sweep the host test runs).
 
 Either way the wiring is the same shape (PS3 names shown; on PSP the
 equivalents are `PSP_CTRL_LEFT` … and `PSP_CTRL_LTRIGGER` / `PSP_CTRL_RTRIGGER`

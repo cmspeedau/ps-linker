@@ -169,19 +169,37 @@ wrong `X-SHA256` is rejected with `rc=-11`.
 - [x] Server: Range-capable HTTP share (`server/store/http_server.py`) replacing
       stock http.server — `Accept-Ranges`/`206` support, path-traversal safe,
       compatible directory listings
+- [x] Server: share regression fixed — the GUI rewrite routed every path into
+      `ui/` (404 for all game files *and* directory listings, so neither app
+      could browse) and its double-escaped Range regex silently ignored
+      `Range` (200 + full body, so resume never triggered). Library serving and
+      `206` restored, GUI moved to `/gui/`, `X-SHA256` now sent from a
+      `<name>.sha256` sidecar, uploads atomic, response bodies streamed
+      (the rewrite buffered a whole ISO per request)
 - [x] Client resume: self-contained `resume.c/h` modules for both apps —
       send `Range: bytes=<size>-` when a partial file exists, append on 206,
       restart cleanly on 200; wired into both Makefiles
+- [x] Checks that need no console or emulator: `make -C ui test` (Cover Flow
+      module, 197 assertions + ASan/UBSan render sweep),
+      `server/store/check_share.sh` (listings, `Range`/206/416, GUI routes,
+      catalog key, upload, traversal); `--with-dl` compiles the PS3 app's own
+      `resume.c` for the host and runs it against the share — cold 16 MiB
+      download verified against the sidecar, resume from an 8,388,608-byte
+      partial answered 206 with exactly the remaining bytes and a byte-identical
+      file, a lying digest rejected with `rc=-11`
 - [x] Compile-verify both device builds on real toolchains (pspdev / PSL1GHT):
       `psp/EBOOT.PBP`, `ps3/nasdl.self` and `ps3/nasdl.pkg` compile successfully
-- [x] **Server web GUI (Sony Media Go style)** — browser-based UI served by the
-      HTTP server at `/gui/` (`docs/WEB-GUI.md`): dark multi-pane layout, cover
-      grid, detail/download pane,
-      Store queue management, and download activity view
-- [x] Web GUI library sections: All Games / Local PSP / PS3 Games filters over
-      the unified catalog, plus an **Add Games** upload feature
-      (multi-file upload with platform selection, drag-and-drop, `POST /api/upload`)
-- [x] **Cover Flow UI (web GUI)** — 3D-style horizontally scrolling cover carousel
+- [x] **Server web GUI (Sony Media Go style)** — dependency-free browser shell
+      served by the HTTP share at `/gui/` (`docs/WEB-GUI.md`): dark layout,
+      category menu bar, cover-flow ⇄ grid view toggle, selected-item detail
+      pane, favourites kept in `localStorage`. Rendering verified against a
+      running share (menu filters narrow the carousel correctly)
+- [x] Web GUI library sections: All Games / PSP Games / PS3 Games / Emulators /
+      Demos / Utilities / Recently Added / Favorites menu filters over the
+      unified catalog (`GET /api/catalog`). The upload *endpoint*
+      (`POST /api/upload`) exists and is checked; the browser-side "Add Games"
+      UI does not exist yet
+- [x] **Cover Flow UI (web GUI)** — horizontally scrolling cover carousel
       (centered title enlarged/in focus), top menu bar with all categories
       (All Games | PSP Games | PS3 Games | Recently Added | Favorites | Downloads |
       Settings) filtering the flow, metadata panel with favorite toggle below the
@@ -192,24 +210,37 @@ wrong `X-SHA256` is rejected with `rc=-11`.
       under `psp-gcc` and `ppu-gcc` with each app's flags (`make -C ui test`)
 
 ### In progress
-- [ ] **Cover Flow UI on the PSP/PS3 device apps** — port the carousel + category
-      menu bar interaction from the web GUI to the on-device UIs. The shared
-      module is in (`ui/`, checked by `make -C ui test`) but not wired into
-      either app yet: `ui/INTEGRATION.md` lists the two wiring points and the
-      metadata each needs
+- [ ] **Store view on the PSP, rendered by the Cover Flow module** — build
+      `psp/store.c` with `ui/coverflow.*` as its renderer, opened with Triangle
+      as `psp/store.h` already documents. Two gaps first, both read off the
+      code: `store.c` parses `size_hint` and `install_path` while
+      `generate_catalog.py` emits `size` (int) and no `install_path`, and
+      `store_download()` needs a destination — so install paths get derived
+      on-device and sizes formatted from `size`; favourites/recent need a small
+      file next to `settings.txt`. `store.c` already prints through
+      `pspDebugScreenPrintf`, so the module's `has_colors=0` path fits the PSP
+      text screen (40 columns: tiles 8+2+14+2+8)
+- [ ] Cover Flow on the PS3 app — `ps3/main.c` writes ANSI to the TTY so
+      `has_colors=1` applies directly, but its browser has no size/category to
+      show until the share reports per-entry metadata (listed under Later)
 - [ ] Real cover art: extract ICON0.PNG from PSP ISO/CSO and PS3 game folders
       into the catalog so tiles show real covers instead of placeholders
-- [ ] Test Store flow end-to-end with a real queue file + local HTTP CDN
-      (including a Range-resume transfer against the container share)
+- [ ] Test Store flow end-to-end through the Docker container with a real queue
+      file + local HTTP CDN. Share-level resume is automated now
+      (`server/store/check_share.sh --with-dl`); what remains is the container
+      path — entrypoint → fetcher → catalog regeneration → app download against
+      port 8000 in the built image
 
 ### Planned
 - [ ] Rewrite ps3netsrv in-house and integrate it into our own Docker image
 
-### Next
-- [ ] Optional minimal Store view on PSP/PS3 (render `catalog.json` with
-      titles/categories/icons — client stays thin, server does the work)
-
 ### Later
+- [ ] Web GUI: **Add Games** panel wired to `POST /api/upload` — the endpoint is
+      implemented and checked, the shell has no file input yet
+- [ ] Web GUI: Store queue management and download-activity panels (the shell
+      renders the catalog today; watched `.store-queue.json` works)
+- [ ] Browser metadata: have the share report size and category per entry so the
+      flat file list can carry the same chrome as the store view
 - [ ] Store queue interface: simple web UI endpoint to queue CDN downloads
       (watched `.store-queue.json` works today)
 - [ ] GTK/Qt GUI front-end for Linux (manage games + edit catalog metadata)
