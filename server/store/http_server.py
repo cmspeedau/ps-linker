@@ -4,7 +4,9 @@
 One port serves three things, in this routing order:
 
 1. ``/api/*`` — the web GUI's JSON endpoints (``GET /api/catalog``,
-   ``POST /api/upload``).
+   ``POST /api/upload``, ``POST /api/upload/file``). Both uploads record the
+   entry in the catalog and leave a ``<name>.meta.json`` sidecar, so the
+   platform and prettified title survive the Store's catalog regenerations.
 2. ``/gui/`` — the web GUI, with its assets at ``/gui/<asset>`` (``/ui/*`` is
     kept as an alias). It sits under a prefix on purpose: ``/`` has to stay the
     library listing, because that is the first thing the NASDL apps request.
@@ -54,6 +56,18 @@ def title_from_filename(name: str) -> str:
     return re.sub(r"\s+", " ", s).strip() or name
 
 
+def parse_query(q: str) -> dict:
+    """Query parameters, percent-decoded but *not* '+'-decoded: game
+    filenames contain literal '+', which parse_qs would turn into spaces."""
+    out = {}
+    for token in q.split("&"):
+        if not token:
+            continue
+        key, _, value = token.partition("=")
+        out[unquote(key)] = unquote(value)
+    return out
+
+
 def catalog_read(path: str) -> dict:
     """The catalog file as a dict, whatever shape it is on disk."""
     try:
@@ -91,6 +105,84 @@ def catalog_save_items(path: str, items: list) -> None:
     with open(tmp, "w", encoding="utf8") as fh:
         json.dump(data, fh, indent=2)
     os.replace(tmp, path)
+
+
+def catalog_upsert(catalog_path: str, entry: dict) -> list:
+    """Merge one entry into the catalog list by its library path, and save.
+
+    The key is ``url`` first (then ``path``/``name``/``id``): every shape a
+    catalog takes — ``generate_catalog.py``'s entries and upload entries —
+    carries a ``url``, so one uploaded file merges into its generated entry
+    instead of sitting beside it. Keying on fields only uploads have used to
+    collapse every generated entry onto one ``None`` key, dropping the
+    library from the catalog until the next regeneration.
+    """
+
+    def key_of(it):
+        return it.get("url") or it.get("path") or it.get("name") or it.get("id")
+
+    items = catalog_load_items(catalog_path)
+    key = key_of(entry)
+    merged, replaced = [], False
+    for it in items:
+        if not replaced and key_of(it) == key:
+            merged.append({**it, **entry})
+            replaced = True
+        else:
+            merged.append(it)
+    if not replaced:
+        merged.append(entry)
+    catalog_save_items(catalog_path, merged)
+    return merged
+
+
+def upload_name_ok(safe: str) -> bool:
+    """Both upload endpoints gate on this: a plain visible file name with a
+    known game extension. Dot-prefixed names and ``.part`` names would slip
+    through the listing/catalog skips invisibly or collide with the resume
+    files, so they are rejected at the gate."""
+    return (bool(safe) and not safe.startswith(".")
+            and not BAD_NAME_RE.search(safe)
+            and os.path.splitext(safe)[1].lower() in ALLOWED_EXT)
+
+
+def upload_entry(safe: str, size: int, platform: str) -> dict:
+    """The catalog entry for an uploaded file, in the shape
+    ``generate_catalog.py`` produces for a root file (plus ``platform``), so
+    uploads and regenerated entries merge on the same fields."""
+    return {"id": safe, "name": safe, "title": title_from_filename(safe),
+            "category": "Uncategorized", "platform": platform,
+            "path": safe, "url": "/" + safe, "size": size}
+
+
+def write_meta_sidecar(games_dir: str, safe: str, platform: str,
+                      title: str) -> None:
+    """Merge platform/title into the game's ``<name>.meta.json`` sidecar.
+    ``generate_catalog.py`` reads sidecars and passes those fields through,
+    which is the only way upload metadata survives a regeneration; an
+    existing sidecar's own keys (description, version) are kept."""
+    path = os.path.join(games_dir, safe + ".meta.json")
+    meta = {}
+    try:
+        with open(path, encoding="utf8") as fh:
+            loaded = json.load(fh)
+        meta = loaded if isinstance(loaded, dict) else {}
+    except (OSError, ValueError):
+        meta = {}
+    meta["platform"] = platform
+    meta["title"] = title
+    tmp = path + ".part"
+    with open(tmp, "w", encoding="utf8") as fh:
+        json.dump(meta, fh, indent=2)
+    os.replace(tmp, path)
+
+
+def record_upload(games_dir: str, entry: dict) -> list:
+    """Sidecar + catalog entry for a file already written into the library;
+    returns the merged catalog items."""
+    write_meta_sidecar(games_dir, entry["name"], entry["platform"],
+                       entry["title"])
+    return catalog_upsert(os.path.join(games_dir, "catalog.json"), entry)
 
 
 def sidecar_sha256(fs_path: str) -> str:
@@ -246,7 +338,11 @@ def make_handler(games_dir: str):
             self.do_GET()
 
         def do_POST(self) -> None:
-            if urlparse(self.path).path != "/api/upload":
+            path = urlparse(self.path).path
+            if path == "/api/upload/file":
+                self.handle_raw_upload()
+                return
+            if path != "/api/upload":
                 self.send_error(404)
                 return
             ctype = self.headers.get("Content-Type", "")
@@ -272,28 +368,79 @@ def make_handler(games_dir: str):
                         fields.append((filename.group(1), content))
             platform = platform if platform in ("psp", "ps3") else "psp"
 
-            items = catalog_load_items(catalog_path)
-            by_name = {it.get("name") or it.get("path"): it for it in items}
             uploaded = []
             for raw, content in fields:
                 safe = os.path.basename(unquote(raw))
-                if (not safe or BAD_NAME_RE.search(safe)
-                        or os.path.splitext(safe)[1].lower() not in ALLOWED_EXT):
+                if not upload_name_ok(safe):
                     self.send_json(400, {"error": f"invalid filename: {safe!r}"})
                     return
                 tmp = os.path.join(games_dir, safe + ".part")
                 with open(tmp, "wb") as fh:
                     fh.write(content)
                 os.replace(tmp, os.path.join(games_dir, safe))   # atomic
-                entry = {"name": safe, "title": title_from_filename(safe),
-                         "platform": platform, "path": safe,
-                         "url": "/" + safe, "size": len(content)}
-                by_name[safe] = {**by_name.get(safe, {}), **entry}
+                entry = upload_entry(safe, len(content), platform)
+                record_upload(games_dir, entry)
                 uploaded.append(entry)
 
-            catalog_save_items(catalog_path, list(by_name.values()))
             self.send_json(201, {"uploaded": uploaded,
-                                 "items": list(by_name.values())})
+                                 "items": catalog_load_items(
+                                     os.path.join(games_dir, "catalog.json"))})
+
+        def handle_raw_upload(self) -> None:
+            """POST /api/upload/file?name=<urlencoded>&platform=<psp|ps3>
+
+            One file per request, body is the raw bytes, streamed to
+            ``<name>.part`` and renamed in atomically — the web GUI's Add
+            Games panel uses this so a multi-GB ISO never sits in memory the
+            way the multipart endpoint's whole-body ``read()`` would leave
+            it. Chunked bodies are refused: BaseHTTPRequestHandler cannot
+            decode them and there is no Content-Length to trust."""
+            params = parse_query(urlparse(self.path).query)
+            raw_name = params.get("name", "")
+            safe = os.path.basename(raw_name)   # params were unquoted once
+            if not upload_name_ok(safe):
+                # The body is still unread; keep-alive would parse it as the
+                # next request, so this connection ends with the response.
+                self.close_connection = True
+                self.send_json(400, {"error": f"invalid filename: {raw_name!r}"})
+                return
+            platform = params.get("platform", "").strip().lower()
+            platform = platform if platform in ("psp", "ps3") else "psp"
+            if "chunked" in self.headers.get("Transfer-Encoding", "").lower():
+                self.close_connection = True
+                self.send_json(411, {"error": "chunked upload unsupported"})
+                return
+            length = self.headers.get("Content-Length", "")
+            if not length.isdigit():
+                self.close_connection = True
+                self.send_json(411, {"error": "Content-Length required"})
+                return
+            length = int(length)
+
+            tmp = os.path.join(games_dir, safe + ".part")
+            try:
+                remaining, received = length, 0
+                with open(tmp, "wb") as fh:
+                    while remaining > 0:
+                        chunk = self.rfile.read(min(CHUNK, remaining))
+                        if not chunk:
+                            break
+                        fh.write(chunk)
+                        received += len(chunk)
+                        remaining -= len(chunk)
+                if remaining:
+                    raise OSError(f"client sent {received} of {length} bytes")
+                os.replace(tmp, os.path.join(games_dir, safe))   # atomic
+                entry = upload_entry(safe, length, platform)
+                items = record_upload(games_dir, entry)
+            except OSError as exc:
+                try:
+                    os.remove(tmp)
+                except OSError:
+                    pass
+                self.send_json(500, {"error": str(exc)})
+                return
+            self.send_json(201, {"uploaded": entry, "items": items})
 
         def log_message(self, fmt, *args) -> None:
             print("[http] %s - %s" % (self.address_string(), fmt % args))

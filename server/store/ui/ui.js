@@ -6,7 +6,14 @@
   'use strict';
 
   var CATALOG_URL = '/api/catalog';   /* absolute: the shell is served under /gui/ */
+  var UPLOAD_URL = '/api/upload/file';
   var LS_FAVS = 'pslinker.favorites.v1';
+
+  // Browser-side mirror of ALLOWED_EXT in server/store/http_server.py, used
+  // only to reject hopeless rows before spending the upload — the server
+  // still enforces its own copy, so keep the two lists in step.
+  var ALLOWED_EXT = ['iso', 'cso', 'pbp', 'zip', '7z', 'rar', 'pkg', 'rap',
+                     'bin', 'cue'];
 
   var state = {
     items: [],
@@ -14,6 +21,10 @@
     active: 'All Games',          // current menu filter
     selected: 0,                  // selected index within filtered list
     view: 'cover',                  // 'cover' | 'grid'
+    mode: '',                       // '' | 'add' (Add Games panel over main view)
+    uploadPlatform: 'psp',
+    uploading: false,               // one request at a time, ever
+    rows: [],                       // upload rows, kept across panel reopen
     favorites: loadFavs(),
     lastViewedAt: {}
   };
@@ -82,6 +93,8 @@
         renderMenu();
         renderView();
         bindGlobalKeys();
+        var addBtn = document.getElementById('add-games');
+        if (addBtn) addBtn.onclick = openAdd;
       })
       .catch(function (err) {
         showError('Failed to load catalog: ' + err.message);
@@ -114,12 +127,14 @@
       btn.addEventListener('click', function () {
         if (label === 'Settings') {
           state.active = label;
+          state.mode = '';
           renderMenu();
           openSettings();
           return;
         }
         state.active = label;
         state.selected = 0;
+        state.mode = '';          // any menu click leaves the Add Games panel
         renderMenu();
         renderView();
       });
@@ -131,6 +146,7 @@
       toggle.textContent = state.view === 'cover' ? 'Grid' : 'Cover';
       toggle.onclick = function () {
         state.view = state.view === 'cover' ? 'grid' : 'cover';
+        state.mode = '';
         renderMenu();
         renderView();
       };
@@ -162,6 +178,7 @@
     var meta = document.getElementById('meta-panel');
     if (!main) return;
 
+    if (state.mode === 'add') { renderAddPanel(); return; }
     if (state.active === 'Settings') { openSettings(); return; }
 
     var list = currentList();
@@ -289,7 +306,7 @@
         '<div class="meta-title">' + escapeHtml(it.title || 'Untitled') + '</div>' +
         '<div class="meta-row"><b>Category:</b> ' + escapeHtml(it.category || '—') + '</div>' +
         '<div class="meta-row"><b>Platform:</b> ' + escapeHtml(it.platform || '—') + '</div>' +
-        '<div class="meta-row"><b>Size:</b> ' + escapeHtml(it.size || '—') + '</div>' +
+        '<div class="meta-row"><b>Size:</b> ' + fmtSize(it.size) + '</div>' +
         '<div class="meta-row"><b>ID:</b> ' + escapeHtml(it.id || '—') + '</div>' +
         '<button class="fav-btn' + (fav ? ' is-fav' : '') + '" type="button">' +
           (fav ? '★ Favorited' : '☆ Add to Favorites') +
@@ -303,9 +320,214 @@
     };
   }
 
+  // ---- Add Games ----
+  function extOf(name) {
+    var i = name.lastIndexOf('.');
+    return i === -1 ? '' : name.slice(i + 1).toLowerCase();
+  }
+
+  function fmtSize(bytes) {
+    var n = Number(bytes);
+    if (!isFinite(n)) return '—';
+    var units = ['B', 'KB', 'MB', 'GB', 'TB'], u = 0;
+    while (n >= 1024 && u < units.length - 1) { n /= 1024; u++; }
+    return (u === 0 ? String(Math.round(n)) : n.toFixed(n < 10 ? 1 : 0))
+           + ' ' + units[u];
+  }
+
+  function openAdd() {
+    state.mode = 'add';
+    renderMenu();
+    renderAddPanel();
+  }
+
+  function closeAdd() {
+    if (state.mode !== 'add') return;
+    state.mode = '';
+    renderMenu();
+    renderView();
+  }
+
+  function renderAddPanel() {
+    var main = document.getElementById('main-view');
+    var meta = document.getElementById('meta-panel');
+    if (!main) return;
+    if (meta) meta.innerHTML = '';
+    main.className = 'main-view';
+    main.innerHTML =
+      '<div class="add-panel">' +
+        '<h2>Add Games</h2>' +
+        '<div class="add-row">Platform' +
+          '<select id="add-platform" class="add-select">' +
+            '<option value="psp"' +
+              (state.uploadPlatform === 'psp' ? ' selected' : '') + '>PSP</option>' +
+            '<option value="ps3"' +
+              (state.uploadPlatform === 'ps3' ? ' selected' : '') + '>PS3</option>' +
+          '</select>' +
+          '<button id="add-back" type="button" class="add-btn">Back to library</button>' +
+        '</div>' +
+        '<div id="drop-zone" class="drop-zone" tabindex="0">' +
+          'Choose files or drop them here' +
+          '<div class="drop-hint">' + ALLOWED_EXT.join(' ') +
+            ' — uploaded to the library root and tagged for the selected' +
+            ' platform, so the PSP/PS3 tabs find them</div>' +
+        '</div>' +
+        '<input type="file" id="file-input" multiple hidden />' +
+        '<ul id="upload-list" class="upload-list"></ul>' +
+      '</div>';
+    var sel = document.getElementById('add-platform');
+    sel.onchange = function () { state.uploadPlatform = sel.value; };
+    document.getElementById('add-back').onclick = closeAdd;
+    var zone = document.getElementById('drop-zone');
+    var input = document.getElementById('file-input');
+    zone.onclick = function () { input.click(); };
+    zone.onkeydown = function (e) {
+      if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); input.click(); }
+    };
+    input.onchange = function () { addFiles(input.files); input.value = ''; };
+    zone.ondragover = function (e) { e.preventDefault(); zone.classList.add('is-over'); };
+    zone.ondragleave = function () { zone.classList.remove('is-over'); };
+    zone.ondrop = function (e) {
+      e.preventDefault();
+      zone.classList.remove('is-over');
+      addFiles(e.dataTransfer.files);
+    };
+    // Rows live in state, so reopening the panel mid-queue re-renders them
+    // and in-flight uploads keep updating their (freshly built) rows.
+    renderRows();
+  }
+
+  function rowPct(row) {
+    if (row.status === 'ok' || row.status === 'done') return 100;
+    if (row.status === 'uploading' && row.size > 0) {
+      return Math.min(99, Math.round(row.loaded / row.size * 100));
+    }
+    if (row.status === 'err' && row.loaded > 0) {
+      return Math.min(99, Math.round(row.loaded / row.size * 100));
+    }
+    return 0;
+  }
+
+  function rowStatusText(row) {
+    switch (row.status) {
+      case 'queued': return 'Waiting';
+      case 'uploading': return rowPct(row) + '%';
+      case 'done': return 'Saving…';
+      case 'ok': return '✓ Added';
+      case 'err': return row.error || 'Failed';
+      default: return '';
+    }
+  }
+
+  function rowEl(row) {
+    var li = document.createElement('li');
+    li.className = 'upload-row' +
+      (row.status === 'ok' ? ' is-ok' : row.status === 'err' ? ' is-err' : '');
+    var cls = row.status === 'ok' ? 'ok' : row.status === 'err' ? 'err' : '';
+    li.innerHTML =
+      '<div class="upload-id">' +
+        '<div class="upload-name">' + escapeHtml(row.name) + '</div>' +
+        '<div class="upload-size">' + fmtSize(row.size) + '</div>' +
+      '</div>' +
+      '<div class="up-bar"><div class="up-fill" style="width:' +
+        rowPct(row) + '%"></div></div>' +
+      '<div class="up-status ' + cls + '">' +
+        escapeHtml(rowStatusText(row)) + '</div>';
+    row.el = li;
+    return li;
+  }
+
+  function updateRow(row) {
+    var old = row.el;
+    // Panel closed (or row never shown): state still tracks the upload, and
+    // renderRows() re-creates the row when the panel is reopened.
+    if (!old || !old.parentNode) return;
+    old.parentNode.replaceChild(rowEl(row), old);
+  }
+
+  function renderRows() {
+    var list = document.getElementById('upload-list');
+    if (!list) return;
+    list.innerHTML = '';
+    state.rows.forEach(function (row) { list.appendChild(rowEl(row)); });
+  }
+
+  function addFiles(files) {
+    Array.prototype.forEach.call(files, function (f) {
+      var row = { name: f.name, size: f.size, loaded: 0,
+                  status: 'queued', error: '', file: f, el: null };
+      if (ALLOWED_EXT.indexOf(extOf(f.name)) === -1) {
+        row.status = 'err';
+        row.error = 'type not allowed';
+      } else if (!f.size) {
+        row.status = 'err';
+        row.error = 'empty file';
+      }
+      state.rows.push(row);
+      var list = document.getElementById('upload-list');
+      if (list) list.appendChild(rowEl(row));
+    });
+    pumpQueue();
+  }
+
+  // One upload at a time: keeps NAS disk writes sequential and the progress
+  // bars honest about what is actually on the wire.
+  function pumpQueue() {
+    if (state.uploading) return;
+    var row = null;
+    for (var i = 0; i < state.rows.length; i++) {
+      if (state.rows[i].status === 'queued') { row = state.rows[i]; break; }
+    }
+    if (!row) return;
+    state.uploading = true;
+    startUpload(row, function () {
+      state.uploading = false;
+      pumpQueue();
+    });
+  }
+
+  function startUpload(row, done) {
+    var xhr = new XMLHttpRequest();
+    // Raw-body endpoint: the file streams to the server's .part file instead
+    // of being buffered in its memory (multipart /api/upload stays for curl).
+    var url = UPLOAD_URL + '?name=' + encodeURIComponent(row.name) +
+              '&platform=' + encodeURIComponent(state.uploadPlatform);
+    xhr.open('POST', url);
+    row.status = 'uploading';
+    updateRow(row);
+    xhr.upload.onprogress = function (e) {
+      if (e.lengthComputable) { row.loaded = e.loaded; updateRow(row); }
+    };
+    xhr.onload = function () {
+      var body = null;
+      try { body = JSON.parse(xhr.responseText); } catch (e) { /* not JSON */ }
+      if (xhr.status === 201 && body && body.items) {
+        state.items = body.items;   // authoritative catalog after the merge
+        row.loaded = row.size;
+        row.status = 'ok';
+      } else {
+        row.status = 'err';
+        row.error = (body && body.error) || ('HTTP ' + xhr.status);
+      }
+      updateRow(row);
+      done();
+    };
+    xhr.onerror = function () {
+      row.status = 'err';
+      row.error = 'network error';
+      updateRow(row);
+      done();
+    };
+    xhr.send(row.file);
+  }
+
   // ---- Keyboard ----
   function bindGlobalKeys() {
     document.addEventListener('keydown', function (e) {
+      if (state.mode === 'add') {
+        if (e.key === 'Escape') closeAdd();
+        return;
+      }
       if (state.active === 'Settings') return;
       if (state.view !== 'cover') return;
       if (e.key === 'ArrowLeft')  { e.preventDefault(); move(-1); }

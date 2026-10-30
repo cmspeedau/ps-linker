@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Behaviour check for the PS Linker HTTP share (server/store/http_server.py).
 #
-#   ./check_share.sh              # HTTP-level checks (~35 assertions, curl only)
+#   ./check_share.sh              # HTTP-level checks (~50 assertions, curl only)
 #   ./check_share.sh --with-dl    # also compile ps3/resume.c on the host and
 #                                 # run the console's real downloader against it
 #
@@ -137,6 +137,55 @@ chk "encoded traversal refused" refused "$(
 chk "double-encoded traversal refused" refused "$(
     case "$(code '/%252e%252e%252fetc/passwd')" in
         403|404) echo refused;; *) echo "$(code '/%252e%252e%252fetc/passwd')";; esac)"
+
+# ------------------------------------- raw streaming upload (web GUI Add Games)
+echo "raw upload endpoint (streamed, one file per request)"
+head -c 2000000 /dev/urandom > "$W/up/raw.iso"
+chk "raw upload accepted" 201 "$(
+    curl -s -o /dev/null -w '%{http_code}' -X POST \
+         --data-binary "@$W/up/raw.iso" "$BASE/api/upload/file?name=raw.iso&platform=psp")"
+chk "raw upload landed byte-identical" same "$(
+    cmp -s "$W/games/raw.iso" "$W/up/raw.iso" && echo same || echo differ)"
+chk "no .part residue" 0 "$(ls "$W/games"/*.part 2>/dev/null | wc -l | tr -d ' ')"
+chk "entry carries id/category/platform" "raw.iso Uncategorized psp" "$(
+    python3 -c "import json;d=json.load(open('$W/games/catalog.json'));
+i=next(i for i in d['items'] if i.get('url')=='/raw.iso')
+print(i['id'],i['category'],i['platform'])")"
+# Regression: entries lacking name/path used to collapse onto one None key,
+# dropping everything but one entry until the next catalog regeneration.
+chk "upload did not collapse pre-existing entries" yes "$(
+    python3 -c "import json;d=json.load(open('$W/games/catalog.json'));
+print('yes' if any(i.get('url')=='/PSP/test.iso' for i in d['items']) else 'no')")"
+chk "meta sidecar written for the upload" yes \
+    "$([ -f "$W/games/raw.iso.meta.json" ] && echo yes || echo no)"
+chk "bad extension rejected" 400 "$(
+    curl -s -o /dev/null -w '%{http_code}' -X POST \
+         --data-binary "@$W/up/evil.exe" "$BASE/api/upload/file?name=evil.exe")"
+chk "no file behind the rejected upload" yes \
+    "$([ ! -f "$W/games/evil.exe" ] && echo yes || echo no)"
+chk "control-char name rejected" 400 "$(
+    curl -s -o /dev/null -w '%{http_code}' -X POST \
+         --data-binary "@$W/up/raw.iso" "$BASE/api/upload/file?name=t%00st.iso")"
+chk "chunked body refused" 411 "$(
+    curl -s -o /dev/null -w '%{http_code}' -X POST -H 'Transfer-Encoding: chunked' \
+         --data-binary "@$W/up/raw.iso" "$BASE/api/upload/file?name=chunk.iso")"
+
+# ------------------------------------------------- catalog generator hygiene --
+echo "generate_catalog sidecar hygiene"
+mkdir -p "$W/gen/Utilities"
+head -c 100 /dev/urandom > "$W/gen/Utilities/tool.bin"
+echo '{"platform":"psp","title":"Tool","version":"1.2"}' > "$W/gen/Utilities/tool.bin.meta.json"
+(cd "$W/gen/Utilities" && sha256sum tool.bin | cut -d' ' -f1 > tool.bin.sha256)
+python3 "$HERE/generate_catalog.py" "$W/gen" "$W/gen/catalog.json" >"$W/gen.log" 2>&1
+chk "sidecars (.meta.json/.sha256) are not entries" 1 "$(
+    python3 -c "import json;d=json.load(open('$W/gen/catalog.json'));
+print(len(d['entries']))")"
+chk "sidecar title passes through" Tool "$(
+    python3 -c "import json;d=json.load(open('$W/gen/catalog.json'));
+print(d['entries'][0]['title'])")"
+chk "sidecar platform passes through" psp "$(
+    python3 -c "import json;d=json.load(open('$W/gen/catalog.json'));
+print(d['entries'][0]['platform'])")"
 
 # --------------------------------------- the console's own downloader (opt-in) -
 if [ "${1:-}" = "--with-dl" ]; then

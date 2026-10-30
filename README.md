@@ -67,7 +67,7 @@ For uploaded games, place `<name>.meta.json` next to the game file:
   {"icon": "covers/example.png", "version": "1.0", "description": "Homebrew example"}
   ```
 
-`generate_catalog.py` merges these sidecars with folder-derived categories and serves the result as `/catalog.json`.
+`generate_catalog.py` merges these sidecars with folder-derived categories and serves the result as `/catalog.json`; it passes `title` and `platform` through as well, which is how uploads from the web GUI keep their prettified title and PSP/PS3 tab membership across regenerations. The uploads themselves write `platform` and `title` into that sidecar. Sidecar files (`.meta.json`, `.sha256`) are never listed as catalog entries.
 
 ### Manual build (without compose)
 
@@ -215,9 +215,9 @@ wrong `X-SHA256` is rejected with `rc=-11`.
       running share (menu filters narrow the carousel correctly)
 - [x] Web GUI library sections: All Games / PSP Games / PS3 Games / Emulators /
       Demos / Utilities / Recently Added / Favorites menu filters over the
-      unified catalog (`GET /api/catalog`). The upload *endpoint*
-      (`POST /api/upload`) exists and is checked; the browser-side "Add Games"
-      UI does not exist yet
+      unified catalog (`GET /api/catalog`). The upload *endpoints*
+      (`POST /api/upload`, streamed `POST /api/upload/file`) exist and are
+      checked; the browser-side **Add Games** panel is Done below
 - [x] **Cover Flow UI (web GUI)** — horizontally scrolling cover carousel
       (centered title enlarged/in focus), top menu bar with all categories
       (All Games | PSP Games | PS3 Games | Recently Added | Favorites | Downloads |
@@ -234,6 +234,19 @@ wrong `X-SHA256` is rejected with `rc=-11`.
       deviations, 0 undeclared — plus 62 tests in `netsrv_test.py`; spec and
       findings in `docs/PS3NETSRV-PROTOCOL.md`. Ships in the image as the default,
       with `--build-arg NETSRV=ps3netsrv++` kept as the fallback
+- [x] **Web GUI Add Games** — a topbar button opens an upload panel (platform
+      picker, file input + drag-and-drop, per-file progress and result). Files
+      go one request each to the new `POST /api/upload/file`, streamed to
+      `.part` + atomic rename, so a multi-GB ISO never sits in the server's
+      memory the way the multipart `POST /api/upload` (kept for curl) would
+      leave it. Uploads upsert their catalog entry by `url` — fixing a bug
+      where an upload after a regeneration collapsed the catalog to one
+      entry — and write a `<name>.meta.json` sidecar whose `platform` and
+      `title` `generate_catalog.py` now passes through, so PSP/PS3 tab
+      membership survives regeneration; the generator no longer lists
+      `.meta.json`/`.sha256` sidecars as games. 13 new `check_share.sh`
+      assertions, and the panel plus a browser-origin upload were driven in a
+      real browser (progress events, merged catalog, no entry loss)
 
 ### In progress
 - [x] **Store view on the PSP, rendered by the Cover Flow module** —
@@ -279,8 +292,6 @@ wrong `X-SHA256` is rejected with `rc=-11`.
       library with folder games needs it
 
 ### Later
-- [ ] Web GUI: **Add Games** panel wired to `POST /api/upload` — the endpoint is
-      implemented and checked, the shell has no file input yet
 - [ ] Web GUI: Store queue management and download-activity panels (the shell
       renders the catalog today; watched `.store-queue.json` works)
 - [ ] Browser metadata: have the share report size and category per entry so the
