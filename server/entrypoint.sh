@@ -9,8 +9,8 @@
 # up in one client view.
 #
 # NETSRV picks the netiso implementation: "python" (default) runs the server in
-# server/netsrv/ps3netsrv.py; "ps3netsrv++" runs the upstream C++ binary, which
-# the Python server cannot replace for folder games (/***PS3***/).
+# server/netsrv/ps3netsrv.py, folder games (/***PS3***/) included; "ps3netsrv++"
+# runs the upstream C++ binary, kept as a reference to check answers against.
 #
 #   GAMES_DIR         library to share            (default /games)
 #   NETSRV            python | ps3netsrv++        (default python)

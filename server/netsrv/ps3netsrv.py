@@ -15,6 +15,8 @@ Usage:
 
     whitelist   IPv4 pattern with ``*`` octets, e.g. ``192.168.1.*``
 """
+from __future__ import annotations
+
 import argparse
 import asyncio
 import ipaddress
@@ -26,6 +28,8 @@ import struct
 import sys
 from dataclasses import dataclass
 from pathlib import Path
+
+from virtual_iso import DVD_PREFIX, PS3_PREFIX, VirtualIso
 
 DEFAULT_PORT = 38008
 BUFFER_SIZE = 4 * 1048576
@@ -143,14 +147,32 @@ def path_parts(raw: bytes) -> list[bytes] | None:
     return parts
 
 
-def virtual_iso(raw: bytes) -> bool:
-    """``/***PS3***/`` or ``/***DVD***/``: upstream builds an ISO on the fly.
+def virtual_iso_mode(raw: bytes) -> str | None:
+    """``"ps3"``/``"dvd"`` for a path that asks to be mounted as an ISO.
 
-    We do not implement virtual ISOs (§9.2), but a client must not get a
-    confusing result, so these are reported as not-found.
+    Two spellings, both upstream's: the ``/***PS3***/`` and ``/***DVD***/``
+    markers, which have to open the path the way its ``strncmp`` does (a marker
+    further in is an ordinary directory name), and a bare ``/.``, which is how a
+    client mounts the whole share. Only ``OPEN_FILE`` looks for either —
+    upstream's other commands translate a path without checking for a marker, so
+    ``/***PS3***/GAME`` in a STAT_FILE or an OPEN_DIR names a directory that is
+    not there, and ours answers the same way (§7.4).
     """
-    text = decode_path(normalize_trailer(raw))
-    return "/***PS3***" in text or "/***DVD***" in text
+    data = normalize_trailer(raw)
+    if data.startswith(PS3_PREFIX):
+        return "ps3"
+    if data.startswith(DVD_PREFIX) or data == b"/.":
+        return "dvd"
+    return None
+
+
+def strip_virtual_prefix(raw: bytes) -> bytes:
+    """Drop the marker, keeping the path's leading slash (upstream memmoves 10
+    bytes, so ``/***PS3***/GAME`` becomes ``/GAME``)."""
+    data = normalize_trailer(raw)
+    if data.startswith(PS3_PREFIX) or data.startswith(DVD_PREFIX):
+        return data[10:]
+    return data
 
 
 class Share:
@@ -205,7 +227,7 @@ class Share:
 
     def lstat(self, path: Path) -> os.stat_result | None:
         try:
-            return path.stat(follow_symlinks=False)
+            return path.lstat()
         except OSError:
             return None
 
@@ -381,6 +403,7 @@ class Client:
         self.writer = writer
         self.ro_file = None
         self.ro_fd = None
+        self.ro_virtual = None
         self.wo_file = None
         self.cd_sector = CD_SECTOR_DEFAULT
         self.dir: DirState | None = None
@@ -461,8 +484,9 @@ class Client:
         if raw == CLOSEFILE:
             await self.send(OPEN_RESULT.pack(-1, 0))
             return
-        if virtual_iso(raw):
-            await self.send(OPEN_RESULT.pack(-1, 0))
+        mode = virtual_iso_mode(raw)
+        if mode is not None:
+            await self.open_virtual_iso(raw, mode)
             return
         path = self.resolve(raw)
         fh = self.share.open_ro(path)
@@ -482,13 +506,34 @@ class Client:
             log(f"CD sector size: {sector}  ({shown})")
         await self.send(OPEN_RESULT.pack(st.st_size, int(st.st_mtime)))
 
+    async def open_virtual_iso(self, raw: bytes, mode: str) -> None:
+        """Build the ISO for a ``/***PS3***/`` or ``/***DVD***/`` folder (§7.4).
+
+        The scan and the filesystem structures are built off the event loop; the
+        file *contents* are not, so a large game costs only its directory tree.
+        """
+        path = self.resolve(strip_virtual_prefix(raw))
+        try:
+            iso = await asyncio.to_thread(VirtualIso, path, mode == "ps3")
+        except (OSError, ValueError) as exc:
+            log(f"virtual ISO not available: {exc}")
+            await self.send(OPEN_RESULT.pack(-1, 0))
+            return
+        self.ro_file, self.ro_fd, self.ro_virtual = iso, None, iso
+        # A synthesised image is plain 2048-byte sectors, with no raw header.
+        self.cd_sector = 2048
+        tag = "/***PS3***" if mode == "ps3" else "/***DVD***"
+        log(f"open {tag}{self.share.display(path)}  "
+            f"(virtual ISO, {iso.size} bytes)")
+        await self.send(OPEN_RESULT.pack(iso.size, iso.mtime))
+
     def close_ro(self) -> None:
         if self.ro_file is not None:
             try:
                 self.ro_file.close()
             except OSError:
                 pass
-        self.ro_file, self.ro_fd = None, None
+        self.ro_file, self.ro_fd, self.ro_virtual = None, None, None
 
     # -- 0x1225 READ_FILE_CRITICAL --------------------------------------------
 
@@ -523,9 +568,15 @@ class Client:
         remaining, position = num_bytes, offset
         while remaining:
             count = min(CHUNK, remaining)
-            data = await asyncio.to_thread(pread_exact, self.ro_fd, position, count)
-            if data is None:
-                raise Closed
+            if self.ro_virtual is not None:
+                data = await asyncio.to_thread(
+                    self.ro_virtual.read_at, position, count)
+                if not data:
+                    raise Closed
+            else:
+                data = await asyncio.to_thread(pread_exact, self.ro_fd, position, count)
+                if data is None:
+                    raise Closed
             writer.write(data)
             await writer.drain()
             position += len(data)
@@ -544,6 +595,18 @@ class Client:
 
     def read_cd(self, start_sector: int, sector_count: int) -> bytes | None:
         """2048 bytes of user data out of each raw sector (§3.3)."""
+        if self.ro_virtual is not None:
+            # A synthesised image is a plain 2048-byte-sector ISO: there is no
+            # 24-byte raw header to skip, unlike a MODE2/2352 rip.
+            out = bytearray()
+            offset = start_sector * 2048
+            for _ in range(sector_count):
+                chunk = self.ro_virtual.read_at(offset, 2048)
+                if len(chunk) != 2048:
+                    return None
+                out += chunk
+                offset += 2048
+            return bytes(out)
         out = bytearray()
         offset = start_sector * self.cd_sector + 24
         for _ in range(sector_count):
@@ -561,7 +624,11 @@ class Client:
         if self.ro_file is None or num_bytes > BUFFER_SIZE:
             await self.send(READ_FILE_RESULT.pack(-1))
             return
-        data = await asyncio.to_thread(read_upto, self.ro_file, offset, num_bytes)
+        if self.ro_virtual is not None:
+            data = await asyncio.to_thread(
+                self.ro_virtual.read_at, offset, num_bytes)
+        else:
+            data = await asyncio.to_thread(read_upto, self.ro_file, offset, num_bytes)
         if data is None:
             await self.send(READ_FILE_RESULT.pack(-1))
             return

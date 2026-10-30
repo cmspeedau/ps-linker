@@ -11,14 +11,15 @@
 #
 #   NETSRV=python         (default) our own server, stdlib Python 3, no build
 #                         step: server/netsrv/ps3netsrv.py. Read-only unless
-#                         NETSRV_WRITE=1. Everything a PS3 sends except virtual
-#                         ISOs — see docs/PS3NETSRV-PROTOCOL.md §9.2.
-#   NETSRV=ps3netsrv++    dirkvdb's C++ binary, compiled during the build. Only
-#                         worth it if the library has folder games, which are
-#                         served through /***PS3***/ and are not implemented by
-#                         the Python server. It is slower in total across five
-#                         consoles, and five clients that send it nothing can
-#                         take it down (docs/PS3NETSRV-PROTOCOL.md §8).
+#                         NETSRV_WRITE=1. It serves everything a PS3 sends,
+#                         folder games through /***PS3***/ included
+#                         (docs/PS3NETSRV-PROTOCOL.md §7.4).
+#   NETSRV=ps3netsrv++    dirkvdb's C++ binary, compiled during the build.
+#                         Kept as a way to check our answers against the real
+#                         thing. It is slower in total across five consoles,
+#                         five clients that send it nothing can take it down,
+#                         and it has no virtual ISO either
+#                         (docs/PS3NETSRV-PROTOCOL.md §8).
 #
 # Pick one at build time:
 #
@@ -29,8 +30,8 @@ FROM alpine:3.20
 
 RUN apk add --no-cache python3 busybox-extras
 
-# netiso server for the PS3, and the Store scripts
-COPY netsrv/ps3netsrv.py /opt/netsrv/ps3netsrv.py
+# netiso server for the PS3 (with its virtual-ISO builder), and the Store scripts
+COPY netsrv/ps3netsrv.py netsrv/virtual_iso.py /opt/netsrv/
 COPY store/ /opt/store/
 
 # The fallback C++ server, if asked for. Three things the upstream tree needs
