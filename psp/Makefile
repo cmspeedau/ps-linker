@@ -1,8 +1,8 @@
 TARGET = nasdl
-OBJS = main.o resume.o
+OBJS = main.o resume.o store.o store_logic.o coverflow_psp.o
 
 INCDIR =
-CFLAGS = -O2 -G0 -Wall
+CFLAGS = -O2 -G0 -Wall -I../ui
 CXXFLAGS = $(CFLAGS) -fno-exceptions -fno-rtti
 ASFLAGS = $(CFLAGS)
 

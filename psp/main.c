@@ -35,6 +35,7 @@
 #include <stdlib.h>
 
 #include "resume.h"
+#include "store.h"
 
 #define printf pspDebugScreenPrintf
 #define SCREEN_ROWS 33
@@ -584,7 +585,20 @@ static int browser(void) {
             sceKernelDelayThread(16000);
         } while (get_pressed(&pressed, &prev) != 0);
 
-        if (pressed & PSP_CTRL_SELECT) {
+        if (pressed & PSP_CTRL_TRIANGLE) {
+            store_run(g_nas_base);
+            /* The Store has its own button handling; wait until the pad is
+               clear before reading again. Without this the O that closed the
+               Store is still down here, gets seen as a fresh press, and hits
+               the "up one level" branch below - which at the share root quits
+               the app instead of returning to the browser. */
+            SceCtrlData released;
+            do {
+                sceCtrlReadBufferPositive(&released, 1);
+                sceKernelDelayThread(16000);
+            } while (released.Buttons);
+            prev = 0;
+        } else if (pressed & PSP_CTRL_SELECT) {
             settings_view();
         } else if (pressed & PSP_CTRL_DOWN) {
             sel = (sel + 1) % g_file_count;
