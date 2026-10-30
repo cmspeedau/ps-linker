@@ -31,7 +31,8 @@ Then:
 
 - Put game files under `./games/` (or change the volume in `docker-compose.yml`)
 - Open `http://<server>:8000/` to browse/download
-- Open `http://<server>:8000/gui/` for the web library (Cover Flow / grid, catalog, uploads)
+- Open `http://<server>:8000/gui/` for the web library (card grid, search,
+  sections, favorites, uploads, rename/metadata/delete — served by the share)
 - Point your PS3 at `<server>:38008` for game streaming
 
 The netiso server shares `GAMES_DIR` read-only. Set `NETSRV_WHITELIST=192.168.1.*`
@@ -67,7 +68,7 @@ For uploaded games, place `<name>.meta.json` next to the game file:
   {"icon": "covers/example.png", "version": "1.0", "description": "Homebrew example"}
   ```
 
-`generate_catalog.py` merges these sidecars with folder-derived categories and serves the result as `/catalog.json`; it passes `title` and `platform` through as well, which is how uploads from the web GUI keep their prettified title and PSP/PS3 tab membership across regenerations. The uploads themselves write `platform` and `title` into that sidecar. Sidecar files (`.meta.json`, `.sha256`) are never listed as catalog entries.
+`generate_catalog.py` merges these sidecars with folder-derived categories and serves the result as `/catalog.json`; it passes `title`, `platform`, and `rap` through as well, which is how uploads from the web GUI keep their prettified title and PSP/PS3 tab membership across regenerations. The uploads themselves write `platform` and `title` into that sidecar, and the web GUI's metadata editor writes `title`/`version`/`description`/`platform` (and the license pairing `rap`, the name of a `.rap` file sitting beside the game) through `PUT /api/item/meta`, which merges rather than replaces. Sidecar files (`.meta.json`, `.sha256`) are never listed as catalog entries.
 
 ### Manual build (without compose)
 
@@ -247,6 +248,37 @@ wrong `X-SHA256` is rejected with `rc=-11`.
       `.meta.json`/`.sha256` sidecars as games. 13 new `check_share.sh`
       assertions, and the panel plus a browser-origin upload were driven in a
       real browser (progress events, merged catalog, no entry loss)
+- [x] **Web GUI redesigned as a modern library dashboard** — the Media Go/
+      Cover Flow shell became a sidebar + toolbar + card-grid + detail-drawer
+      app in ES modules and token-based CSS (still dependency-free, the image
+      is still a file copy; Cover Flow remains the device apps' own look).
+      Search (`/`), four sorts, per-folder counts, wired Recently Viewed (the
+      old tab read state nothing wrote), real Settings (light/dark/auto theme,
+      default sort, local-data reset), toasts, a whole-window drop overlay and
+      a transfer dock; mobile sidebar and bottom sheet. Management added
+      server-side: `DELETE /api/item`, `POST /api/item/rename`,
+      `PUT /api/item/meta` (merge into `<name>.meta.json`; rename stays in its
+      folder, carries sidecars, re-keys the catalog; delete cleans sidecars,
+      refuses directories/sidecars/`catalog.json`/traversal), all driven from
+      the drawer with a two-click delete confirm. 18 new `check_share.sh`
+      assertions; every flow (drawer, rename with sidecar ride-along, meta
+      merge, favorite, delete, theme, search, Add Games modal) was driven in
+      a real browser
+- [x] **PS3 license (.rap) support in the web GUI** — the game's drawer has a
+      License (RAP) section: a `.rap` uploaded beside the game is offered
+      with one click, or one is picked from disk and uploaded into the game's
+      folder via the new `dir=` parameter on `POST /api/upload/file`; the
+      pairing is the sidecar's `rap` field (validated to be a real `.rap` in
+      the game's own folder through `PUT /api/item/meta`), which
+      `generate_catalog.py` passes through so attachments survive
+      regeneration. Attached `.rap`s lose their standalone card (the game
+      carries a 🔑 badge, red when the license file went missing behind the
+      share's back); loose ones stay discoverable as License cards.
+      Renaming a license repoints the sidecars and entries beside it; a
+      title-ID mismatch asks before attaching. 19 new `check_share.sh`
+      assertions; attach/detach/missing states, the hidden-rap grid, and a
+      browser-origin `dir=` upload were driven in a real browser. The share
+      only stores `.rap` files the user supplies for games they own
 
 ### In progress
 - [x] **Store view on the PSP, rendered by the Cover Flow module** —

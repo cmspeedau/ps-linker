@@ -17,6 +17,9 @@ Per-entry fields:
                                    uploads write them there so a prettified
                                    title and PSP/PS3 tab membership survive
                                    regeneration)
+  rap                             (also from the sidecar: the file name of
+                                   the game's attached .rap license, which
+                                   the web GUI records next to the game)
 
 Sidecar files themselves (.meta.json, .sha256) are metadata and never
 become catalog entries.
@@ -92,6 +95,8 @@ def main() -> int:
                 entry["title"] = str(meta["title"])
             if meta.get("platform"):
                 entry["platform"] = str(meta["platform"])
+            if meta.get("rap"):
+                entry["rap"] = str(meta["rap"])
             if meta.get("version"):
                 entry["version"] = str(meta["version"])
             if meta.get("description"):

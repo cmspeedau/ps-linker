@@ -1,558 +1,335 @@
-/* PS Linker — Cover Flow UI
- * Pure-browser Cover Flow + grid view with category menu bar.
- * No dependencies. Plain JS.
- */
-(function () {
-  'use strict';
+/* PS Linker — web library shell (direction B: modern dashboard).
+ *
+ * Entry module: boot, sidebar/toolbar/grid rendering, keyboard, settings.
+ * State lives in state.js; the API in api.js; the Add-Games queue in
+ * uploads.js; the detail drawer and manage actions in manage.js. No
+ * dependencies, no build step — the Docker image is a file copy. */
 
-  var CATALOG_URL = '/api/catalog';   /* absolute: the shell is served under /gui/ */
-  var UPLOAD_URL = '/api/upload/file';
-  var LS_FAVS = 'pslinker.favorites.v1';
+import {
+  state, isFav, toggleFav, esc, fmtSize, toast, coverHTML, platformOf,
+  sections, currentItems, saveSettings, saveFavorites, saveRecent,
+  extOf, licenseInfo,
+} from './state.js';
+import { fetchCatalog } from './api.js';
+import * as uploads from './uploads.js';
+import * as manage from './manage.js';
 
-  // Browser-side mirror of ALLOWED_EXT in server/store/http_server.py, used
-  // only to reject hopeless rows before spending the upload — the server
-  // still enforces its own copy, so keep the two lists in step.
-  var ALLOWED_EXT = ['iso', 'cso', 'pbp', 'zip', '7z', 'rar', 'pkg', 'rap',
-                     'bin', 'cue'];
+const SORTS = [
+  ['title', 'Title A–Z'],
+  ['title-desc', 'Title Z–A'],
+  ['size-desc', 'Largest first'],
+  ['size-asc', 'Smallest first'],
+];
 
-  var state = {
-    items: [],
-    categories: [],
-    active: 'All Games',          // current menu filter
-    selected: 0,                  // selected index within filtered list
-    view: 'cover',                  // 'cover' | 'grid'
-    mode: '',                       // '' | 'add' (Add Games panel over main view)
-    uploadPlatform: 'psp',
-    uploading: false,               // one request at a time, ever
-    rows: [],                       // upload rows, kept across panel reopen
-    favorites: loadFavs(),
-    lastViewedAt: {}
-  };
+/* ---------------------------------------------------------------- boot -- */
 
-  // Map of menu items to predicates/heuristics.
-  // Keeps menu simple and decoupled from any backend taxonomy.
-  function matchesFilter(item, filter) {
-    switch (filter) {
-      case 'All Games':
-        return item.category !== 'Utilities';
-      case 'PSP Games':
-        return /PSP/i.test(item.title || '') ||
-               (item.platform || '').toUpperCase() === 'PSP';
-      case 'PS3 Games':
-        return /PS3/i.test(item.title || '') ||
-               (item.platform || '').toUpperCase() === 'PS3';
-      case 'Emulators':
-        return item.category === 'Emulators';
-      case 'Demos':
-        return item.category === 'Demos';
-      case 'Utilities':
-        return item.category === 'Utilities';
-      case 'Recently Added':
-        return !!state.lastViewedAt[item.id];
-      case 'Favorites':
-        return state.favorites.indexOf(item.id) !== -1;
-      case 'Downloads':
-        // No download state yet — placeholder menu entry.
-        return false;
-      case 'Settings':
-        return false;
-      default:
-        return true;
-    }
-  }
+document.addEventListener('DOMContentLoaded', () => {
+  uploads.init({ onItems });
+  manage.init({ onItems, refreshGrid: renderLibrary });
+  bindChrome();
+  bindKeys();
+  applyTheme();
+  renderSort();
+  renderSidebar();          // counts appear once items land; shell shows now
+  renderLibrary(true);
+  fetchCatalog()
+    .then((items) => { state.items = items; refresh(); })
+    .catch((err) => showError('Failed to load catalog: ' + err.message));
+});
 
-  function loadFavs() {
-    try {
-      var raw = localStorage.getItem(LS_FAVS);
-      return raw ? JSON.parse(raw) : [];
-    } catch (e) { return []; }
-  }
-  function saveFavs() {
-    try { localStorage.setItem(LS_FAVS, JSON.stringify(state.favorites)); }
-    catch (e) { /* ignore quota errors */ }
-  }
-  function toggleFav(id) {
-    var i = state.favorites.indexOf(id);
-    if (i === -1) state.favorites.push(id);
-    else state.favorites.splice(i, 1);
-    saveFavs();
-  }
+/** Mutations (uploads, rename, meta, delete) all hand back the merged
+ * catalog; adopt it and repaint everything that reads it. */
+function onItems(items) {
+  state.items = items;
+  refresh();
+}
+function refresh() {
+  renderSidebar();
+  renderLibrary();
+  manage.refresh();
+}
 
-  // ---- Boot ----
-  document.addEventListener('DOMContentLoaded', function () {
-    fetch(CATALOG_URL, { cache: 'no-cache' })
-      .then(function (r) {
-        if (!r.ok) throw new Error('HTTP ' + r.status);
-        return r.json();
-      })
-      .then(function (data) {
-        state.items = data.items || [];
-        if (Array.isArray(data.categories)) {
-          state.categories = data.categories;
-        }
-        renderMenu();
-        renderView();
-        bindGlobalKeys();
-        var addBtn = document.getElementById('add-games');
-        if (addBtn) addBtn.onclick = openAdd;
-      })
-      .catch(function (err) {
-        showError('Failed to load catalog: ' + err.message);
-      });
+/* ------------------------------------------------------------- chrome -- */
+
+function bindChrome() {
+  document.getElementById('add-btn').onclick = () => uploads.openAdd();
+  document.getElementById('settings-btn').onclick = openSettings;
+  document.getElementById('search').addEventListener('input', (e) => {
+    state.query = e.target.value;
+    renderLibrary();
   });
+  document.getElementById('sort').addEventListener('change', (e) => {
+    state.sort = e.target.value;
+    state.settings.sort = e.target.value;
+    saveSettings();
+    renderLibrary();
+  });
+  uploads.bindWindowDrop();
 
-  function showError(msg) {
-    var main = document.getElementById('main-view');
-    if (!main) return;
-    main.innerHTML = '<div class="error">' + escapeHtml(msg) + '</div>';
-  }
+  // Mobile sidebar.
+  const menu = document.getElementById('menu-btn');
+  const closeB = document.getElementById('sidebar-close');
+  const scrim = document.getElementById('sidebar-scrim');
+  const sidebar = document.getElementById('sidebar');
+  const setOpen = (on) => {
+    sidebar.classList.toggle('open', on);
+    scrim.hidden = !on;
+    closeB.hidden = !on;
+  };
+  menu.onclick = () => setOpen(true);
+  closeB.onclick = () => setOpen(false);
+  scrim.onclick = () => setOpen(false);
+  const mq = matchMedia('(max-width: 860px)');
+  const syncMq = () => { menu.hidden = !mq.matches; if (!mq.matches) setOpen(false); };
+  mq.addEventListener('change', syncMq);
+  syncMq();
 
-  // ---- Menu ----
-  var MENU_ITEMS = [
-    'All Games', 'PSP Games', 'PS3 Games',
-    'Emulators', 'Demos', 'Utilities',
-    'Recently Added', 'Favorites', 'Downloads',
-    'Settings'
-  ];
+  matchMedia('(prefers-color-scheme: light)').addEventListener('change', applyTheme);
+}
 
-  function renderMenu() {
-    var bar = document.getElementById('menu-bar');
-    if (!bar) return;
-    bar.innerHTML = '';
-    MENU_ITEMS.forEach(function (label) {
-      var btn = document.createElement('button');
-      btn.type = 'button';
-      btn.className = 'menu-item' + (state.active === label ? ' active' : '');
-      btn.textContent = label;
-      btn.addEventListener('click', function () {
-        if (label === 'Settings') {
-          state.active = label;
-          state.mode = '';
-          renderMenu();
-          openSettings();
-          return;
-        }
-        state.active = label;
-        state.selected = 0;
-        state.mode = '';          // any menu click leaves the Add Games panel
-        renderMenu();
-        renderView();
-      });
-      bar.appendChild(btn);
-    });
-
-    var toggle = document.getElementById('view-toggle');
-    if (toggle) {
-      toggle.textContent = state.view === 'cover' ? 'Grid' : 'Cover';
-      toggle.onclick = function () {
-        state.view = state.view === 'cover' ? 'grid' : 'cover';
-        state.mode = '';
-        renderMenu();
-        renderView();
-      };
-    }
-  }
-
-  function openSettings() {
-    var main = document.getElementById('main-view');
-    if (!main) return;
-    main.innerHTML =
-      '<div class="settings-panel">' +
-        '<h2>Settings</h2>' +
-        '<div class="row">Catalog URL: <b>' + escapeHtml(CATALOG_URL) + '</b></div>' +
-        '<div class="row">Favorites stored locally in your browser.</div>' +
-        '<div class="row">Press <b>g</b> to toggle Cover/Grid view.</div>' +
-      '</div>';
-    var meta = document.getElementById('meta-panel');
-    if (meta) meta.innerHTML = '';
-  }
-
-  // ---- View rendering ----
-  function currentList() {
-    if (state.active === 'Settings') return [];
-    return state.items.filter(function (it) { return matchesFilter(it, state.active); });
-  }
-
-  function renderView() {
-    var main = document.getElementById('main-view');
-    var meta = document.getElementById('meta-panel');
-    if (!main) return;
-
-    if (state.mode === 'add') { renderAddPanel(); return; }
-    if (state.active === 'Settings') { openSettings(); return; }
-
-    var list = currentList();
-    if (!list.length) {
-      main.className = 'main-view';
-      main.innerHTML = '<div class="empty">No items in ' + escapeHtml(state.active) + '.</div>';
-      if (meta) meta.innerHTML = '';
+function bindKeys() {
+  document.addEventListener('keydown', (e) => {
+    const inField = /^(INPUT|SELECT|TEXTAREA)$/.test(e.target.tagName);
+    if (e.key === '/' && !inField) {
+      e.preventDefault();
+      document.getElementById('search').focus();
       return;
     }
-    if (state.selected >= list.length) state.selected = list.length - 1;
-    if (state.selected < 0) state.selected = 0;
-
-    if (state.view === 'cover') {
-      main.className = 'main-view cover-mode';
-      main.innerHTML = renderCoverFlowHTML(list);
-      bindCoverFlow(list);
-    } else {
-      main.className = 'main-view grid-mode';
-      main.innerHTML = renderGridHTML(list);
-      bindGrid(list);
-    }
-    renderMeta(list[state.selected]);
-  }
-
-  // ---- Cover Flow ----
-  function renderCoverFlowHTML(list) {
-    var html = '<div class="coverflow-stage" tabindex="0">' +
-               '<button class="cf-arrow left"  aria-label="Previous">‹</button>' +
-               '<div class="coverflow-track">';
-    for (var i = 0; i < list.length; i++) {
-      var it = list[i];
-      var offset = i - state.selected;
-      var cls = 'cover';
-      if (Math.abs(offset) > 4) cls += ' is-hidden';
-      else if (offset === 0) cls += ' is-center';
-      else if (Math.abs(offset) === 1) cls += ' is-near';
-      else cls += ' is-far';
-      html +=
-        '<div class="' + cls + '" style="--off:' + offset + '">' +
-          coverArtHTML(it) +
-          '<div class="cover-title">' + escapeHtml(it.title || 'Untitled') + '</div>' +
-        '</div>';
-    }
-    html += '</div>' +
-            '<button class="cf-arrow right" aria-label="Next">›</button>' +
-            '</div>';
-    return html;
-  }
-
-  function coverArtHTML(it) {
-    if (it.icon) {
-      return '<div class="cover-art" style="background-image:url(\'' + escapeAttr(it.icon) + '\')"></div>';
-    }
-    var label = (it.title || '?').slice(0, 2).toUpperCase();
-    return '<div class="cover-art placeholder" data-label="' + escapeAttr(label) + '"></div>';
-  }
-
-  function bindCoverFlow(list) {
-    var stage = document.querySelector('.coverflow-stage');
-    if (!stage) return;
-    stage.focus();
-    var covers = stage.querySelectorAll('.cover');
-    covers.forEach(function (el, idx) {
-      el.addEventListener('click', function () {
-        if (idx === state.selected) {
-          // Toggle favorite on the highlighted cover.
-          toggleFav(list[state.selected].id);
-          renderView();
-        } else {
-          state.selected = idx;
-          renderView();
-        }
-      });
-    });
-    var left = stage.querySelector('.cf-arrow.left');
-    var right = stage.querySelector('.cf-arrow.right');
-    if (left)  left.onclick  = function () { move(-1); };
-    if (right) right.onclick = function () { move(1); };
-  }
-
-  function move(delta) {
-    var list = currentList();
-    if (!list.length) return;
-    state.selected = Math.max(0, Math.min(list.length - 1, state.selected + delta));
-    renderView();
-  }
-
-  // ---- Grid ----
-  function renderGridHTML(list) {
-    var html = '<div class="grid-stage">';
-    list.forEach(function (it, i) {
-      var cls = 'grid-card' + (i === state.selected ? ' is-selected' : '');
-      html +=
-        '<div class="' + cls + '" data-i="' + i + '">' +
-          coverArtHTML(it) +
-          '<div class="cover-title">' + escapeHtml(it.title || 'Untitled') + '</div>' +
-        '</div>';
-    });
-    html += '</div>';
-    return html;
-  }
-
-  function bindGrid(list) {
-    var stage = document.querySelector('.grid-stage');
-    if (!stage) return;
-    stage.querySelectorAll('.grid-card').forEach(function (el, idx) {
-      el.addEventListener('click', function () {
-        state.selected = idx;
-        renderView();
-      });
-      el.addEventListener('dblclick', function () {
-        toggleFav(list[state.selected].id);
-        renderView();
-      });
-    });
-  }
-
-  // ---- Metadata panel ----
-  function renderMeta(it) {
-    var meta = document.getElementById('meta-panel');
-    if (!meta || !it) return;
-    var fav = state.favorites.indexOf(it.id) !== -1;
-    meta.innerHTML =
-      '<div class="meta-inner">' +
-        '<div class="meta-title">' + escapeHtml(it.title || 'Untitled') + '</div>' +
-        '<div class="meta-row"><b>Category:</b> ' + escapeHtml(it.category || '—') + '</div>' +
-        '<div class="meta-row"><b>Platform:</b> ' + escapeHtml(it.platform || '—') + '</div>' +
-        '<div class="meta-row"><b>Size:</b> ' + fmtSize(it.size) + '</div>' +
-        '<div class="meta-row"><b>ID:</b> ' + escapeHtml(it.id || '—') + '</div>' +
-        '<button class="fav-btn' + (fav ? ' is-fav' : '') + '" type="button">' +
-          (fav ? '★ Favorited' : '☆ Add to Favorites') +
-        '</button>' +
-      '</div>';
-    var btn = meta.querySelector('.fav-btn');
-    if (btn) btn.onclick = function () {
-      toggleFav(it.id);
-      renderMeta(it);
-      if (state.active === 'Favorites') renderView();
-    };
-  }
-
-  // ---- Add Games ----
-  function extOf(name) {
-    var i = name.lastIndexOf('.');
-    return i === -1 ? '' : name.slice(i + 1).toLowerCase();
-  }
-
-  function fmtSize(bytes) {
-    var n = Number(bytes);
-    if (!isFinite(n)) return '—';
-    var units = ['B', 'KB', 'MB', 'GB', 'TB'], u = 0;
-    while (n >= 1024 && u < units.length - 1) { n /= 1024; u++; }
-    return (u === 0 ? String(Math.round(n)) : n.toFixed(n < 10 ? 1 : 0))
-           + ' ' + units[u];
-  }
-
-  function openAdd() {
-    state.mode = 'add';
-    renderMenu();
-    renderAddPanel();
-  }
-
-  function closeAdd() {
-    if (state.mode !== 'add') return;
-    state.mode = '';
-    renderMenu();
-    renderView();
-  }
-
-  function renderAddPanel() {
-    var main = document.getElementById('main-view');
-    var meta = document.getElementById('meta-panel');
-    if (!main) return;
-    if (meta) meta.innerHTML = '';
-    main.className = 'main-view';
-    main.innerHTML =
-      '<div class="add-panel">' +
-        '<h2>Add Games</h2>' +
-        '<div class="add-row">Platform' +
-          '<select id="add-platform" class="add-select">' +
-            '<option value="psp"' +
-              (state.uploadPlatform === 'psp' ? ' selected' : '') + '>PSP</option>' +
-            '<option value="ps3"' +
-              (state.uploadPlatform === 'ps3' ? ' selected' : '') + '>PS3</option>' +
-          '</select>' +
-          '<button id="add-back" type="button" class="add-btn">Back to library</button>' +
-        '</div>' +
-        '<div id="drop-zone" class="drop-zone" tabindex="0">' +
-          'Choose files or drop them here' +
-          '<div class="drop-hint">' + ALLOWED_EXT.join(' ') +
-            ' — uploaded to the library root and tagged for the selected' +
-            ' platform, so the PSP/PS3 tabs find them</div>' +
-        '</div>' +
-        '<input type="file" id="file-input" multiple hidden />' +
-        '<ul id="upload-list" class="upload-list"></ul>' +
-      '</div>';
-    var sel = document.getElementById('add-platform');
-    sel.onchange = function () { state.uploadPlatform = sel.value; };
-    document.getElementById('add-back').onclick = closeAdd;
-    var zone = document.getElementById('drop-zone');
-    var input = document.getElementById('file-input');
-    zone.onclick = function () { input.click(); };
-    zone.onkeydown = function (e) {
-      if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); input.click(); }
-    };
-    input.onchange = function () { addFiles(input.files); input.value = ''; };
-    zone.ondragover = function (e) { e.preventDefault(); zone.classList.add('is-over'); };
-    zone.ondragleave = function () { zone.classList.remove('is-over'); };
-    zone.ondrop = function (e) {
-      e.preventDefault();
-      zone.classList.remove('is-over');
-      addFiles(e.dataTransfer.files);
-    };
-    // Rows live in state, so reopening the panel mid-queue re-renders them
-    // and in-flight uploads keep updating their (freshly built) rows.
-    renderRows();
-  }
-
-  function rowPct(row) {
-    if (row.status === 'ok' || row.status === 'done') return 100;
-    if (row.status === 'uploading' && row.size > 0) {
-      return Math.min(99, Math.round(row.loaded / row.size * 100));
-    }
-    if (row.status === 'err' && row.loaded > 0) {
-      return Math.min(99, Math.round(row.loaded / row.size * 100));
-    }
-    return 0;
-  }
-
-  function rowStatusText(row) {
-    switch (row.status) {
-      case 'queued': return 'Waiting';
-      case 'uploading': return rowPct(row) + '%';
-      case 'done': return 'Saving…';
-      case 'ok': return '✓ Added';
-      case 'err': return row.error || 'Failed';
-      default: return '';
-    }
-  }
-
-  function rowEl(row) {
-    var li = document.createElement('li');
-    li.className = 'upload-row' +
-      (row.status === 'ok' ? ' is-ok' : row.status === 'err' ? ' is-err' : '');
-    var cls = row.status === 'ok' ? 'ok' : row.status === 'err' ? 'err' : '';
-    li.innerHTML =
-      '<div class="upload-id">' +
-        '<div class="upload-name">' + escapeHtml(row.name) + '</div>' +
-        '<div class="upload-size">' + fmtSize(row.size) + '</div>' +
-      '</div>' +
-      '<div class="up-bar"><div class="up-fill" style="width:' +
-        rowPct(row) + '%"></div></div>' +
-      '<div class="up-status ' + cls + '">' +
-        escapeHtml(rowStatusText(row)) + '</div>';
-    row.el = li;
-    return li;
-  }
-
-  function updateRow(row) {
-    var old = row.el;
-    // Panel closed (or row never shown): state still tracks the upload, and
-    // renderRows() re-creates the row when the panel is reopened.
-    if (!old || !old.parentNode) return;
-    old.parentNode.replaceChild(rowEl(row), old);
-  }
-
-  function renderRows() {
-    var list = document.getElementById('upload-list');
-    if (!list) return;
-    list.innerHTML = '';
-    state.rows.forEach(function (row) { list.appendChild(rowEl(row)); });
-  }
-
-  function addFiles(files) {
-    Array.prototype.forEach.call(files, function (f) {
-      var row = { name: f.name, size: f.size, loaded: 0,
-                  status: 'queued', error: '', file: f, el: null };
-      if (ALLOWED_EXT.indexOf(extOf(f.name)) === -1) {
-        row.status = 'err';
-        row.error = 'type not allowed';
-      } else if (!f.size) {
-        row.status = 'err';
-        row.error = 'empty file';
-      }
-      state.rows.push(row);
-      var list = document.getElementById('upload-list');
-      if (list) list.appendChild(rowEl(row));
-    });
-    pumpQueue();
-  }
-
-  // One upload at a time: keeps NAS disk writes sequential and the progress
-  // bars honest about what is actually on the wire.
-  function pumpQueue() {
-    if (state.uploading) return;
-    var row = null;
-    for (var i = 0; i < state.rows.length; i++) {
-      if (state.rows[i].status === 'queued') { row = state.rows[i]; break; }
-    }
-    if (!row) return;
-    state.uploading = true;
-    startUpload(row, function () {
-      state.uploading = false;
-      pumpQueue();
-    });
-  }
-
-  function startUpload(row, done) {
-    var xhr = new XMLHttpRequest();
-    // Raw-body endpoint: the file streams to the server's .part file instead
-    // of being buffered in its memory (multipart /api/upload stays for curl).
-    var url = UPLOAD_URL + '?name=' + encodeURIComponent(row.name) +
-              '&platform=' + encodeURIComponent(state.uploadPlatform);
-    xhr.open('POST', url);
-    row.status = 'uploading';
-    updateRow(row);
-    xhr.upload.onprogress = function (e) {
-      if (e.lengthComputable) { row.loaded = e.loaded; updateRow(row); }
-    };
-    xhr.onload = function () {
-      var body = null;
-      try { body = JSON.parse(xhr.responseText); } catch (e) { /* not JSON */ }
-      if (xhr.status === 201 && body && body.items) {
-        state.items = body.items;   // authoritative catalog after the merge
-        row.loaded = row.size;
-        row.status = 'ok';
-      } else {
-        row.status = 'err';
-        row.error = (body && body.error) || ('HTTP ' + xhr.status);
-      }
-      updateRow(row);
-      done();
-    };
-    xhr.onerror = function () {
-      row.status = 'err';
-      row.error = 'network error';
-      updateRow(row);
-      done();
-    };
-    xhr.send(row.file);
-  }
-
-  // ---- Keyboard ----
-  function bindGlobalKeys() {
-    document.addEventListener('keydown', function (e) {
-      if (state.mode === 'add') {
-        if (e.key === 'Escape') closeAdd();
+    if (e.key === 'Escape') {
+      if (uploads.isModalOpen()) { uploads.closeAdd(); return; }
+      if (document.querySelector('.modal-scrim.settings')) { closeSettings(); return; }
+      if (manage.isOpen()) {
+        manage.close();
+        renderLibrary();
         return;
       }
-      if (state.active === 'Settings') return;
-      if (state.view !== 'cover') return;
-      if (e.key === 'ArrowLeft')  { e.preventDefault(); move(-1); }
-      else if (e.key === 'ArrowRight') { e.preventDefault(); move(1); }
-      else if (e.key === 'Enter' || e.key === ' ') {
-        var list = currentList();
-        if (list[state.selected]) {
-          e.preventDefault();
-          toggleFav(list[state.selected].id);
-          renderView();
-        }
-      } else if (e.key === 'g' || e.key === 'G') {
-        state.view = state.view === 'cover' ? 'grid' : 'cover';
-        renderMenu(); renderView();
+      const search = document.getElementById('search');
+      if (inField && e.target === search) {
+        search.value = ''; state.query = ''; renderLibrary(); search.blur();
       }
-    });
-  }
+      return;
+    }
+    if (inField) return;
+    const card = e.target.closest ? e.target.closest('.card') : null;
+    if (!card) return;
+    if (e.key === 'ArrowRight' || e.key === 'ArrowLeft' ||
+        e.key === 'ArrowUp' || e.key === 'ArrowDown') {
+      e.preventDefault();
+      moveFocus(card, e.key);
+    } else if ((e.key === 'f' || e.key === 'F') && card.dataset.id) {
+      toggleFav(card.dataset.id);
+      refresh();
+    }
+  });
+}
 
-  function escapeHtml(s) {
-    return String(s == null ? '' : s)
-      .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
-      .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+function moveFocus(card, key) {
+  const grid = card.parentElement;
+  const cards = Array.prototype.slice.call(grid.querySelectorAll('.card'));
+  const i = cards.indexOf(card);
+  let j = i;
+  if (key === 'ArrowRight') j = Math.min(i + 1, cards.length - 1);
+  else if (key === 'ArrowLeft') j = Math.max(i - 1, 0);
+  else {
+    const cols = getComputedStyle(grid).gridTemplateColumns.split(' ').length || 1;
+    j = key === 'ArrowDown' ? Math.min(i + cols, cards.length - 1)
+                            : Math.max(i - cols, 0);
   }
-  function escapeAttr(s) {
-    // quote-safe for use inside style="url('…')" attribute.
-    return String(s == null ? '' : s).replace(/'/g, "\\'");
+  if (cards[j]) cards[j].focus();
+}
+
+/* ------------------------------------------------------------ sidebar -- */
+
+function renderSidebar() {
+  const nav = document.getElementById('section-nav');
+  nav.innerHTML = '';
+  let group = '';
+  sections().forEach((sec) => {
+    if (sec.group !== group) {
+      group = sec.group;
+      const h = document.createElement('div');
+      h.className = 'nav-group';
+      h.textContent = group;
+      nav.appendChild(h);
+    }
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.className = 'nav-item' + (state.section === sec.id ? ' active' : '');
+    b.innerHTML = '<span>' + esc(sec.label) + '</span>' +
+      '<span class="nav-count">' + sec.count + '</span>';
+    b.onclick = () => {
+      state.section = sec.id;
+      renderSidebar();
+      renderLibrary();
+      const search = document.getElementById('search');
+      search.value = ''; state.query = '';
+    };
+    nav.appendChild(b);
+  });
+}
+
+/* ----------------------------------------------------------- toolbar -- */
+
+function renderSort() {
+  const sel = document.getElementById('sort');
+  sel.innerHTML = SORTS.map(([v, label]) =>
+    '<option value="' + v + '"' + (v === state.sort ? ' selected' : '') + '>' +
+    label + '</option>').join('');
+}
+
+/* -------------------------------------------------------------- grid -- */
+
+function renderLibrary(loading) {
+  const main = document.getElementById('library');
+  if (loading) {
+    main.innerHTML = '<div class="state-box">Loading library…</div>';
+    return;
   }
-})();
+  const list = currentItems();
+  if (!list.length) {
+    const searching = state.query.trim() !== '';
+    main.innerHTML =
+      '<div class="state-box"><div class="state-big">' +
+        (searching ? 'No matches' :
+         state.items.length ? 'Nothing in this view' : 'Your library is empty') +
+        '</div>' + (searching ? '' :
+          'Use ＋ Add Games to upload an ISO, PBP, or zip — or drop files anywhere on this page.') +
+      '</div>';
+    return;
+  }
+  const grid = document.createElement('div');
+  grid.className = 'grid';
+  grid.setAttribute('role', 'list');
+  list.forEach((it) => grid.appendChild(cardEl(it)));
+  main.innerHTML = '';
+  main.appendChild(grid);
+}
+
+function cardEl(item) {
+  // A div, not a <button>: the favorite star is a real button inside the
+  // card, and a button inside a button is illegal HTML the parser reflows.
+  const card = document.createElement('div');
+  // A .rap with no game referencing it is still worth a card — it is a
+  // license waiting to be attached. Attached ones have none (state.js
+  // browseItems), so only unattached raps reach here as `isLicense`.
+  const isLicense = extOf(item.url || item.name || '') === 'rap';
+  card.className = 'card' + (isLicense ? ' is-license' : '') +
+    (item.id === state.selectedId ? ' is-selected' : '');
+  card.dataset.id = item.id;
+  card.tabIndex = 0;
+  card.setAttribute('role', 'listitem');
+  const plat = platformOf(item);
+  const cat = item.category || 'Uncategorized';
+  // "PSP · PSP · 1.1 GB" when the folder already says the platform.
+  const platSeg = plat && cat.toUpperCase() !== plat.toUpperCase()
+    ? ' · ' + plat.toUpperCase() : '';
+  // Key badge: whose license is on record, red-tinted if the file is gone.
+  let keyBadge = '';
+  if (!isLicense && item.rap) {
+    const lic = licenseInfo(item);
+    keyBadge = '<span class="badge-key' + (lic && lic.missing ? ' is-broken' : '') +
+      '" title="' + esc(lic && lic.missing
+        ? 'License file missing: ' + lic.name
+        : 'License: ' + (item.rap)) + '">🔑</span>';
+  }
+  card.innerHTML =
+    coverHTML(item, 'card-cover') +
+    keyBadge +
+    '<button class="fav-star' + (isFav(item.id) ? ' on' : '') + '" type="button" ' +
+      'aria-label="Toggle favorite">' + (isFav(item.id) ? '★' : '☆') + '</button>' +
+    '<div class="card-body">' +
+      '<div class="card-title">' + esc(item.title || 'Untitled') + '</div>' +
+      '<div class="card-meta">' +
+        (isLicense ? 'License' : esc(cat) + platSeg) +
+        ' · ' + fmtSize(item.size) +
+      '</div>' +
+    '</div>';
+  card.querySelector('.fav-star').onclick = (e) => {
+    e.stopPropagation();
+    toggleFav(item.id);
+    refresh();
+  };
+  card.onclick = () => { manage.open(item.id); refresh(); };
+  card.onkeydown = (e) => {
+    if (e.key === 'Enter' || e.key === ' ') {
+      e.preventDefault();
+      manage.open(item.id);
+      refresh();
+    }
+  };
+  return card;
+}
+
+function showError(msg) {
+  document.getElementById('library').innerHTML =
+    '<div class="state-box err">' + esc(msg) + '</div>';
+}
+
+/* ---------------------------------------------------------- settings -- */
+
+function applyTheme() {
+  const t = state.settings.theme;
+  const light = t === 'light' ||
+    (t !== 'dark' && matchMedia('(prefers-color-scheme: light)').matches);
+  document.documentElement.dataset.theme = light ? 'light' : 'dark';
+}
+
+function openSettings() {
+  const opts = SORTS.map(([v, l]) =>
+    '<option value="' + v + '"' + (v === state.settings.sort ? ' selected' : '') +
+    '>' + l + '</option>').join('');
+  const themeOpt = (v, l) =>
+    '<option value="' + v + '"' + ((state.settings.theme || 'auto') === v ? ' selected' : '') +
+    '>' + l + '</option>';
+  const overlay = document.createElement('div');
+  overlay.className = 'modal-scrim settings';
+  overlay.innerHTML =
+    '<div class="modal" role="dialog" aria-modal="true" aria-label="Settings">' +
+      '<button class="icon-btn close-x" id="set-close" aria-label="Close">✕</button>' +
+      '<h3>Settings</h3>' +
+      '<div class="field"><label for="set-theme">Theme</label>' +
+        '<select id="set-theme">' +
+          themeOpt('auto', 'Follow system') + themeOpt('dark', 'Dark') +
+          themeOpt('light', 'Light') +
+        '</select></div>' +
+      '<div class="field"><label for="set-sort">Default sort</label>' +
+        '<select id="set-sort">' + opts + '</select></div>' +
+      '<div class="settings-kv">' +
+        '<div>Catalog: <code>GET /api/catalog</code> — ' + state.items.length + ' entries</div>' +
+        '<div>Local data: ' + state.favorites.length + ' favorites, ' +
+          Object.keys(state.recent).length + ' recently viewed' +
+        ' (kept in this browser only)</div>' +
+        '<div><button class="btn btn-ghost" id="set-reset" type="button">Reset local data</button></div>' +
+      '</div>' +
+    '</div>';
+  document.body.appendChild(overlay);
+
+  overlay.querySelector('#set-close').onclick = closeSettings;
+  overlay.onclick = (e) => { if (e.target === overlay) closeSettings(); };
+  overlay.querySelector('#set-theme').onchange = (e) => {
+    state.settings.theme = e.target.value;
+    saveSettings();
+    applyTheme();
+  };
+  overlay.querySelector('#set-sort').onchange = (e) => {
+    state.settings.sort = e.target.value;
+    state.sort = e.target.value;
+    saveSettings();
+    renderSort();
+    renderLibrary();
+  };
+  overlay.querySelector('#set-reset').onclick = () => {
+    state.favorites = [];
+    state.recent = {};
+    saveFavorites();
+    saveRecent();
+    toast('Local favorites and history cleared');
+    refresh();
+    closeSettings();
+  };
+}
+
+function closeSettings() {
+  const el = document.querySelector('.modal-scrim.settings');
+  if (el) el.remove();
+}
