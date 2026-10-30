@@ -236,16 +236,23 @@ wrong `X-SHA256` is rejected with `rc=-11`.
       with `--build-arg NETSRV=ps3netsrv++` kept as the fallback
 
 ### In progress
-- [ ] **Store view on the PSP, rendered by the Cover Flow module** — build
-      `psp/store.c` with `ui/coverflow.*` as its renderer, opened with Triangle
-      as `psp/store.h` already documents. Two gaps first, both read off the
-      code: `store.c` parses `size_hint` and `install_path` while
-      `generate_catalog.py` emits `size` (int) and no `install_path`, and
-      `store_download()` needs a destination — so install paths get derived
-      on-device and sizes formatted from `size`; favourites/recent need a small
-      file next to `settings.txt`. `store.c` already prints through
-      `pspDebugScreenPrintf`, so the module's `has_colors=0` path fits the PSP
-      text screen (40 columns: tiles 8+2+14+2+8)
+- [x] **Store view on the PSP, rendered by the Cover Flow module** —
+      `psp/store.c` feeds `ui/coverflow.c` (built for the debug screen through
+      `psp/coverflow_psp.c`) and `Triangle` opens it from the browser. It parses
+      both the hand-written `items` catalog and `generate_catalog.py`'s
+      `entries` form (integer `size`, formatted on-device), derives PSP
+      EBOOT/ISO/CSO destinations locally, and keeps favourites plus the eight
+      most recent installs in `store_state.txt` beside `settings.txt`. Built
+      with `psp-gcc` and run in PPSSPPSDL: browse, category switch, grid toggle,
+      favourite add/remove, and installs of two `EBOOT.PBP`s and a 3 MB ISO each
+      landing on the memory stick with a sha256 equal to the served file. The
+      evidence, and the five bugs the run found, are in `log.md` (2026-10-30).
+      Real PSP hardware is still untested.
+- [ ] Store categories on the PSP — Cover Flow's tabs are a fixed enum filtering
+      on `category` starting with "PSP"/"PS3", while `generate_catalog.py` sets
+      category to the top-level library folder, so a normal library shows
+      `(no items in 'PSP Games')`. The catalog's own categories, parsed into
+      `store.c`, are collected and never displayed.
 - [ ] Cover Flow on the PS3 app — `ps3/main.c` writes ANSI to the TTY so
       `has_colors=1` applies directly, but its browser has no size/category to
       show until the share reports per-entry metadata (listed under Later)

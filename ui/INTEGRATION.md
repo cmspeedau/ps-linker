@@ -28,9 +28,9 @@ Two things to know when porting further, both read off `ui.js`:
 | PSP toolchain | `psp-gcc -c -O2 -G0 -Wall -Wextra` in `pspdev/pspdev` | compiles, no warnings |
 | PS3 toolchain | `ppu-gcc -c -O2 -Wall -Wextra -std=gnu99 -mcpu=cell -mminimal-toc` in `ps3dev/ps3dev:submodules` | compiles, no warnings |
 
-The module is **not yet called by either app**, so it is deliberately absent
-from `psp/Makefile`'s `OBJS` and `ps3/Makefile`'s `SRC`: unused code would just
-cost space in `EBOOT.PBP` / `nasdl.self`. The one-line additions are below.
+The PSP integration is in progress: `psp/store.c` feeds catalog items to the
+renderer and `Triangle` opens it from the browser. The PSP build now includes
+the shared object. The PS3 app remains unintegrated.
 
 ## API in one paragraph
 
@@ -89,15 +89,15 @@ then fixed and covered by an assertion:
 ## Wiring it into an app
 
 The renderer wants title / category / size / version / favourite per item.
-Neither app can feed it today:
+The PSP Store now supplies these fields; the PS3 directory browser still lacks
+catalog metadata:
 
 - `psp/main.c` and `ps3/main.c` browse a directory listing into
   `FileEntry { name, url, is_dir }` — no size, no category, no favourites.
   Cover Flow over that data is a list of one-word titles; the store-style
   chrome would be decoration.
-- `psp/store.c` *does* have the right shape (category tabs + titles + sizes
-  from `/catalog.json`), but it is not in `OBJS` and nothing calls
-  `store_run()`; `docs/STORE.md` documents a view that has never been built.
+- `psp/store.c` supplies the Store catalog to Cover Flow; `docs/STORE.md`
+  remains the legacy catalog-format overview.
 
 **Decided: option A — the Store view.** Build `store.c` with Cover Flow as its
 renderer, add `Triangle -> store_run(g_nas_base)` as `psp/store.h` already
@@ -177,6 +177,9 @@ PSP either render through it (use `has_colors = 0` plus the existing row
 helpers) or keep the ANSI path on the debug screen. `ps3/main.c` prints to the
 TTY, where the ANSI frames work directly.
 
-Until one of those lands, run `make -C ui test` to check the module, and treat
-`coverflow_render_default()` output as a preview of the layout rather than
-something either app shows.
+The PSP Store integration passes `has_colors = 0` because its output goes to
+the PSP debug screen, and `SCREEN_COLS = 60` because that is the 480-pixel
+debug screen on an 8-pixel cell; the renderer grows its tiles to suit
+(14 + 2 + 20 + 2 + 14). Run `make -C ui test` to check the shared module. The
+PSP app has since been built with `psp-gcc` and driven in PPSSPPSDL
+(`log.md`, 2026-10-30); real-hardware testing is still open.
