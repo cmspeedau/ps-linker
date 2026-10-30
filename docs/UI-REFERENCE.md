@@ -2,8 +2,10 @@
 
 This is the visual specification for PS Linker's browser interface, derived
 from Sony's **Media Go** application and stripped of unrelated media-library
-features. The PSP Store is documented separately and uses the shared Cover Flow
-renderer.
+features. The PSP Store is documented separately; it renders the shared Cover
+Flow state through its sceGu pixel renderer (its card surfaces, tab accents and
+progress bar follow this document's look), with the original debug-screen
+layout kept behind `-DNASDL_TEXT_UI`.
 
 What remains is Media Go's **shell** (dark theme, sidebar, list view, status
 bar, progress bar) applied to two screens: the **NAS browser** and the
@@ -39,7 +41,8 @@ bar, progress bar) applied to two screens: the **NAS browser** and the
 
 ### Shape & spacing
 
-- No rounded corners (PSP debug screen has no compositing); "panels" are
+- No rounded corners (the device renderers - debug screen and GU alike -
+  have no compositing); "panels" are
   implied by background-color changes and 1-blank-column gutters.
 - Sidebar fixed width: **14 columns** of text.
 - List area: everything right of the sidebar, 1 blank column gutter.
@@ -153,7 +156,9 @@ Downloading
 ## 4. Behavior rules
 
 1. Never redraw the whole screen mid-download; only the progress row
-   updates (uses `\r` carriage returns on the debug screen).
+   updates (uses `\r` carriage returns on the debug screen; the GU build
+   instead repaints its own double-buffered install screen, so nothing
+   flickers there).
 2. Selection must always be visible: scrolling windows the list so the
    accent bar never leaves the panel.
 3. All state messages (connecting, fetching, error) print in place —

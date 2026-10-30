@@ -5,7 +5,7 @@ Two components:
 | Component | Target | What it does |
 |---|---|---|
 | `server/` | Docker / Linux / NAS (host) | Streams games to PS3 via the ps3netsrv protocol, serves files over HTTP for PSP/PS3 download (with Range/resume), and runs the server-side Store (downloads queued CDN titles into the same unified library) |
-| `psp/` | PSP (homebrew) | `NAS Downloader` app: connects to Wi-Fi, browses/downloads files from the PS Linker server to the Memory Stick (resumable downloads) |
+| `psp/` | PSP (homebrew) | `NAS Downloader` app: connects to Wi-Fi, browses/downloads files from the PS Linker server to the Memory Stick (resumable downloads); the Store view is a pixel (sceGu) GUI |
 | `ps3/` | PS3 (homebrew, PSL1GHT) | `nasdl` app: browses/downloads files from the PS Linker server to the HDD (resumable downloads) |
 | `ui/` | shared source | Cover Flow renderer + key state machine both device apps can build against (ANSI only, no GPU); see `ui/INTEGRATION.md` |
 
@@ -302,6 +302,23 @@ wrong `X-SHA256` is rejected with `rc=-11`.
       `Utilities`, L/R switched and clamped, and a Utilities install landed
       with a sha256 equal to the served file. Evidence in `log.md`
       (2026-10-30). Real PSP hardware is still untested.
+- [x] **Store view on the PSP as a pixel GUI (sceGu)** — the debug-screen
+      renderer was all the device had; the Store now draws Media Go's own look
+      through `sceGu` at 480x272: orange header, tab rail with active-tab
+      underline, Cover Flow cards with id-hashed gradient covers (the web GUI's
+      `placeholderBG()` hash reproduced and pinned by host tests) plus initials
+      and dimmed neighbours, a 4x2 grid view with favourite stars, and an
+      install screen with a live progress bar. `psp/gui.{c,h}` is the renderer
+      core (rects, 8x8 font atlas, textured quads) the PS3 RSX stages will
+      reuse; `ui/coverflow.c` still owns all state, and `-DNASDL_TEXT_UI`
+      rebuilds the original layout. Built with `psp-gcc` and driven in
+      PPSSPPSDL end-to-end: browse, tab switch, cover move, favourite and
+      recents persisting to `store_state.txt`, two installs landing
+      byte-identical, O returning to a live browser and a clean second store
+      visit; the emulator also pinned down two real GE behaviours along the
+      way (sprite attribute packing, and GPU-side framebuffers outliving
+      `sceGuTerm`), documented in `log.md` (2026-10-31). Real PSP hardware is
+      still untested.
 - [ ] Cover Flow on the PS3 app — `ps3/main.c` writes ANSI to the TTY so
       `has_colors=1` applies directly, but its browser has no size/category to
       show until the share reports per-entry metadata (listed under Later)
