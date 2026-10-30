@@ -248,11 +248,15 @@ wrong `X-SHA256` is rejected with `rc=-11`.
       landing on the memory stick with a sha256 equal to the served file. The
       evidence, and the five bugs the run found, are in `log.md` (2026-10-30).
       Real PSP hardware is still untested.
-- [ ] Store categories on the PSP — Cover Flow's tabs are a fixed enum filtering
-      on `category` starting with "PSP"/"PS3", while `generate_catalog.py` sets
-      category to the top-level library folder, so a normal library shows
-      `(no items in 'PSP Games')`. The catalog's own categories, parsed into
-      `store.c`, are collected and never displayed.
+- [x] **Store categories on the PSP** — the Store sends the catalog's
+      first-seen, unique categories to Cover Flow (`coverflow_set_categories`);
+      L/R moves between them and each tab filters on the exact category name,
+      so the tabs are the library's own folders. The shared fixed menu stays
+      the default for other callers and as the empty-catalog fallback. Built
+      with `psp-gcc` and validated in PPSSPPSDL: tabs rendered as `Games` and
+      `Utilities`, L/R switched and clamped, and a Utilities install landed
+      with a sha256 equal to the served file. Evidence in `log.md`
+      (2026-10-30). Real PSP hardware is still untested.
 - [ ] Cover Flow on the PS3 app — `ps3/main.c` writes ANSI to the TTY so
       `has_colors=1` applies directly, but its browser has no size/category to
       show until the share reports per-entry metadata (listed under Later)

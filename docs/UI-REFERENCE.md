@@ -48,6 +48,16 @@ bar, progress bar) applied to two screens: the **NAS browser** and the
 
 ---
 
+## PSP Store category tabs
+
+The Store's top menu is data-driven from the unique categories found in
+`catalog.json`, shown in first-seen catalog order. The PSP L/R triggers move
+between those categories; each tab filters by exact category name, matching
+the generator's folder-based category values. The shared Cover Flow's standard
+fixed menu remains available to other callers and is used as a fallback when
+a caller provides no non-empty catalog category list. The PSP Store currently
+caps this menu at eight categories (31 displayed bytes per label).
+
 ## 2. Layout regions
 
 ```

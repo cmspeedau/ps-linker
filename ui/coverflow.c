@@ -68,6 +68,30 @@ int coverflow_init(coverflow_state_t *s,
     return 0;
 }
 
+void coverflow_set_categories(coverflow_state_t *s,
+                              const char *const *categories, size_t count) {
+    if (!s) return;
+    s->dynamic_category_count = 0;
+    if (categories) {
+        for (size_t i = 0; i < count &&
+             s->dynamic_category_count < COVERFLOW_MAX_DYNAMIC_CATEGORIES; i++) {
+            const char *name = categories[i];
+            if (!name || !name[0]) continue;
+            char label[COVERFLOW_DYNAMIC_CATEGORY_LEN];
+            snprintf(label, sizeof label, "%s", name);
+            int duplicate = 0;
+            for (size_t j = 0; j < s->dynamic_category_count; j++)
+                if (strcmp(s->dynamic_categories[j], label) == 0) duplicate = 1;
+            if (duplicate) continue;
+            snprintf(s->dynamic_categories[s->dynamic_category_count],
+                     COVERFLOW_DYNAMIC_CATEGORY_LEN, "%s", label);
+            s->dynamic_category_count++;
+        }
+    }
+    s->category = COVERFLOW_CAT_ALL;
+    coverflow_recompute_filter(s);
+}
+
 void coverflow_shutdown(coverflow_state_t *s) {
     if (!s) return;
     free(s->filtered);
@@ -101,8 +125,16 @@ void coverflow_recompute_filter(coverflow_state_t *s) {
 
     s->filtered_len = 0;
     for (size_t i = 0; i < s->item_count; i++) {
-        if (item_matches_category(&s->items[i], s->category))
-            s->filtered[s->filtered_len++] = i;
+        int matches;
+        if (s->dynamic_category_count) {
+            int cat = (int)s->category;
+            matches = cat >= 0 && (size_t)cat < s->dynamic_category_count &&
+                      strcmp(s->items[i].category,
+                             s->dynamic_categories[cat]) == 0;
+        } else {
+            matches = item_matches_category(&s->items[i], s->category);
+        }
+        if (matches) s->filtered[s->filtered_len++] = i;
     }
     if (s->filtered_len == 0) { s->index = 0; return; }
 
@@ -173,6 +205,19 @@ static void cover_title(char *dst, size_t cap, const char *title, int inner_w) {
 /* Wide enough for the widest label set plus the ANSI escapes around them. */
 #define CF_LINE 256
 
+static const char *state_category_label(const coverflow_state_t *s, int category) {
+    if (s && s->dynamic_category_count) {
+        if (category < 0 || (size_t)category >= s->dynamic_category_count) return "?";
+        return s->dynamic_categories[category];
+    }
+    return coverflow_category_label((coverflow_category_t)category);
+}
+
+static int state_category_count(const coverflow_state_t *s) {
+    return s && s->dynamic_category_count
+           ? (int)s->dynamic_category_count : COVERFLOW_CAT_COUNT;
+}
+
 size_t coverflow_menu_row(const coverflow_state_t *s, char *dst, size_t cap) {
     if (!s || cap == 0) { if (dst) dst[0] = '\0'; return 0; }
 
@@ -180,28 +225,29 @@ size_t coverflow_menu_row(const coverflow_state_t *s, char *dst, size_t cap) {
     const int colors = s->has_colors;
     /* Never trust the caller's enum: an out-of-range category must not index
        the label table. */
+    const int category_count = state_category_count(s);
     int cur = (int)s->category;
-    if (cur < 0 || cur >= COVERFLOW_CAT_COUNT) cur = COVERFLOW_CAT_ALL;
-    const char *cur_lbl = coverflow_category_label((coverflow_category_t)cur);
+    if (cur < 0 || cur >= category_count) cur = COVERFLOW_CAT_ALL;
+    const char *cur_lbl = state_category_label(s, cur);
     const int cur_need = (int)strlen(cur_lbl) + 3;   /* "[Label] " */
 
     /* How wide is the full menu? */
     int total = 1;
-    for (int c = 0; c < COVERFLOW_CAT_COUNT; c++)
-        total += (int)strlen(kCategoryLabels[c]) + 3;
+    for (int c = 0; c < category_count; c++)
+        total += (int)strlen(state_category_label(s, c)) + 3;
 
     /* Too wide for the screen (always true for 7 labels at 80 columns): show a
        window around the current category so the user can always see where
        they are, with < / > markers for what is off-screen. ASCII markers,
        because the device consoles are not guaranteed to render anything else. */
-    int start = 0, end = COVERFLOW_CAT_COUNT;
+    int start = 0, end = category_count;
     if (total > w) {
         const int span = 3;
         start = cur - span / 2;
         if (start < 0) start = 0;
         end = start + span;
-        if (end > COVERFLOW_CAT_COUNT) {
-            end = COVERFLOW_CAT_COUNT;
+        if (end > category_count) {
+            end = category_count;
             start = end - span;
             if (start < 0) start = 0;
         }
@@ -211,7 +257,7 @@ size_t coverflow_menu_row(const coverflow_state_t *s, char *dst, size_t cap) {
        off-screen markers are accounted for. The current label is drawn inside
        this, truncating if it has to. */
     const int mark_l = (start > 0) ? 1 : 0;
-    const int mark_r = (end < COVERFLOW_CAT_COUNT) ? 1 : 0;
+    const int mark_r = (end < category_count) ? 1 : 0;
     const int avail = w - 1 - mark_l - mark_r;
     const int cur_w = (cur_need <= avail) ? cur_need : (avail >= 6 ? avail : 0);
 
@@ -226,10 +272,11 @@ size_t coverflow_menu_row(const coverflow_state_t *s, char *dst, size_t cap) {
     if (mark_l && cols < w && n + 1 < cap) { dst[n++] = '<'; cols++; }
 
     for (int c = start; c < cur; c++) {
-        const int need = (int)strlen(kCategoryLabels[c]) + 3;
+        const char *label = state_category_label(s, c);
+        const int need = (int)strlen(label) + 3;
         if (cols + need > budget) continue;
         if (n + (size_t)need + 16 >= cap) break;
-        n += (size_t)snprintf(dst + n, cap - n, " %s ", kCategoryLabels[c]);
+        n += (size_t)snprintf(dst + n, cap - n, " %s ", label);
         cols += need;
     }
 
@@ -257,10 +304,11 @@ size_t coverflow_menu_row(const coverflow_state_t *s, char *dst, size_t cap) {
     }
 
     for (int c = cur + 1; c < end; c++) {
-        const int need = (int)strlen(kCategoryLabels[c]) + 3;
+        const char *label = state_category_label(s, c);
+        const int need = (int)strlen(label) + 3;
         if (cols + need > w) continue;
         if (n + (size_t)need + 16 >= cap) break;
-        n += (size_t)snprintf(dst + n, cap - n, " %s ", kCategoryLabels[c]);
+        n += (size_t)snprintf(dst + n, cap - n, " %s ", label);
         cols += need;
     }
 
@@ -315,7 +363,7 @@ static void tile_row(char *dst, size_t cap, const char *text,
 static void render_flow(const coverflow_state_t *s) {
     if (s->filtered_len == 0) {
         printf("\n  (no items in '%s')\n",
-               coverflow_category_label(s->category));
+               state_category_label(s, (int)s->category));
         return;
     }
 
@@ -399,7 +447,7 @@ static void render_flow(const coverflow_state_t *s) {
 static void render_grid(const coverflow_state_t *s) {
     if (s->filtered_len == 0) {
         printf("\n  (no items in '%s')\n",
-               coverflow_category_label(s->category));
+               state_category_label(s, (int)s->category));
         return;
     }
     int cols = s->screen_w >= 80 ? 4 : 3;
@@ -492,7 +540,7 @@ int coverflow_handle_key(coverflow_state_t *s, coverflow_key_t key,
             return 0;
 
         case COVERFLOW_KEY_SHOULDER_R:
-            if ((int)s->category + 1 < COVERFLOW_CAT_COUNT) {
+            if ((int)s->category + 1 < state_category_count(s)) {
                 s->category = (coverflow_category_t)((int)s->category + 1);
                 coverflow_recompute_filter(s);
                 return 1;
@@ -513,13 +561,13 @@ int coverflow_handle_key(coverflow_state_t *s, coverflow_key_t key,
             it->is_favorite = !it->is_favorite;
             s->favorite_toggle_pending = 1;
             /* If we are filtering by favorites, the list just changed. */
-            if (s->category == COVERFLOW_CAT_FAVORITES)
+            if (!s->dynamic_category_count && s->category == COVERFLOW_CAT_FAVORITES)
                 coverflow_recompute_filter(s);
             return 1;
         }
 
         case COVERFLOW_KEY_ENTER:
-            if (s->category == COVERFLOW_CAT_SETTINGS) {
+            if (!s->dynamic_category_count && s->category == COVERFLOW_CAT_SETTINGS) {
                 if (out_action) *out_action = COVERFLOW_ACTION_SETTINGS;
                 return 1;
             }

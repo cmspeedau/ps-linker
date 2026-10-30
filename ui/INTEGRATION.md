@@ -13,10 +13,14 @@ Two things to know when porting further, both read off `ui.js`:
   placeholders that match nothing. This module filters on the `category` field
   only (prefix match) — deliberately stricter, since a title regex misfiles
   things like "PSP Emulator Frontend".
-- The web GUI's extra tabs (`Emulators`, `Demos`, `Utilities`) come from
-  `item.category` in `catalog.json`. If the device view needs them, the
-  category list has to become data-driven; `COVERFLOW_CAT_*` is a fixed enum
-  today.
+- The shared renderer retains its fixed All Games / PSP Games / PS3 Games /
+  Recently Added / Favorites / Downloads / Settings menu by default. A caller
+  may opt into catalog categories with `coverflow_set_categories()`: labels
+  are unique, first-seen, exact category names (up to 8, 31 visible bytes),
+  filtered by exact equality; L/R move through that menu. Passing no usable
+  categories restores the fixed menu. The PSP Store supplies `store.c`'s
+  collected catalog categories. The PSP's 8-category / 32-byte collection
+  bounds are deliberate for its small catalog/parser buffers.
 
 ## What is verified (2026-10-23)
 
@@ -29,7 +33,11 @@ Two things to know when porting further, both read off `ui.js`:
 | PS3 toolchain | `ppu-gcc -c -O2 -Wall -Wextra -std=gnu99 -mcpu=cell -mminimal-toc` in `ps3dev/ps3dev:submodules` | compiles, no warnings |
 
 The PSP integration is in progress: `psp/store.c` feeds catalog items to the
-renderer and `Triangle` opens it from the browser. The PSP build now includes
+renderer and `Triangle` opens it from the browser. Dynamic Store categories
+and their host assertions were added on 2026-10-30 and verified the same day:
+208 host assertions pass, the `pspdev` container build links, and a PPSSPPSDL
+run showed the catalog's own folder tabs with a working install from the
+second tab (`log.md`). The PSP build now includes
 the shared object. The PS3 app remains unintegrated.
 
 ## API in one paragraph

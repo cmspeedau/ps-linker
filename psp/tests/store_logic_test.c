@@ -6,6 +6,21 @@
 int main(void)
 {
     char text[16], path[256], other[256];
+    char categories[STORE_CATEGORY_LIMIT][STORE_CATEGORY_LEN] = {{0}};
+    int category_count = 0;
+    assert(store_category_add(categories, &category_count, "Games") == 1);
+    assert(store_category_add(categories, &category_count, "Homebrew") == 1);
+    assert(store_category_add(categories, &category_count, "Games") == 0);
+    assert(store_category_add(categories, &category_count, "") == 0);
+    assert(category_count == 2 && strcmp(categories[0], "Games") == 0 &&
+           strcmp(categories[1], "Homebrew") == 0);
+    for (int i = category_count; i < STORE_CATEGORY_LIMIT; i++) {
+        char name[STORE_CATEGORY_LEN];
+        snprintf(name, sizeof name, "Category%d", i);
+        assert(store_category_add(categories, &category_count, name) == 1);
+    }
+    assert(store_category_add(categories, &category_count, "Overflow") == 0);
+    assert(category_count == STORE_CATEGORY_LIMIT);
 
     /* --- size formatting (generated catalogs carry an integer `size`) ----- */
     store_format_size(0, text, sizeof text); assert(strcmp(text, "0 KB") == 0);

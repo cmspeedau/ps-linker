@@ -2,6 +2,21 @@
 #include <stdio.h>
 #include <string.h>
 
+int store_category_add(char categories[STORE_CATEGORY_LIMIT][STORE_CATEGORY_LEN],
+                       int *count, const char *category)
+{
+    if (!categories || !count || !category || !category[0] ||
+        *count < 0 || *count > STORE_CATEGORY_LIMIT) return 0;
+    char normalized[STORE_CATEGORY_LEN];
+    snprintf(normalized, sizeof normalized, "%s", category);
+    for (int i = 0; i < *count; i++)
+        if (strcmp(categories[i], normalized) == 0) return 0;
+    if (*count == STORE_CATEGORY_LIMIT) return 0;
+    snprintf(categories[*count], STORE_CATEGORY_LEN, "%s", normalized);
+    (*count)++;
+    return 1;
+}
+
 void store_format_size(uint64_t bytes, char *out, size_t outlen)
 {
     if (!out || outlen == 0) return;

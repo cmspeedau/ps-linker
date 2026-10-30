@@ -165,6 +165,50 @@ static void test_categories(void) {
     coverflow_shutdown(&s);
 }
 
+static void test_dynamic_categories(void) {
+    coverflow_state_t s = new_state(60, 34, 0);
+    const char *cats[] = {"Games", "Homebrew", "Games", "Utilities"};
+    coverflow_action_t act;
+    char row[CF_LINE_TEST], plain[CF_LINE_TEST];
+
+    coverflow_set_categories(&s, cats, sizeof cats / sizeof cats[0]);
+    check(s.dynamic_category_count == 3, "dynamic categories are deduplicated");
+    check(s.filtered_len == 0, "catalog categories filter exact folder names");
+    /* Reuse a private item set whose categories match the catalog. */
+    coverflow_shutdown(&s);
+    coverflow_item_t items[] = {
+        {"One", "Games", "", "", 0, 0, 0},
+        {"Two", "Homebrew", "", "", 0, 0, 0},
+        {"Three", "Utilities", "", "", 0, 0, 0},
+        {"Four", "Other", "", "", 0, 0, 0},
+    };
+    check(coverflow_init(&s, items, 4, 60, 34, 0) == 0,
+          "dynamic category test state initializes");
+    coverflow_set_categories(&s, cats, sizeof cats / sizeof cats[0]);
+    check(s.filtered_len == 1 && coverflow_current(&s) == &items[0],
+          "first category shows only its matching catalog item");
+    coverflow_menu_row(&s, row, sizeof row);
+    strip_ansi(plain, row, sizeof plain);
+    check(strstr(plain, "[Games]") != NULL, "dynamic category label is displayed");
+    check(coverflow_handle_key(&s, COVERFLOW_KEY_SHOULDER_R, &act) == 1 &&
+          s.category == 1 && s.filtered_len == 1 &&
+          coverflow_current(&s) == &items[1], "R switches to next catalog category");
+    check(coverflow_handle_key(&s, COVERFLOW_KEY_SHOULDER_L, &act) == 1 &&
+          s.category == 0, "L switches back to previous catalog category");
+    coverflow_handle_key(&s, COVERFLOW_KEY_SHOULDER_L, &act);
+    check(s.category == 0, "L clamps at first catalog category");
+    coverflow_handle_key(&s, COVERFLOW_KEY_SHOULDER_R, &act);
+    coverflow_handle_key(&s, COVERFLOW_KEY_SHOULDER_R, &act);
+    check(s.category == 2 && s.filtered_len == 1 &&
+          coverflow_current(&s) == &items[2], "last dynamic category filters correctly");
+    check(coverflow_handle_key(&s, COVERFLOW_KEY_SHOULDER_R, &act) == 0,
+          "R clamps at last catalog category");
+    coverflow_set_categories(&s, NULL, 0);
+    check(s.dynamic_category_count == 0 && s.category == COVERFLOW_CAT_ALL &&
+          s.filtered_len == 4, "empty category list falls back to shared menu");
+    coverflow_shutdown(&s);
+}
+
 static void test_actions(void) {
     coverflow_state_t s = new_state(80, 28, 0);
     coverflow_action_t act;
@@ -396,6 +440,7 @@ int main(int argc, char **argv) {
     test_filters();
     test_navigation();
     test_categories();
+    test_dynamic_categories();
     test_actions();
     test_menu_row();
     test_bogus_inputs();

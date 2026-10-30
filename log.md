@@ -736,3 +736,46 @@ Open, and not caused by this change:
 - `main.c` still uses `SCREEN_COLS 68` on a 60-column screen; only padding
   spills past the edge, which is why it went unnoticed.
 - No real PSP hardware has been tried.
+
+
+## 2026-10-30 (PSP) — catalog-driven Store categories
+
+The catalog-category path arrived as a patch written in a sandbox without any
+C toolchain, so its own log text ended with "no runtime behavior is claimed".
+This session applied it onto `store-view` and ran everything it could not.
+The shared Cover Flow can now opt into a bounded list of category labels and
+filters items by exact category equality; its old fixed menu remains the
+default and is restored for an empty list. The PSP Store passes the unique
+categories it already parses from `catalog.json`, preserving first-seen order.
+L/R therefore switch between library folders such as `Games` or `Utilities`
+instead of empty PSP/PS3-specific views. The PSP category collector is bounded
+to eight labels of 31 visible bytes (`store_category_add`), with host
+assertions for deduplication, filtering, switching, boundaries, fallback, and
+category registration.
+
+Checked (host): `make -C ui test` compiles clean and prints `all 208
+coverflow assertions passed` - 197 before, the new `test_dynamic_categories`
+adds 11 and passes first try. `make -C psp/tests test` passes with the added
+`store_category_add` assertions (dedup, empty rejected, cap at eight).
+
+Checked (PSP): the scratch-tree build in `pspdev/pspdev` (podman) linked
+without new warnings; `EBOOT.PBP` sha256
+`b8f9dfd693c25cec648e84a8e335090f360ae8362072c0f610bf40110e9203e6`, installed
+to `PSP/GAME/NASDL/`. In PPSSPPSDL against the logging server, `Triangle`
+fetched the catalog (`GET "/catalog.json" -> 200 ... ua=PSLinkerStore
+sent=2282`) and the menu row rendered the catalog's own folders - `[Games]
+Utilities` - not the fixed PSP/PS3 labels. Games showed 6 items, Utilities 4,
+each tab listing exactly its own category; R moved to the last tab and
+clamped, L returned and clamped at the first (screenshots
+`store-open/store-utilities/store-games-clamp` in the e2e harness dir). An
+install from the second tab: `GET "/Utilities/clock_tool.PBP" -> 200 ...
+sent=65536`, landing at `ms0:/PSP/GAME/clock_tool/clock_tool.PBP` with sha256
+`996ce67c6384825d0eb50c095509a7034d3272d8e84754d55cb085b887058020`, equal to
+the served payload; the non-`EBOOT` filename still derived a sane folder. The
+counts include the generator's `*.meta.json` sidecar listings, the known
+`generate_catalog.py` issue noted above, not a filter fault.
+
+Still open from this change: no real PSP hardware has been tried, and in
+dynamic mode an item whose category is missing from the (max eight) tabs is
+not reachable - the generator guarantees a category for every entry, so that
+only bites libraries with more than eight top-level folders.

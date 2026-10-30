@@ -40,7 +40,7 @@ typedef enum {
 
 typedef struct {
     char        title[64];
-    char        category[24];     /* "PSP", "PS3", "Homebrew", ... */
+    char        category[32];     /* "PSP", "PS3", "Homebrew", ... */
     char        size_human[16];   /* e.g. "1.2 GB" */
     char        version[16];      /* e.g. "v1.05" — empty if unknown */
     int         is_favorite;
@@ -55,6 +55,9 @@ typedef enum {
     COVERFLOW_VIEW_GRID           /* 3xN text grid */
 } coverflow_view_t;
 
+#define COVERFLOW_MAX_DYNAMIC_CATEGORIES 8
+#define COVERFLOW_DYNAMIC_CATEGORY_LEN 32
+
 typedef struct {
     /* Inputs. NOT const: the favorite toggle updates is_favorite in place,
        so the caller must supply writable storage. */
@@ -66,7 +69,10 @@ typedef struct {
 
     /* Selection / filter state */
     size_t               index;      /* slot in `filtered` (the selection) */
-    coverflow_category_t category;
+    coverflow_category_t category; /* index in dynamic_categories when set */
+    char dynamic_categories[COVERFLOW_MAX_DYNAMIC_CATEGORIES]
+                             [COVERFLOW_DYNAMIC_CATEGORY_LEN];
+    size_t dynamic_category_count; /* zero preserves the shared fixed menu */
     coverflow_view_t     view;
     int                  favorite_toggle_pending; /* set here, cleared by the
                                                      caller once persisted  */
@@ -109,6 +115,11 @@ void coverflow_shutdown(coverflow_state_t *s);
 /* Re-derive the filtered index list for the current category. Call after
  * changing category, after items change, or after toggling favorite/recent. */
 void coverflow_recompute_filter(coverflow_state_t *s);
+
+/* Replace the menu with catalog categories (up to the fixed PSP-safe limit).
+ * Empty/NULL input leaves the normal shared menu in place. */
+void coverflow_set_categories(coverflow_state_t *s,
+                              const char *const *categories, size_t count);
 
 /* Feed a key. Returns 1 if the key caused a state change that requires a
  * redraw, 0 otherwise. COVERFLOW_KEY_ENTER / COVERFLOW_KEY_BACK are also

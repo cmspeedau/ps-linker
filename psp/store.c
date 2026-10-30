@@ -92,7 +92,7 @@ typedef struct {
 static StoreItem g_items[STORE_MAX_ITEMS];
 static int g_item_count = 0;
 
-static char g_categories[8][32];
+static char g_categories[STORE_CATEGORY_LIMIT][STORE_CATEGORY_LEN];
 static int g_category_count = 0;
 
 /* ------------------------------------------------------------------ */
@@ -177,11 +177,7 @@ static int parse_item(const char *json, size_t *pos, StoreItem *it) {
 }
 
 static void register_category(const char *cat) {
-    if (cat[0] == '\0') return;
-    for (int i = 0; i < g_category_count; i++)
-        if (strcmp(g_categories[i], cat) == 0) return;
-    if (g_category_count < 8)
-        snprintf(g_categories[g_category_count++], 32, "%s", cat);
+    store_category_add(g_categories, &g_category_count, cat);
 }
 
 static void parse_catalog(const char *json) {
@@ -406,6 +402,11 @@ int store_run(const char *nas_base) {
     coverflow_state_t cf;
     if (coverflow_init(&cf, g_covers, (size_t)g_item_count, SCREEN_COLS, SCREEN_ROWS, 0) != 0)
         return -3;
+    if (g_category_count > 0) {
+        const char *categories[STORE_CATEGORY_LIMIT];
+        for (int i = 0; i < g_category_count; i++) categories[i] = g_categories[i];
+        coverflow_set_categories(&cf, categories, (size_t)g_category_count);
+    }
     unsigned prev = 0;
     while (1) {
         pspDebugScreenClear();
