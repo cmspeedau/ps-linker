@@ -1,4 +1,5 @@
 #include "store_logic.h"
+#include <math.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -138,4 +139,69 @@ int store_derive_path(const char *url, const char *title,
     }
     int n = snprintf(out, outlen, "ms0:/PSP/GAME/%s/%s", folder, file);
     return n >= 0 && (size_t)n < outlen ? 0 : -2;
+}
+
+/* ---- id-hashed placeholder cover tiles ---------------------------------
+ * Port of the web GUI's placeholderBG(): one item, one hue, on the web
+ * page and on the PSP alike. Pure CPU so psp/tests can pin the parity. */
+
+int store_cover_hue(const char *id)
+{
+    uint32_t h = 0;
+    if (id)
+        for (; *id; id++)
+            h = (h * 31u + (unsigned char)*id) & 0x3fffffffu;
+    return (int)(h % 360u);
+}
+
+void store_hsl_to_rgb(int h, int s, int l, unsigned char out[3])
+{
+    h %= 360;
+    if (h < 0) h += 360;
+    if (s < 0)
+        s = 0;
+    if (s > 100)
+        s = 100;
+    if (l < 0)
+        l = 0;
+    if (l > 100)
+        l = 100;
+
+    const float sf = s / 100.f, lf = l / 100.f;
+    const float c = (1.f - fabsf(2.f * lf - 1.f)) * sf;
+    const float x = c * (1.f - fabsf(fmodf((float)h / 60.f, 2.f) - 1.f));
+    const float m = lf - c / 2.f;
+    float r, g, b;
+    switch (h / 60) {
+        case 0:  r = c; g = x; b = 0; break;
+        case 1:  r = x; g = c; b = 0; break;
+        case 2:  r = 0; g = c; b = x; break;
+        case 3:  r = 0; g = x; b = c; break;
+        case 4:  r = x; g = 0; b = c; break;
+        default: r = c; g = 0; b = x; break;
+    }
+    out[0] = (unsigned char)((r + m) * 255.f + 0.5f);
+    out[1] = (unsigned char)((g + m) * 255.f + 0.5f);
+    out[2] = (unsigned char)((b + m) * 255.f + 0.5f);
+}
+
+void store_cover_pixels(uint32_t *buf, int w, int h, const char *id)
+{
+    if (!buf || w <= 0 || h <= 0) return;
+    const int hue = store_cover_hue(id);
+    unsigned char top[3], bot[3];
+    store_hsl_to_rgb(hue, 42, 26, top);
+    store_hsl_to_rgb((hue + 40) % 360, 52, 12, bot);
+
+    for (int y = 0; y < h; y++) {
+        const int t = h > 1 ? y * 255 / (h - 1) : 0;   /* 0 = top, 255 = bottom */
+        int r = top[0] + ((int)bot[0] - (int)top[0]) * t / 255;
+        int g = top[1] + ((int)bot[1] - (int)top[1]) * t / 255;
+        int b = top[2] + ((int)bot[2] - (int)top[2]) * t / 255;
+        if (r < 0) r = 0; else if (r > 255) r = 255;
+        if (g < 0) g = 0; else if (g > 255) g = 255;
+        if (b < 0) b = 0; else if (b > 255) b = 255;
+        const uint32_t px = 0xFF000000u | ((uint32_t)r << 16) | ((uint32_t)g << 8) | (uint32_t)b;
+        for (int i = 0; i < w; i++) buf[(size_t)y * (size_t)w + (size_t)i] = px;
+    }
 }
