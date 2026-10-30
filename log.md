@@ -779,3 +779,61 @@ Still open from this change: no real PSP hardware has been tried, and in
 dynamic mode an item whose category is missing from the (max eight) tabs is
 not reachable - the generator guarantees a category for every entry, so that
 only bites libraries with more than eight top-level folders.
+
+## 2026-10-31 (PSP) - Graphics Store GUI on sceGu, run in PPSSPP
+
+The Store view left the text screen: `psp/gui.{c,h}` adds a GU core
+(double-buffered 480x272, filled rects, an 8x8 bitmap-font atlas, one
+textured-quad primitive), `psp/store_gui.{c,h}` draws the browse, status and
+install screens from the same `ui/coverflow.c` state the ANSI renderer
+consumes, and `psp/store.c` routes every screen through `ui_*` dispatch -
+pixels by default, `-DNASDL_TEXT_UI` rebuilds the original debug-screen
+layout. Icon-less covers are id-hashed gradient tiles (`store_cover_hue` /
+`store_hsl_to_rgb` / `store_cover_pixels` in `store_logic.c`), pinned by
+tests to the web GUI's `placeholderBG()` hash exactly ("ab"=225 deg,
+`Games/Doom/EBOOT.PBP`=111, `Homebrew_PSXReloaded.pkg`=229). Font: vendored
+public-domain `font8x8.h` (dhepper/font8x8, fetched 2026-10-31).
+
+Two GE behaviours the emulator pinned down, both worth remembering:
+
+- `GU_SPRITES` without `GU_TEXTURE_32BITF` made every flat rect invisible -
+  the GE packs vertex attributes in TXTR,CMND,POSITN order and starts
+  reading at COLOR only when no texcoords are flagged, so the shared
+  (u,v,color,pos) struct desynchronised and picked up alpha 0. Rects are
+  now textured quads of a 16x16 white texture, one vertex layout everywhere.
+- Handing the display back to the debug screen after `sceGuTerm()` froze the
+  screen on the store's last frame: with buffered rendering the emulator
+  keeps a GPU-side copy of every address the GE drew and presents THAT,
+  while the debug screen's writes are CPU-only. `ui_exit()` now re-inits the
+  debug screen at VRAM offset 0x155000 (past the GU depth buffer - the GE
+  never rendered there), so the display falls back to reading RAM, the same
+  path the browser used before the Store ever started. Re-entering the
+  Store afterwards re-initialises the GU cleanly (verified both ways).
+
+Checked (host): `make -C psp/tests test` (store logic + cover-hue parity
+fixtures) and `make -C ui test` (208 coverflow assertions) pass.
+Checked (PSP): pspdev/pspdev container builds BOTH backends warning-free
+apart from the pre-existing `sceHttpCreateRequestWithURL` const discard;
+shipped `EBOOT.PBP` sha256
+`08b4377fa3b2bd135814ce3e1f7773b4f5619940fc07aefb7e3458033e2bf6d4`.
+Checked (PSP run): PPSSPPSDL 1.20.4 against the Range-capable share with a
+4-entry fixture library. Screenshots `z0`-`z10` in the e2e dir: browser
+(debug screen) -> Triangle opens the pixel store (header, tab rail with
+active-tab underline, cover-flow cards with gradient + initials + dimmed
+neighbours, `2 / 2` counter); R switches to Games; RIGHT moves the cover;
+Square toggles the favourite (meta row gains `* fav`, `store_state.txt`
+gains `F:Games_Doom_Port_EBOOT.PBP`); Select toggles the 4x2 grid (gold
+star on the favourited card); Cross installs - progress screen at 57 %
+mid-download, then Doom lands at
+`PSP/GAME/Doom_Port/EBOOT.PBP` sha256 `5ffb7eac...` == served bytes, and a
+`R:` line records it; the Utilities install derives the `Clock_Tool` folder
+(sha `5b5a2173...` == served). O returns to the live browser listing, and a
+second Store visit renders correctly and exits again - the access log shows
+both `GET /catalog.json` hits plus both file GETs, all 200.
+
+Harness lessons recorded in the scratch dir's `PADMAPPING.txt`: pspdev's
+`pspctrl.h` D-pad bits are UP=0x10 RIGHT=0x20 DOWN=0x40 LEFT=0x80 (swapped
+vs the PS3 ctrl.h order, and the initial "RIGHT does nothing" mystery was
+exactly that), keys only land while the SDL window owns focus, and the
+fixture server must run under `python3 -u` or its access log sits
+block-buffered.
