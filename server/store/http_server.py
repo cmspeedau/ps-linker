@@ -4,7 +4,11 @@
 One port serves three things, in this routing order:
 
 1. ``/api/*`` — the web GUI's JSON endpoints (``GET /api/catalog``,
-   ``POST /api/upload``).
+   ``POST /api/upload``, ``POST /api/upload/file``, and the library
+   management trio ``DELETE /api/item``, ``POST /api/item/rename``,
+   ``PUT /api/item/meta``). Both uploads record the
+   entry in the catalog and leave a ``<name>.meta.json`` sidecar, so the
+   platform and prettified title survive the Store's catalog regenerations.
 2. ``/gui/`` — the web GUI, with its assets at ``/gui/<asset>`` (``/ui/*`` is
     kept as an alias). It sits under a prefix on purpose: ``/`` has to stay the
     library listing, because that is the first thing the NASDL apps request.
@@ -54,6 +58,18 @@ def title_from_filename(name: str) -> str:
     return re.sub(r"\s+", " ", s).strip() or name
 
 
+def parse_query(q: str) -> dict:
+    """Query parameters, percent-decoded but *not* '+'-decoded: game
+    filenames contain literal '+', which parse_qs would turn into spaces."""
+    out = {}
+    for token in q.split("&"):
+        if not token:
+            continue
+        key, _, value = token.partition("=")
+        out[unquote(key)] = unquote(value)
+    return out
+
+
 def catalog_read(path: str) -> dict:
     """The catalog file as a dict, whatever shape it is on disk."""
     try:
@@ -91,6 +107,158 @@ def catalog_save_items(path: str, items: list) -> None:
     with open(tmp, "w", encoding="utf8") as fh:
         json.dump(data, fh, indent=2)
     os.replace(tmp, path)
+
+
+def catalog_upsert(catalog_path: str, entry: dict, drop=()) -> list:
+    """Merge one entry into the catalog list by its library path, and save.
+
+    The key is ``url`` first (then ``path``/``name``/``id``): every shape a
+    catalog takes — ``generate_catalog.py``'s entries and upload entries —
+    carries a ``url``, so one uploaded file merges into its generated entry
+    instead of sitting beside it. Keying on fields only uploads have used to
+    collapse every generated entry onto one ``None`` key, dropping the
+    library from the catalog until the next regeneration.
+
+    ``drop`` names fields the merged entry must NOT have: a merge keeps keys
+    the incoming entry is silent about, so a field cleared to null (meta
+    edit) disappears only when it is dropped explicitly.
+    """
+    items = catalog_load_items(catalog_path)
+    key = _entry_key(entry)
+    merged, replaced = [], False
+    for it in items:
+        if not replaced and _entry_key(it) == key:
+            new = {**it, **entry}
+            for field in drop:
+                new.pop(field, None)
+            merged.append(new)
+            replaced = True
+        else:
+            merged.append(it)
+    if not replaced:
+        merged.append({k: v for k, v in entry.items() if k not in drop})
+    catalog_save_items(catalog_path, merged)
+    return merged
+
+
+def _entry_key(it: dict):
+    return it.get("url") or it.get("path") or it.get("name") or it.get("id")
+
+
+def catalog_remove(catalog_path: str, key) -> list:
+    """Drop the entry with this key (if any), save, and return the items."""
+    items = [it for it in catalog_load_items(catalog_path)
+             if _entry_key(it) != key]
+    catalog_save_items(catalog_path, items)
+    return items
+
+
+def library_target(games_dir: str, url: str):
+    """A catalog-style url ('/PSP/game.iso') resolved inside the library,
+    or None for anything that escapes it (percent-decoded, then realpath,
+    then prefix-checked — the same discipline as the file routes)."""
+    if not url or not url.startswith("/"):
+        return None
+    base = os.path.realpath(games_dir)
+    fs = os.path.realpath(os.path.join(base, url.lstrip("/")))
+    if not (fs == base or fs.startswith(base + os.sep)):
+        return None
+    return fs
+
+
+def managed_file(fs_path: str) -> bool:
+    """Whether this resolved path is a game the management endpoints may
+    touch: a regular file that is not the catalog, a hidden file, an
+    in-flight .part, or a sidecar (sidecars ride along with their game;
+    they are never managed directly)."""
+    name = os.path.basename(fs_path)
+    return (os.path.isfile(fs_path) and name != "catalog.json"
+            and not name.startswith(".")
+            and not name.endswith((".part", ".meta.json", ".sha256")))
+
+
+def upload_name_ok(safe: str) -> bool:
+    """Both upload endpoints gate on this: a plain visible file name with a
+    known game extension. Dot-prefixed names and ``.part`` names would slip
+    through the listing/catalog skips invisibly or collide with the resume
+    files, so they are rejected at the gate."""
+    return (bool(safe) and not safe.startswith(".")
+            and not BAD_NAME_RE.search(safe)
+            and os.path.splitext(safe)[1].lower() in ALLOWED_EXT)
+
+
+def upload_entry(rel: str, size: int, platform: str) -> dict:
+    """The catalog entry for an uploaded file, in the shape
+    ``generate_catalog.py`` produces (plus ``platform``): ``id`` underscores
+    the library-relative path, ``category`` is its top-level folder
+    (``Uncategorized`` at the root), so uploads and regenerated entries
+    merge on the same fields."""
+    name = os.path.basename(rel)
+    head = rel.split("/")[0] if "/" in rel else ""
+    return {"id": rel.replace("/", "_"), "name": name,
+            "title": title_from_filename(name),
+            "category": head or "Uncategorized", "platform": platform,
+            "path": rel, "url": "/" + rel, "size": size}
+
+
+def write_meta_sidecar(games_dir: str, rel: str, platform: str,
+                      title: str) -> None:
+    """Merge platform/title into the game's ``<name>.meta.json`` sidecar.
+    ``generate_catalog.py`` reads sidecars and passes those fields through,
+    which is the only way upload metadata survives a regeneration; an
+    existing sidecar's own keys (description, version, rap) are kept."""
+    path = os.path.join(games_dir, rel + ".meta.json")
+    meta = {}
+    try:
+        with open(path, encoding="utf8") as fh:
+            loaded = json.load(fh)
+        meta = loaded if isinstance(loaded, dict) else {}
+    except (OSError, ValueError):
+        meta = {}
+    meta["platform"] = platform
+    meta["title"] = title
+    tmp = path + ".part"
+    with open(tmp, "w", encoding="utf8") as fh:
+        json.dump(meta, fh, indent=2)
+    os.replace(tmp, path)
+
+
+def record_upload(games_dir: str, entry: dict) -> list:
+    """Sidecar + catalog entry for a file already written into the library;
+    returns the merged catalog items. License (.rap) files carry no sidecar:
+    their whole name is their metadata, and attachment is recorded on the
+    *game's* sidecar, not on their own."""
+    rel = entry["path"]
+    if os.path.splitext(rel)[1].lower() != ".rap":
+        write_meta_sidecar(games_dir, rel, entry["platform"], entry["title"])
+    return catalog_upsert(os.path.join(games_dir, "catalog.json"), entry)
+
+
+def repoint_rap_references(folder: str, old_name: str, new_name: str) -> None:
+    """After a .rap is renamed, keep the sidecars of games in the same
+    folder pointing at its new name — an attachment must not dangle."""
+    try:
+        names = os.listdir(folder)
+    except OSError:
+        return
+    for fname in names:
+        if not fname.endswith(".meta.json"):
+            continue
+        path = os.path.join(folder, fname)
+        try:
+            with open(path, encoding="utf8") as fh:
+                meta = json.load(fh)
+        except (OSError, ValueError):
+            continue
+        if isinstance(meta, dict) and meta.get("rap") == old_name:
+            meta["rap"] = new_name
+            tmp = path + ".part"
+            try:
+                with open(tmp, "w", encoding="utf8") as fh:
+                    json.dump(meta, fh, indent=2)
+                os.replace(tmp, path)
+            except OSError:
+                pass
 
 
 def sidecar_sha256(fs_path: str) -> str:
@@ -246,7 +414,14 @@ def make_handler(games_dir: str):
             self.do_GET()
 
         def do_POST(self) -> None:
-            if urlparse(self.path).path != "/api/upload":
+            path = urlparse(self.path).path
+            if path == "/api/upload/file":
+                self.handle_raw_upload()
+                return
+            if path == "/api/item/rename":
+                self.handle_item_rename()
+                return
+            if path != "/api/upload":
                 self.send_error(404)
                 return
             ctype = self.headers.get("Content-Type", "")
@@ -272,28 +447,307 @@ def make_handler(games_dir: str):
                         fields.append((filename.group(1), content))
             platform = platform if platform in ("psp", "ps3") else "psp"
 
-            items = catalog_load_items(catalog_path)
-            by_name = {it.get("name") or it.get("path"): it for it in items}
             uploaded = []
             for raw, content in fields:
                 safe = os.path.basename(unquote(raw))
-                if (not safe or BAD_NAME_RE.search(safe)
-                        or os.path.splitext(safe)[1].lower() not in ALLOWED_EXT):
+                if not upload_name_ok(safe):
                     self.send_json(400, {"error": f"invalid filename: {safe!r}"})
                     return
                 tmp = os.path.join(games_dir, safe + ".part")
                 with open(tmp, "wb") as fh:
                     fh.write(content)
                 os.replace(tmp, os.path.join(games_dir, safe))   # atomic
-                entry = {"name": safe, "title": title_from_filename(safe),
-                         "platform": platform, "path": safe,
-                         "url": "/" + safe, "size": len(content)}
-                by_name[safe] = {**by_name.get(safe, {}), **entry}
+                entry = upload_entry(safe, len(content), platform)
+                record_upload(games_dir, entry)
                 uploaded.append(entry)
 
-            catalog_save_items(catalog_path, list(by_name.values()))
             self.send_json(201, {"uploaded": uploaded,
-                                 "items": list(by_name.values())})
+                                 "items": catalog_load_items(
+                                     os.path.join(games_dir, "catalog.json"))})
+
+        def handle_raw_upload(self) -> None:
+            """POST /api/upload/file?name=<urlencoded>&platform=<psp|ps3>
+
+            One file per request, body is the raw bytes, streamed to
+            ``<name>.part`` and renamed in atomically — the web GUI's Add
+            Games panel uses this so a multi-GB ISO never sits in memory the
+            way the multipart endpoint's whole-body ``read()`` would leave
+            it. Chunked bodies are refused: BaseHTTPRequestHandler cannot
+            decode them and there is no Content-Length to trust."""
+            params = parse_query(urlparse(self.path).query)
+            raw_name = params.get("name", "")
+            safe = os.path.basename(raw_name)   # params were unquoted once
+            if not upload_name_ok(safe):
+                # The body is still unread; keep-alive would parse it as the
+                # next request, so this connection ends with the response.
+                self.close_connection = True
+                self.send_json(400, {"error": f"invalid filename: {raw_name!r}"})
+                return
+            platform = params.get("platform", "").strip().lower()
+            platform = platform if platform in ("psp", "ps3") else "psp"
+            dest_dir = games_dir
+            dir_param = params.get("dir", "").strip()
+            if dir_param:
+                # Optional destination folder inside the library — used to
+                # drop a license .rap beside its game. A missing or escaping
+                # dir is refused before the body is read.
+                if not dir_param.startswith("/"):
+                    dir_param = "/" + dir_param
+                resolved = library_target(games_dir, dir_param)
+                if resolved is None or not os.path.isdir(resolved):
+                    self.close_connection = True
+                    self.send_json(400, {"error": f"unknown dir: {dir_param!r}"})
+                    return
+                dest_dir = resolved
+            if "chunked" in self.headers.get("Transfer-Encoding", "").lower():
+                self.close_connection = True
+                self.send_json(411, {"error": "chunked upload unsupported"})
+                return
+            length = self.headers.get("Content-Length", "")
+            if not length.isdigit():
+                self.close_connection = True
+                self.send_json(411, {"error": "Content-Length required"})
+                return
+            length = int(length)
+
+            tmp = os.path.join(dest_dir, safe + ".part")
+            try:
+                remaining, received = length, 0
+                with open(tmp, "wb") as fh:
+                    while remaining > 0:
+                        chunk = self.rfile.read(min(CHUNK, remaining))
+                        if not chunk:
+                            break
+                        fh.write(chunk)
+                        received += len(chunk)
+                        remaining -= len(chunk)
+                if remaining:
+                    raise OSError(f"client sent {received} of {length} bytes")
+                os.replace(tmp, os.path.join(dest_dir, safe))   # atomic
+                rel = os.path.relpath(os.path.join(dest_dir, safe),
+                                       games_dir).replace(os.sep, "/")
+                entry = upload_entry(rel, length, platform)
+                items = record_upload(games_dir, entry)
+            except OSError as exc:
+                try:
+                    os.remove(tmp)
+                except OSError:
+                    pass
+                self.send_json(500, {"error": str(exc)})
+                return
+            self.send_json(201, {"uploaded": entry, "items": items})
+
+        # ---- library management (web GUI) ---------------------------------
+
+        def read_json(self):
+            """Parse a small JSON-object request body.
+            Returns (data, None) or (None, (code, message)). The body cannot
+            be consumed without a trustworthy Content-Length, so that path
+            ends the connection."""
+            length = self.headers.get("Content-Length", "")
+            if not length.isdigit() or int(length) > 65536:
+                self.close_connection = True
+                return None, (400, "JSON body with Content-Length required")
+            try:
+                data = json.loads(self.rfile.read(int(length)))
+            except ValueError:
+                return None, (400, "invalid JSON")
+            if not isinstance(data, dict):
+                return None, (400, "JSON object required")
+            return data, None
+
+        def resolve_item(self, url):
+            """Resolved path for a management request's url, or None. A
+            directory answers 405 itself (the caller cannot ask for one by
+            accident); anything else unmanaged answers 404 without revealing
+            whether it exists."""
+            fs_path = library_target(games_dir, str(url or ""))
+            if fs_path is None:
+                self.send_json(404, {"error": "not in the library"})
+                return None
+            if os.path.isdir(fs_path):
+                self.send_json(405, {"error": "directories are not managed here"})
+                return None
+            if not managed_file(fs_path):
+                self.send_json(404, {"error": "not a managed library file"})
+                return None
+            return fs_path
+
+        def do_DELETE(self) -> None:
+            if urlparse(self.path).path != "/api/item":
+                self.send_error(404)
+                return
+            url = parse_query(urlparse(self.path).query).get("url", "")
+            fs_path = self.resolve_item(url)
+            if fs_path is None:
+                return
+            rel = "/" + os.path.relpath(fs_path, games_dir).replace(os.sep, "/")
+            try:
+                os.remove(fs_path)
+                for side in (fs_path + ".meta.json", fs_path + ".sha256"):
+                    if os.path.isfile(side):
+                        os.remove(side)
+            except OSError as exc:
+                self.send_json(500, {"error": str(exc)})
+                return
+            self.send_json(200, {"deleted": rel,
+                                 "items": catalog_remove(catalog_path, rel)})
+
+        def handle_item_rename(self) -> None:
+            data, err = self.read_json()
+            if err:
+                self.send_json(err[0], {"error": err[1]})
+                return
+            fs_path = self.resolve_item(data.get("url"))
+            if fs_path is None:
+                return
+            name = str(data.get("name", ""))
+            if not upload_name_ok(name):
+                self.send_json(400, {"error": f"invalid name: {name!r}"})
+                return
+            target = os.path.join(os.path.dirname(fs_path), name)
+            if os.path.exists(target):
+                self.send_json(409, {"error": "name already in use"})
+                return
+            old_key = "/" + os.path.relpath(fs_path, games_dir).replace(os.sep, "/")
+            try:
+                os.rename(fs_path, target)
+                for suffix in (".meta.json", ".sha256"):
+                    if os.path.isfile(fs_path + suffix):
+                        os.rename(fs_path + suffix, target + suffix)
+            except OSError as exc:
+                self.send_json(500, {"error": str(exc)})
+                return
+            new_rel = os.path.relpath(target, games_dir).replace(os.sep, "/")
+            old_name = os.path.basename(fs_path)
+            if old_name.lower().endswith(".rap"):
+                # A renamed license keeps its games: rewrite the sidecars
+                # and catalog entries in the same folder that point at it.
+                repoint_rap_references(os.path.dirname(target), old_name, name)
+                folder_rel = os.path.dirname(new_rel)
+                items = catalog_load_items(catalog_path)
+                touched = False
+                for it in items:
+                    u = str(it.get("url") or "")
+                    if (u.startswith("/") and it.get("rap") == old_name
+                            and os.path.dirname(u[1:]) == folder_rel):
+                        it["rap"] = name
+                        touched = True
+                if touched:
+                    catalog_save_items(catalog_path, items)
+            old_entry = next((it for it in catalog_load_items(catalog_path)
+                              if _entry_key(it) == old_key), {})
+            catalog_remove(catalog_path, old_key)
+            fresh = {"id": new_rel.replace("/", "_"), "name": name,
+                     "path": new_rel, "url": "/" + new_rel}
+            entry = {**{"title": title_from_filename(name)}, **old_entry, **fresh}
+            # A prettified title only survives a regeneration through the
+            # sidecar, so the renamed catalog title must agree with it.
+            sidecar_title = str(self.read_sidecar(target).get("title") or "")
+            entry["title"] = sidecar_title or title_from_filename(name)
+            self.send_json(200, {"renamed": entry,
+                                 "items": catalog_upsert(catalog_path, entry)})
+
+        def do_PUT(self) -> None:
+            if urlparse(self.path).path != "/api/item/meta":
+                self.send_error(404)
+                return
+            self.handle_item_meta()
+
+        def handle_item_meta(self) -> None:
+            data, err = self.read_json()
+            if err:
+                self.send_json(err[0], {"error": err[1]})
+                return
+            fs_path = self.resolve_item(data.get("url"))
+            if fs_path is None:
+                return
+            patch = {}
+            for field in ("title", "version", "description", "platform"):
+                if field not in data:
+                    continue
+                value = data[field]
+                if value is None:
+                    patch[field] = None
+                    continue
+                if not isinstance(value, str) or len(value) > 500:
+                    self.send_json(400, {"error": f"bad {field}"})
+                    return
+                value = value.strip()
+                if field == "platform":
+                    value = value.lower()
+                    if value and value not in ("psp", "ps3"):
+                        self.send_json(400, {"error": "platform is psp or ps3"})
+                        return
+                patch[field] = value or None
+            # The license link is special-cased: it must be a .rap that
+            # actually sits in the game's own folder (co-location is the
+            # whole point — webMAN-style consumers look next to the game).
+            if "rap" in data:
+                value = data["rap"]
+                same_folder = os.path.join(os.path.dirname(fs_path),
+                                           str(value or ""))
+                if value is None or (isinstance(value, str) and not value.strip()):
+                    patch["rap"] = None
+                elif (isinstance(value, str) and len(value) <= 200
+                        and value == os.path.basename(value)
+                        and value.lower().endswith(".rap")
+                        and os.path.isfile(same_folder)):
+                    patch["rap"] = value
+                else:
+                    self.send_json(400, {
+                        "error": "rap must be a .rap file in the same folder"})
+                    return
+            if not patch:
+                self.send_json(400, {"error": "nothing to change"})
+                return
+
+            # Merge into the sidecar; an all-empty sidecar is deleted so the
+            # disk stays honest about what the generator will re-read.
+            meta = self.read_sidecar(fs_path)
+            for field, value in patch.items():
+                if value is None:
+                    meta.pop(field, None)
+                else:
+                    meta[field] = value
+            side_path = fs_path + ".meta.json"
+            try:
+                if meta:
+                    tmp = side_path + ".part"
+                    with open(tmp, "w", encoding="utf8") as fh:
+                        json.dump(meta, fh, indent=2)
+                    os.replace(tmp, side_path)
+                elif os.path.isfile(side_path):
+                    os.remove(side_path)
+            except OSError as exc:
+                self.send_json(500, {"error": str(exc)})
+                return
+
+            rel = "/" + os.path.relpath(fs_path, games_dir).replace(os.sep, "/")
+            old_entry = next((it for it in catalog_load_items(catalog_path)
+                              if _entry_key(it) == rel), {})
+            base = os.path.basename(fs_path)
+            entry = {"id": rel[1:].replace("/", "_"), "name": base,
+                     "path": rel[1:], "url": rel,
+                     "title": title_from_filename(base)}
+            entry = {**entry, **old_entry}
+            # A cleared field must leave the catalog entry too, or the GUI
+            # would keep showing metadata the sidecar no longer has — the
+            # merge keeps silent keys, so cleared fields go through ``drop``.
+            cleared = tuple(k for k, v in patch.items() if v is None)
+            entry.update({k: v for k, v in patch.items() if v is not None})
+            self.send_json(200, {"meta": meta,
+                                 "items": catalog_upsert(catalog_path, entry,
+                                                         cleared)})
+
+        @staticmethod
+        def read_sidecar(fs_path: str) -> dict:
+            try:
+                with open(fs_path + ".meta.json", encoding="utf8") as fh:
+                    loaded = json.load(fh)
+                return loaded if isinstance(loaded, dict) else {}
+            except (OSError, ValueError):
+                return {}
 
         def log_message(self, fmt, *args) -> None:
             print("[http] %s - %s" % (self.address_string(), fmt % args))

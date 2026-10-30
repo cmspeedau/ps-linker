@@ -20,38 +20,87 @@ parse.
 
 ## Files
 
-- `server/store/ui/index.html` — application structure: menu/toolbar, Cover Flow
-  carousel, grid toggle, selected-item detail pane, transfer status bar. Asset
-  links are relative, so they resolve under whatever prefix serves the shell.
-- `server/store/ui/ui.css` — the dark Media Go-inspired palette, blue selection
-  states, dense utility chrome, responsive layout, cover-tile treatments.
-- `server/store/ui/ui.js` — fetches `GET /api/catalog` and renders the
-  catalogue. The URL is **absolute**; a relative one resolves against `/gui/`
-  and 404s, which is how the shell came to display "Failed to load catalog"
-  for every catalog. Placeholder artwork is never presented as live data; an
-  empty or unavailable catalogue is shown as empty.
+Dependency-free and build-free — the Docker image copies the folder, so the
+shell is ES modules and modern CSS with no bundler and no framework.
+
+| File | Role |
+|---|---|
+| `index.html` | App shell: sidebar, toolbar, library grid, detail drawer, upload dock, drop overlay, modal root, toast host. A tiny inline script applies the stored theme before first paint. |
+| `ui.css` | Single stylesheet. Design tokens under `@layer tokens` (`[data-theme="light"]` overrides them), then base/layout/components. |
+| `ui.js` | Entry module: boot, sidebar sections with counts, toolbar (search `/` to focus, sort), card grid with roving keyboard focus (arrows navigate, Enter opens, `F` favorites), settings modal, theme handling, mobile sidebar. |
+| `state.js` | Shared state + localStorage (`pslinker.favorites.v1`, `pslinker.recent.v1`, `pslinker.settings.v1`), section/sort/filter logic, and the helpers (escape, size format, deterministic placeholder covers, toasts). |
+| `api.js` | Everything that talks to the JSON API: catalog fetch, upload, delete/rename/meta. |
+| `uploads.js` | Add Games modal, the serial upload queue, the corner dock (progress survives closing the modal), and the whole-window drop overlay. |
+| `manage.js` | Detail drawer: metadata display, Favorite, Download, Rename, Metadata edit, delete with an explicit second-click confirm, and the License (RAP) section (attach/change/remove). |
+
+Layout is direction "B — modern dashboard": sidebar (Library: All/Favorites/
+Recently Viewed; Platforms: PSP/PS3; Folders: the catalog's own categories
+with counts), toolbar (search, sort, ＋ Add Games), responsive card grid,
+and a right-side detail drawer (bottom sheet on mobile). Cover Flow lives on
+the PSP/PS3 apps only; the web shell replaced it with the grid.
 
 ## JSON endpoints
 
 | Endpoint | Method | Notes |
 |---|---|---|
-| `/api/catalog` | GET | `{"items": [...], "categories": [...]}`. Tolerates the `items` / `entries` / `games` key spellings in the file; `items` is the key `ui.js` reads. `categories` is passed through only when the catalogue declares one. |
-| `/api/upload` | POST | `multipart/form-data` with a `platform` field (`psp`/`ps3`) and one or more `file` parts. Writes into the library root (atomic `.part` + rename), rejects extensions outside the game set, then refreshes `catalog.json` in whatever top-level shape it already had. The Store regeneration loop rewrites that file from disk on its own timer, so this is a between-cycles convenience. |
+| `/api/catalog` | GET | `{"items": [...], "categories": [...]}`. Tolerates the `items` / `entries` / `games` key spellings in the file; `items` is the key the shell reads. `categories` is passed through only when the catalogue declares one. |
+| `/api/upload` | POST | `multipart/form-data` with a `platform` field (`psp`/`ps3`) and one or more `file` parts. Reads the whole body into memory, so it suits curl and small files; the shell does not use it. Writes into the library root (atomic `.part` + rename), rejects extensions outside the game set, then refreshes `catalog.json` in whatever top-level shape it already had. |
+| `/api/upload/file` | POST | The shell's Add Games path: one file per request, raw request body (no multipart), `?name=<url-encoded>&platform=<psp|ps3>&dir=<optional>`. The body is streamed to `<name>.part` in 256 KiB chunks and renamed in atomically, so uploads of ISO-sized files never buffer in memory. `dir` names an existing folder inside the library (default: the root) — it is how a license `.rap` lands beside its game; an escaping or missing `dir` is refused with `400` before the body is read. Chunked bodies get `411`. |
+| `/api/item?url=…` | DELETE | Removes one library file plus its `.meta.json`/`.sha256` sidecars and its catalog entry. Directories get `405`; `catalog.json`, dotfiles, in-flight `.part` files, and bare sidecars get `404`; a url resolving outside the library gets `404`. |
+| `/api/item/rename` | POST | JSON `{"url":…, "name":…}`. A rename is a rename, not a move: the file stays in its folder, sidecars come with it, the catalog entry is re-keyed. Renaming a referenced `.rap` also rewrites the sidecars and catalog entries beside it that point at the old name. Same name/extension guards as uploads; an existing name in the folder is `409`. |
+| `/api/item/meta` | PUT | JSON `{"url":…, "title"?, "version"?, "description"?, "platform"?, "rap"?}`; `null` or `""` clears a field, `platform` is `psp`/`ps3` only, strings cap at 500 characters. `rap` names a license file and is validated specially (see below). Merged into the game's `<name>.meta.json` (existing keys preserved; an emptied sidecar is deleted) and into the catalog entry. |
 
-Download/sync controls in the shell are visual only until a PSP transfer API
-exists.
+Both `/api/upload*` and every `/api/item*` mutation answer with the full
+merged `items` array — the shell adopts it instead of re-fetching, and every
+mutation keeps `<name>.meta.json` as the durable record, since
+`generate_catalog.py` rebuilds `catalog.json` from disk.
 
-## Menu tabs
+Search and sort are client-side over the fetched catalog. Platform sections
+filter on the sidecar `platform` field only — never a title regex, the same
+lesson the device module learned (`ui/INTEGRATION.md`).
 
-`ui.js` filters on `platform` **or** a `/PSP/i` / `/PS3/i` regex over the title,
-and derives extra tabs (`Emulators`, `Demos`, `Utilities`) from
-`item.category`. `Downloads` and `Settings` are placeholders that match
-nothing. The device module deliberately filters on `category` only — a title
-regex misfiles things like "PSP Emulator Frontend" — so the two implementations
-are not identical on purpose; see `ui/INTEGRATION.md`.
+## Licenses (.rap)
+
+Released PS3 content needs a `.rap` license file the user supplies for games
+they own; the share only stores what they put there. The pairing lives in the
+game's sidecar as `rap` (a bare file name), which `generate_catalog.py`
+passes through like `title`/`platform`, so it survives regeneration.
+
+- **Attach** — the game's drawer shows a License (RAP) section for PS3-tagged
+  items. A `.rap` already sitting in the game's folder is offered with a
+  **Use** button (the usual Add Games case: game and license uploaded
+  together). **Attach license** opens a `.rap`-filtered picker and uploads
+  via `dir=<game folder>` so the license lands beside the game, then records
+  the pairing. A `.rap` whose title-ID stem doesn't appear in the game's
+  file name triggers a confirm nudge, not a block.
+- **Server validation** — `rap` must be a bare `.rap` name of a file that
+  exists in the game's own folder (co-location is what webMAN-style
+  consumers look for); anything else is `400`. `null` detaches and removes
+  the key from sidecar and catalog entry alike, leaving the `.rap` file in
+  the library.
+- **Renaming a license** rewrites the sidecars and catalog entries in the
+  same folder that reference it, so attachments never dangle. Deleting one
+  stays allowed (it is the user's file) — the game then reports **license
+  file missing** in red instead of pretending.
+- **Grid semantics** — an attached `.rap` is an accessory, not a card: it
+  disappears from the grid (the game carries a 🔑 badge, red-tinted when the
+  file is gone) and is reached from the game's drawer. An unattached `.rap`
+  renders as a dashed **License** card so it stays discoverable. Sidebar
+  counts match the filtered grid.
+
+## Local state
+
+Favorites, recently-viewed (wired: opening an item records it), theme, and
+default sort all live in this browser's `localStorage`; nothing about
+preferences touches the server. Settings → *Reset local data* clears them.
 
 ## Checks
 
 `server/store/check_share.sh` covers the share this GUI depends on: listings,
-`Range`/206/416, the `/gui/` routes, `/api/catalog`'s key, uploads, and path
-traversal.
+`Range`/206/416, the `/gui/` routes, `/api/catalog`'s key, both upload paths
+(streamed bytes land identical, rejections write nothing, chunked is refused),
+the management trio (merge-not-replace metadata writes, sidecar ride-alongs,
+rename collisions, and refusals for directories, sidecars, `catalog.json`, and
+traversal), license pairing (`dir=` placement and refusals, attach validation,
+license renames repointing references, detach, regeneration passthrough), and
+path traversal in general.

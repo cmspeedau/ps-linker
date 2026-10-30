@@ -5,7 +5,7 @@ Two components:
 | Component | Target | What it does |
 |---|---|---|
 | `server/` | Docker / Linux / NAS (host) | Streams games to PS3 via the ps3netsrv protocol, serves files over HTTP for PSP/PS3 download (with Range/resume), and runs the server-side Store (downloads queued CDN titles into the same unified library) |
-| `psp/` | PSP (homebrew) | `NAS Downloader` app: connects to Wi-Fi, browses/downloads files from the PS Linker server to the Memory Stick (resumable downloads) |
+| `psp/` | PSP (homebrew) | `NAS Downloader` app: connects to Wi-Fi, browses/downloads files from the PS Linker server to the Memory Stick (resumable downloads); the Store view is a pixel (sceGu) GUI |
 | `ps3/` | PS3 (homebrew, PSL1GHT) | `nasdl` app: browses/downloads files from the PS Linker server to the HDD (resumable downloads) |
 | `ui/` | shared source | Cover Flow renderer + key state machine both device apps can build against (ANSI only, no GPU); see `ui/INTEGRATION.md` |
 
@@ -31,7 +31,8 @@ Then:
 
 - Put game files under `./games/` (or change the volume in `docker-compose.yml`)
 - Open `http://<server>:8000/` to browse/download
-- Open `http://<server>:8000/gui/` for the web library (Cover Flow / grid, catalog, uploads)
+- Open `http://<server>:8000/gui/` for the web library (card grid, search,
+  sections, favorites, uploads, rename/metadata/delete — served by the share)
 - Point your PS3 at `<server>:38008` for game streaming
 
 The netiso server shares `GAMES_DIR` read-only. Set `NETSRV_WHITELIST=192.168.1.*`
@@ -65,7 +66,7 @@ For uploaded games, place `<name>.meta.json` next to the game file:
   {"icon": "covers/example.png", "version": "1.0", "description": "Homebrew example"}
   ```
 
-`generate_catalog.py` merges these sidecars with folder-derived categories and serves the result as `/catalog.json`.
+`generate_catalog.py` merges these sidecars with folder-derived categories and serves the result as `/catalog.json`; it passes `title`, `platform`, and `rap` through as well, which is how uploads from the web GUI keep their prettified title and PSP/PS3 tab membership across regenerations. The uploads themselves write `platform` and `title` into that sidecar, and the web GUI's metadata editor writes `title`/`version`/`description`/`platform` (and the license pairing `rap`, the name of a `.rap` file sitting beside the game) through `PUT /api/item/meta`, which merges rather than replaces. Sidecar files (`.meta.json`, `.sha256`) are never listed as catalog entries.
 
 ### Manual build (without compose)
 
@@ -213,9 +214,9 @@ wrong `X-SHA256` is rejected with `rc=-11`.
       running share (menu filters narrow the carousel correctly)
 - [x] Web GUI library sections: All Games / PSP Games / PS3 Games / Emulators /
       Demos / Utilities / Recently Added / Favorites menu filters over the
-      unified catalog (`GET /api/catalog`). The upload *endpoint*
-      (`POST /api/upload`) exists and is checked; the browser-side "Add Games"
-      UI does not exist yet
+      unified catalog (`GET /api/catalog`). The upload *endpoints*
+      (`POST /api/upload`, streamed `POST /api/upload/file`) exist and are
+      checked; the browser-side **Add Games** panel is Done below
 - [x] **Cover Flow UI (web GUI)** — horizontally scrolling cover carousel
       (centered title enlarged/in focus), top menu bar with all categories
       (All Games | PSP Games | PS3 Games | Recently Added | Favorites | Downloads |
@@ -232,6 +233,50 @@ wrong `X-SHA256` is rejected with `rc=-11`.
       deviations, 0 undeclared — plus 82 tests in `netsrv_test.py`; spec and
       findings in `docs/PS3NETSRV-PROTOCOL.md`. Ships in the image as the default,
       with `--build-arg NETSRV=ps3netsrv++` kept as the fallback
+- [x] **Web GUI Add Games** — a topbar button opens an upload panel (platform
+      picker, file input + drag-and-drop, per-file progress and result). Files
+      go one request each to the new `POST /api/upload/file`, streamed to
+      `.part` + atomic rename, so a multi-GB ISO never sits in the server's
+      memory the way the multipart `POST /api/upload` (kept for curl) would
+      leave it. Uploads upsert their catalog entry by `url` — fixing a bug
+      where an upload after a regeneration collapsed the catalog to one
+      entry — and write a `<name>.meta.json` sidecar whose `platform` and
+      `title` `generate_catalog.py` now passes through, so PSP/PS3 tab
+      membership survives regeneration; the generator no longer lists
+      `.meta.json`/`.sha256` sidecars as games. 13 new `check_share.sh`
+      assertions, and the panel plus a browser-origin upload were driven in a
+      real browser (progress events, merged catalog, no entry loss)
+- [x] **Web GUI redesigned as a modern library dashboard** — the Media Go/
+      Cover Flow shell became a sidebar + toolbar + card-grid + detail-drawer
+      app in ES modules and token-based CSS (still dependency-free, the image
+      is still a file copy; Cover Flow remains the device apps' own look).
+      Search (`/`), four sorts, per-folder counts, wired Recently Viewed (the
+      old tab read state nothing wrote), real Settings (light/dark/auto theme,
+      default sort, local-data reset), toasts, a whole-window drop overlay and
+      a transfer dock; mobile sidebar and bottom sheet. Management added
+      server-side: `DELETE /api/item`, `POST /api/item/rename`,
+      `PUT /api/item/meta` (merge into `<name>.meta.json`; rename stays in its
+      folder, carries sidecars, re-keys the catalog; delete cleans sidecars,
+      refuses directories/sidecars/`catalog.json`/traversal), all driven from
+      the drawer with a two-click delete confirm. 18 new `check_share.sh`
+      assertions; every flow (drawer, rename with sidecar ride-along, meta
+      merge, favorite, delete, theme, search, Add Games modal) was driven in
+      a real browser
+- [x] **PS3 license (.rap) support in the web GUI** — the game's drawer has a
+      License (RAP) section: a `.rap` uploaded beside the game is offered
+      with one click, or one is picked from disk and uploaded into the game's
+      folder via the new `dir=` parameter on `POST /api/upload/file`; the
+      pairing is the sidecar's `rap` field (validated to be a real `.rap` in
+      the game's own folder through `PUT /api/item/meta`), which
+      `generate_catalog.py` passes through so attachments survive
+      regeneration. Attached `.rap`s lose their standalone card (the game
+      carries a 🔑 badge, red when the license file went missing behind the
+      share's back); loose ones stay discoverable as License cards.
+      Renaming a license repoints the sidecars and entries beside it; a
+      title-ID mismatch asks before attaching. 19 new `check_share.sh`
+      assertions; attach/detach/missing states, the hidden-rap grid, and a
+      browser-origin `dir=` upload were driven in a real browser. The share
+      only stores `.rap` files the user supplies for games they own
 - [x] **Virtual ISO** (`server/netsrv/virtual_iso.py`): `/***PS3***/` and
       `/***DVD***/` mount a game *folder* by synthesising its ISO 9660 image,
       built from upstream's `VIsoFile` and byte-identical to it outside the
@@ -261,6 +306,23 @@ wrong `X-SHA256` is rejected with `rc=-11`.
       `Utilities`, L/R switched and clamped, and a Utilities install landed
       with a sha256 equal to the served file. Evidence in `log.md`
       (2026-10-30). Real PSP hardware is still untested.
+- [x] **Store view on the PSP as a pixel GUI (sceGu)** — the debug-screen
+      renderer was all the device had; the Store now draws Media Go's own look
+      through `sceGu` at 480x272: orange header, tab rail with active-tab
+      underline, Cover Flow cards with id-hashed gradient covers (the web GUI's
+      `placeholderBG()` hash reproduced and pinned by host tests) plus initials
+      and dimmed neighbours, a 4x2 grid view with favourite stars, and an
+      install screen with a live progress bar. `psp/gui.{c,h}` is the renderer
+      core (rects, 8x8 font atlas, textured quads) the PS3 RSX stages will
+      reuse; `ui/coverflow.c` still owns all state, and `-DNASDL_TEXT_UI`
+      rebuilds the original layout. Built with `psp-gcc` and driven in
+      PPSSPPSDL end-to-end: browse, tab switch, cover move, favourite and
+      recents persisting to `store_state.txt`, two installs landing
+      byte-identical, O returning to a live browser and a clean second store
+      visit; the emulator also pinned down two real GE behaviours along the
+      way (sprite attribute packing, and GPU-side framebuffers outliving
+      `sceGuTerm`), documented in `log.md` (2026-10-31). Real PSP hardware is
+      still untested.
 - [ ] Cover Flow on the PS3 app — `ps3/main.c` writes ANSI to the TTY so
       `has_colors=1` applies directly, but its browser has no size/category to
       show until the share reports per-entry metadata (listed under Later)
@@ -279,8 +341,6 @@ wrong `X-SHA256` is rejected with `rc=-11`.
       sector probe's 848 MiB ceiling)
 
 ### Later
-- [ ] Web GUI: **Add Games** panel wired to `POST /api/upload` — the endpoint is
-      implemented and checked, the shell has no file input yet
 - [ ] Web GUI: Store queue management and download-activity panels (the shell
       renders the catalog today; watched `.store-queue.json` works)
 - [ ] Browser metadata: have the share report size and category per entry so the
@@ -289,6 +349,12 @@ wrong `X-SHA256` is rejected with `rc=-11`.
       (watched `.store-queue.json` works today)
 - [ ] GTK/Qt GUI front-end for Linux (manage games + edit catalog metadata)
 - [ ] PS3: RSX pixel-graphics renderer (currently ANSI console output)
+- [ ] PS4 support: platform-aware share (ps4 alongside psp/ps3 in upload tags,
+      metadata, and GUI sections) organizing PKG titles and the user's own
+      .rap licenses like everything else, plus docs/PS4.md for the real
+      consumers (old-firmware browser on /gui/, PS4 Linux payload curl with
+      Range/resume, exFAT USB installs) — a signed native client is
+      exploit-dependent and stays out of scope
 - [ ] HTTPS support on the HTTP share
 
 ## License

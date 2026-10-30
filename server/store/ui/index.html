@@ -1,21 +1,53 @@
 <!doctype html>
-<html lang="en">
+<html lang="en" data-theme="dark">
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>PS Linker — Store</title>
+  <title>PS Linker — Library</title>
   <link rel="stylesheet" href="ui.css" />
+  <script>
+    /* Apply the stored/auto theme before first paint; ui.js owns changes. */
+    try {
+      var s = JSON.parse(localStorage.getItem('pslinker.settings.v1') || '{}');
+      var t = s.theme === 'light' || s.theme === 'dark' ? s.theme
+        : (matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark');
+      document.documentElement.dataset.theme = t;
+    } catch (e) { /* keep the dark default */ }
+  </script>
 </head>
 <body>
-  <div class="app-shell">
-    <header class="topbar">
-      <div class="brand">PS Linker</div>
-      <nav id="menu-bar" aria-label="Categories"></nav>
-      <button id="view-toggle" type="button">Grid</button>
-    </header>
-    <main id="main-view" class="main-view"></main>
-    <section id="meta-panel" class="meta-panel"></section>
+  <div class="shell">
+    <aside id="sidebar" class="sidebar" aria-label="Library sections">
+      <div class="brand">
+        <span class="brand-mark">PS Linker</span>
+        <button id="sidebar-close" class="icon-btn" aria-label="Close menu" hidden>✕</button>
+      </div>
+      <nav id="section-nav" class="nav-scroll"></nav>
+      <div class="sidebar-foot">
+        <button id="settings-btn" class="nav-item" type="button">⚙ Settings</button>
+      </div>
+    </aside>
+    <div class="scrim" id="sidebar-scrim" hidden></div>
+
+    <div class="main-col">
+      <header class="toolbar">
+        <button id="menu-btn" class="icon-btn" aria-label="Open menu" hidden>☰</button>
+        <input id="search" class="search" type="search"
+               placeholder="Search library" aria-label="Search library" />
+        <select id="sort" class="select" aria-label="Sort by"></select>
+        <button id="add-btn" class="btn btn-primary" type="button">＋ Add Games</button>
+      </header>
+      <main id="library" class="library" aria-label="Games"></main>
+    </div>
+
+    <aside id="drawer" class="drawer" aria-label="Game details" hidden></aside>
   </div>
-  <script src="ui.js"></script>
+
+  <div id="upload-dock" class="dock" hidden></div>
+  <div id="drop-overlay" class="drop-overlay" hidden>Drop to add games</div>
+  <div id="modal-root"></div>
+  <div id="toasts" class="toasts" aria-live="polite"></div>
+
+  <script type="module" src="ui.js"></script>
 </body>
 </html>

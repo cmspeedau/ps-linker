@@ -5,7 +5,9 @@ A homebrew store browser built into the PSP app (PS3 port planned). It fetches a
 
 **Legal:** the catalog must only reference legally distributable content —
 homebrew, freeware, demos, or your own legally-obtained files. It does not and
-will not pull commercial titles from Sony's PSN CDN.
+will not pull commercial titles from Sony's PSN CDN. The same posture covers
+PS3 `.rap` licenses: the server stores only license files the user supplies
+for content they legally own, and never ships or fetches any.
 
 ## How it works
 

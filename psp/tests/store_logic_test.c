@@ -72,6 +72,46 @@ int main(void)
     /* too long is a different failure from "not installable" */
     assert(store_derive_path("/x/EBOOT.PBP", "x", path, 4) == -2);
 
+    /* ---- placeholder cover tiles: web GUI parity -----------------------
+     * server/store/ui/state.js: h=0; per byte h=(h*31+byte)&0x3fffffff;
+     * hue=h%360. Expected hues below were computed from that expression
+     * directly (python3) so a refactor here cannot silently drift. */
+    assert(store_cover_hue("") == 0);
+    assert(store_cover_hue("ab") == 225);
+    assert(store_cover_hue("PSP_TX3D_Delta_Loader.pbp") == 170);
+    assert(store_cover_hue("Games/Doom/EBOOT.PBP") == 111);
+    assert(store_cover_hue("Homebrew_PSXReloaded.pkg") == 229);
+
+    /* HSL conversion against CSS-quoted primaries and mid grey. */
+    unsigned char rgb[3];
+    store_hsl_to_rgb(0, 100, 50, rgb);
+    assert(rgb[0] == 255 && rgb[1] == 0 && rgb[2] == 0);
+    store_hsl_to_rgb(120, 100, 50, rgb);
+    assert(rgb[0] == 0 && rgb[1] == 255 && rgb[2] == 0);
+    store_hsl_to_rgb(240, 100, 50, rgb);
+    assert(rgb[0] == 0 && rgb[1] == 0 && rgb[2] == 255);
+    store_hsl_to_rgb(0, 0, 50, rgb);
+    assert(rgb[0] == 128 && rgb[1] == 128 && rgb[2] == 128);
+    store_hsl_to_rgb(-90, 100, 50, rgb);   /* wraps to 270 */
+    assert(rgb[0] == 128 && rgb[1] == 0 && rgb[2] == 255);
+
+    /* Tile fill: opaque everywhere, top row at hsl(hue,42,26), bottom at
+       hsl(hue+40,52,12), and deterministic across calls. */
+    static uint32_t tile[3 * 4];
+    store_cover_pixels(tile, 3, 4, "ab");
+    store_hsl_to_rgb(225, 42, 26, rgb);
+    uint32_t want = 0xFF000000u | ((uint32_t)rgb[0] << 16) | ((uint32_t)rgb[1] << 8) | rgb[2];
+    assert(tile[0] == want);
+    assert(tile[1] == want && tile[2] == want);      /* rows are uniform */
+    store_hsl_to_rgb((225 + 40) % 360, 52, 12, rgb);
+    want = 0xFF000000u | ((uint32_t)rgb[0] << 16) | ((uint32_t)rgb[1] << 8) | rgb[2];
+    assert(tile[9] == want || tile[6] == want);      /* bottom area reached the end stop */
+    for (int i = 0; i < 12; i++) assert((tile[i] >> 24) == 0xFF);
+    uint32_t again[12];
+    store_cover_pixels(again, 3, 4, "ab");
+    assert(memcmp(again, tile, sizeof again) == 0);
+    store_cover_pixels(tile, 0, 4, "ab");            /* degenerate sizes no-op */
+
     puts("store logic: all assertions passed");
     return 0;
 }

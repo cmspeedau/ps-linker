@@ -13,6 +13,16 @@ Per-entry fields:
   version, description            (optional: from a sidecar metadata file
                                    <name>.meta.json next to the game file,
                                    e.g. {"version": "1.2", "description": "..."})
+  title, platform                 (also from the sidecar; the web GUI's
+                                   uploads write them there so a prettified
+                                   title and PSP/PS3 tab membership survive
+                                   regeneration)
+  rap                             (also from the sidecar: the file name of
+                                   the game's attached .rap license, which
+                                   the web GUI records next to the game)
+
+Sidecar files themselves (.meta.json, .sha256) are metadata and never
+become catalog entries.
 
 Usage: generate_catalog.py <games_dir> <output_path>
 """
@@ -22,6 +32,9 @@ import socket
 import sys
 
 SKIP = {"catalog.json", ".store-queue.json"}
+
+# Hidden files, in-flight downloads, and per-file sidecars are not games.
+SKIP_SUFFIX = (".part", ".meta.json", ".sha256")
 
 # File names (case-insensitive, extension-insensitive) treated as cover art.
 ICON_NAMES = {"icon0", "cover", "boxart", "thumb"}
@@ -63,7 +76,8 @@ def main() -> int:
         rel = os.path.relpath(root, games_dir)
         category = rel.split(os.sep)[0] if rel != "." else "Uncategorized"
         for name in sorted(files):
-            if name in SKIP or name.startswith(".") or name.endswith(".part"):
+            if (name in SKIP or name.startswith(".")
+                    or name.endswith(SKIP_SUFFIX)):
                 continue
             rel_path = os.path.normpath(os.path.join(rel, name)).replace(os.sep, "/")
             entry = {
@@ -77,6 +91,12 @@ def main() -> int:
             if icon:
                 entry["icon"] = icon
             meta = load_meta(root, name)
+            if meta.get("title"):
+                entry["title"] = str(meta["title"])
+            if meta.get("platform"):
+                entry["platform"] = str(meta["platform"])
+            if meta.get("rap"):
+                entry["rap"] = str(meta["rap"])
             if meta.get("version"):
                 entry["version"] = str(meta["version"])
             if meta.get("description"):

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Behaviour check for the PS Linker HTTP share (server/store/http_server.py).
 #
-#   ./check_share.sh              # HTTP-level checks (~35 assertions, curl only)
+#   ./check_share.sh              # HTTP-level checks (~85 assertions, curl only)
 #   ./check_share.sh --with-dl    # also compile ps3/resume.c on the host and
 #                                 # run the console's real downloader against it
 #
@@ -38,6 +38,7 @@ chk() {   # chk <description> <expected> <actual>
 BASE="http://127.0.0.1:$PORT"
 code() { curl -s -o /dev/null -w '%{http_code}' "$BASE$1"; }
 hdr()  { curl -s -D - -o /dev/null "$@" | tr -d '\r'; }
+jdel() { curl -s -o /dev/null -w '%{http_code}' -X DELETE "$BASE$1"; }
 
 # ---------------------------------------------------------------- fixtures ---
 mkdir -p "$W/games/PSP" "$W/games/PS3" "$W/up" "$W/out"
@@ -137,6 +138,195 @@ chk "encoded traversal refused" refused "$(
 chk "double-encoded traversal refused" refused "$(
     case "$(code '/%252e%252e%252fetc/passwd')" in
         403|404) echo refused;; *) echo "$(code '/%252e%252e%252fetc/passwd')";; esac)"
+
+# ------------------------------------- raw streaming upload (web GUI Add Games)
+echo "raw upload endpoint (streamed, one file per request)"
+head -c 2000000 /dev/urandom > "$W/up/raw.iso"
+chk "raw upload accepted" 201 "$(
+    curl -s -o /dev/null -w '%{http_code}' -X POST \
+         --data-binary "@$W/up/raw.iso" "$BASE/api/upload/file?name=raw.iso&platform=psp")"
+chk "raw upload landed byte-identical" same "$(
+    cmp -s "$W/games/raw.iso" "$W/up/raw.iso" && echo same || echo differ)"
+chk "no .part residue" 0 "$(ls "$W/games"/*.part 2>/dev/null | wc -l | tr -d ' ')"
+chk "entry carries id/category/platform" "raw.iso Uncategorized psp" "$(
+    python3 -c "import json;d=json.load(open('$W/games/catalog.json'));
+i=next(i for i in d['items'] if i.get('url')=='/raw.iso')
+print(i['id'],i['category'],i['platform'])")"
+# Regression: entries lacking name/path used to collapse onto one None key,
+# dropping everything but one entry until the next catalog regeneration.
+chk "upload did not collapse pre-existing entries" yes "$(
+    python3 -c "import json;d=json.load(open('$W/games/catalog.json'));
+print('yes' if any(i.get('url')=='/PSP/test.iso' for i in d['items']) else 'no')")"
+chk "meta sidecar written for the upload" yes \
+    "$([ -f "$W/games/raw.iso.meta.json" ] && echo yes || echo no)"
+chk "bad extension rejected" 400 "$(
+    curl -s -o /dev/null -w '%{http_code}' -X POST \
+         --data-binary "@$W/up/evil.exe" "$BASE/api/upload/file?name=evil.exe")"
+chk "no file behind the rejected upload" yes \
+    "$([ ! -f "$W/games/evil.exe" ] && echo yes || echo no)"
+chk "control-char name rejected" 400 "$(
+    curl -s -o /dev/null -w '%{http_code}' -X POST \
+         --data-binary "@$W/up/raw.iso" "$BASE/api/upload/file?name=t%00st.iso")"
+chk "chunked body refused" 411 "$(
+    curl -s -o /dev/null -w '%{http_code}' -X POST -H 'Transfer-Encoding: chunked' \
+         --data-binary "@$W/up/raw.iso" "$BASE/api/upload/file?name=chunk.iso")"
+
+# ------------------------------------------------- catalog generator hygiene --
+echo "generate_catalog sidecar hygiene"
+mkdir -p "$W/gen/Utilities"
+head -c 100 /dev/urandom > "$W/gen/Utilities/tool.bin"
+echo '{"platform":"psp","title":"Tool","version":"1.2"}' > "$W/gen/Utilities/tool.bin.meta.json"
+(cd "$W/gen/Utilities" && sha256sum tool.bin | cut -d' ' -f1 > tool.bin.sha256)
+python3 "$HERE/generate_catalog.py" "$W/gen" "$W/gen/catalog.json" >"$W/gen.log" 2>&1
+chk "sidecars (.meta.json/.sha256) are not entries" 1 "$(
+    python3 -c "import json;d=json.load(open('$W/gen/catalog.json'));
+print(len(d['entries']))")"
+chk "sidecar title passes through" Tool "$(
+    python3 -c "import json;d=json.load(open('$W/gen/catalog.json'));
+print(d['entries'][0]['title'])")"
+chk "sidecar platform passes through" psp "$(
+    python3 -c "import json;d=json.load(open('$W/gen/catalog.json'));
+print(d['entries'][0]['platform'])")"
+
+# ------------------------------------------------- library management (GUI) ---
+echo "library management endpoints"
+head -c 40 /dev/urandom > "$W/secret.txt"
+chk "meta edit accepted" 200 "$(
+    curl -s -o /dev/null -w '%{http_code}' -X PUT -H 'Content-Type: application/json' \
+         -d '{"url":"/PSP/test.iso","version":"2.0","description":"A great game"}' \
+         "$BASE/api/item/meta")"
+chk "meta edit reached the catalog entry" "2.0 A great game" "$(
+    python3 -c "import json;d=json.load(open('$W/games/catalog.json'));
+i=next(i for i in d['items'] if i['url']=='/PSP/test.iso')
+print(i['version'], i['description'])")"
+chk "meta edit kept the sha256 sidecar" "$GOOD" \
+    "$(cut -d' ' -f1 "$W/games/PSP/test.iso.sha256")"
+chk "meta edit merges, not replaces" "2.0 True" "$(
+    curl -s -o /dev/null -X PUT -H 'Content-Type: application/json' \
+         -d '{"url":"/PSP/test.iso","title":"Test Game"}' "$BASE/api/item/meta"
+    python3 -c "import json;m=json.load(open('$W/games/PSP/test.iso.meta.json'));
+print(m['version'], 'description' in m)")"
+chk "meta edit unknown url is 404" 404 "$(
+    curl -s -o /dev/null -w '%{http_code}' -X PUT -H 'Content-Type: application/json' \
+         -d '{"url":"/nowhere.iso","title":"x"}' "$BASE/api/item/meta")"
+chk "meta rejects an unknown platform" 400 "$(
+    curl -s -o /dev/null -w '%{http_code}' -X PUT -H 'Content-Type: application/json' \
+         -d '{"url":"/PSP/test.iso","platform":"dreamcast"}' "$BASE/api/item/meta")"
+chk "meta rejects a non-JSON body" 400 "$(
+    curl -s -o /dev/null -w '%{http_code}' -X PUT -d 'nope' "$BASE/api/item/meta")"
+
+chk "rename accepted" 200 "$(
+    curl -s -o /dev/null -w '%{http_code}' -X POST -H 'Content-Type: application/json' \
+         -d '{"url":"/demo.zip","name":"demo-game.zip"}' "$BASE/api/item/rename")"
+chk "rename moved file and sidecar" yes "$(
+    [ -f "$W/games/demo-game.zip" ] && [ ! -e "$W/games/demo.zip" ] &&
+    [ -f "$W/games/demo-game.zip.meta.json" ] && [ ! -e "$W/games/demo.zip.meta.json" ] &&
+    echo yes || echo no)"
+chk "rename rekeyed the catalog entry" /demo-game.zip "$(
+    python3 -c "import json;d=json.load(open('$W/games/catalog.json'));
+print(next(i['url'] for i in d['items'] if i['url']=='/demo-game.zip'))")"
+# A rename is a rename, not a move: the target is always the file's own
+# folder, so a collision means the SAME folder already has that name.
+chk "rename within its folder accepted" 200 "$(
+    curl -s -o /dev/null -w '%{http_code}' -X POST -H 'Content-Type: application/json' \
+         -d '{"url":"/PSP/test.iso","name":"test2.iso"}' "$BASE/api/item/rename")"
+head -c 100 /dev/urandom > "$W/games/PSP/dupe.iso"
+chk "rename onto a name taken in its folder is 409" 409 "$(
+    curl -s -o /dev/null -w '%{http_code}' -X POST -H 'Content-Type: application/json' \
+         -d '{"url":"/PSP/test2.iso","name":"dupe.iso"}' "$BASE/api/item/rename")"
+chk "renamed file untouched by the refusal" yes \
+    "$([ -f "$W/games/PSP/test2.iso" ] && echo yes || echo no)"
+chk "rename to a disallowed extension is 400" 400 "$(
+    curl -s -o /dev/null -w '%{http_code}' -X POST -H 'Content-Type: application/json' \
+         -d '{"url":"/PSP/test2.iso","name":"oops.exe"}' "$BASE/api/item/rename")"
+
+chk "delete accepted" 200 "$(
+    curl -s -o /dev/null -w '%{http_code}' -X DELETE "$BASE/api/item?url=/raw.iso")"
+chk "delete removed file and sidecar" yes "$(
+    [ ! -e "$W/games/raw.iso" ] && [ ! -e "$W/games/raw.iso.meta.json" ] &&
+    echo yes || echo no)"
+chk "delete removed the catalog entry" none "$(
+    python3 -c "import json;d=json.load(open('$W/games/catalog.json'));
+print('none' if not any(i['url']=='/raw.iso' for i in d['items']) else 'present')")"
+chk "delete of a directory is 405" 405 "$(jdel '/api/item?url=/PSP/')"
+chk "delete refuses catalog.json" "404 yes" "$(
+    c=$(jdel '/api/item?url=/catalog.json')
+    [ -f "$W/games/catalog.json" ] && echo "$c yes" || echo "$c gone")"
+chk "delete refuses a bare sidecar" "404 yes" "$(
+    c=$(jdel '/api/item?url=/demo-game.zip.meta.json')
+    [ -f "$W/games/demo-game.zip.meta.json" ] && echo "$c yes" || echo "$c gone")"
+chk "delete traversal refused, outside file intact" "404 intact" "$(
+    c=$(jdel '/api/item?url=/..%2fsecret.txt')
+    [ -f "$W/secret.txt" ] && echo "$c intact" || echo "$c gone")"
+
+# ------------------------------------------------ PS3 license (.rap) support --
+echo "PS3 license (.rap) support"
+head -c 64 /dev/urandom > "$W/BLES00001.rap"
+chk "rap upload with dir= landed beside the game" "yes no" "$(
+    curl -s -o /dev/null -X POST --data-binary "@$W/BLES00001.rap" \
+         "$BASE/api/upload/file?name=BLES00001.rap&platform=ps3&dir=/PSP" >/dev/null
+    [ -f "$W/games/PSP/BLES00001.rap" ] && [ ! -e "$W/games/BLES00001.rap" ] &&
+    echo "yes no" || echo "no")"
+chk "the .rap got a catalog entry (its License card)" present "$(
+    python3 -c "import json;d=json.load(open('$W/games/catalog.json'));
+print('present' if any(i.get('url')=='/PSP/BLES00001.rap' for i in d['items']) else 'missing')")"
+chk "the .rap carries no sidecar of its own" no "$(
+    [ -e "$W/games/PSP/BLES00001.rap.meta.json" ] && echo yes || echo no)"
+chk "dir= escaping the library refused before the body" 400 "$(
+    curl -s -o /dev/null -w '%{http_code}' -X POST \
+         --data-binary "@$W/BLES00001.rap" \
+         "$BASE/api/upload/file?name=BLES00001.rap&dir=/..%2fsecret")"
+chk "dir= naming a missing folder is refused" 400 "$(
+    curl -s -o /dev/null -w '%{http_code}' -X POST \
+         --data-binary "@$W/BLES00001.rap" \
+         "$BASE/api/upload/file?name=BLES00001.rap&dir=/nope")"
+chk "attach a .rap that sits beside the game" 200 "$(
+    curl -s -o /dev/null -w '%{http_code}' -X PUT -H 'Content-Type: application/json' \
+         -d '{"url":"/PSP/test2.iso","rap":"BLES00001.rap"}' "$BASE/api/item/meta")"
+chk "the pairing reached the sidecar" BLES00001.rap "$(
+    python3 -c "import json;m=json.load(open('$W/games/PSP/test2.iso.meta.json'));
+print(m.get('rap',''))")"
+chk "the pairing reached the catalog entry" BLES00001.rap "$(
+    python3 -c "import json;d=json.load(open('$W/games/catalog.json'));
+i=next(i for i in d['items'] if i.get('url')=='/PSP/test2.iso');print(i.get('rap',''))")"
+chk "a .rap in another folder is refused" 400 "$(
+    curl -s -o /dev/null -w '%{http_code}' -X PUT -H 'Content-Type: application/json' \
+         -d '{"url":"/demo-game.zip","rap":"BLES00001.rap"}' "$BASE/api/item/meta")"
+chk "a non-.rap name is refused" 400 "$(
+    curl -s -o /dev/null -w '%{http_code}' -X PUT -H 'Content-Type: application/json' \
+         -d '{"url":"/PSP/test2.iso","rap":"dupe.iso"}' "$BASE/api/item/meta")"
+chk "a name that is no file is refused" 400 "$(
+    curl -s -o /dev/null -w '%{http_code}' -X PUT -H 'Content-Type: application/json' \
+         -d '{"url":"/PSP/test2.iso","rap":"BLES99999.rap"}' "$BASE/api/item/meta")"
+chk "renaming the license accepted" 200 "$(
+    curl -s -o /dev/null -w '%{http_code}' -X POST -H 'Content-Type: application/json' \
+         -d '{"url":"/PSP/BLES00001.rap","name":"BLES00002.rap"}' "$BASE/api/item/rename")"
+chk "the rename repointed the game's sidecar" BLES00002.rap "$(
+    python3 -c "import json;m=json.load(open('$W/games/PSP/test2.iso.meta.json'));
+print(m.get('rap',''))")"
+chk "the rename repointed the catalog entry" BLES00002.rap "$(
+    python3 -c "import json;d=json.load(open('$W/games/catalog.json'));
+i=next(i for i in d['items'] if i.get('url')=='/PSP/test2.iso');print(i.get('rap',''))")"
+chk "the renamed license is served" 200 "$(code '/PSP/BLES00002.rap')"
+chk "detach accepted" 200 "$(
+    curl -s -o /dev/null -w '%{http_code}' -X PUT -H 'Content-Type: application/json' \
+         -d '{"url":"/PSP/test2.iso","rap":null}' "$BASE/api/item/meta")"
+chk "detach cleared the pairing everywhere" "none none" "$(
+    python3 -c "import json
+m=json.load(open('$W/games/PSP/test2.iso.meta.json'))
+d=json.load(open('$W/games/catalog.json'))
+i=next(i for i in d['items'] if i.get('url')=='/PSP/test2.iso')
+print('none' if 'rap' not in m else 'sidecar', 'none' if 'rap' not in i else 'entry')")"
+chk "detach left the license file alone" yes \
+    "$([ -f "$W/games/PSP/BLES00002.rap" ] && echo yes || echo no)"
+# Re-attach, then prove the pairing survives a catalog regeneration the same
+# way title/platform does. Regenerated into gen2.json; the live catalog stays.
+curl -s -o /dev/null -X PUT -H 'Content-Type: application/json' \
+     -d '{"url":"/PSP/test2.iso","rap":"BLES00002.rap"}' "$BASE/api/item/meta"
+python3 "$HERE/generate_catalog.py" "$W/games" "$W/gen2.json" >"$W/gen2.log" 2>&1
+chk "regeneration passes the pairing through" BLES00002.rap "$(
+    python3 -c "import json;d=json.load(open('$W/gen2.json'));
+e=next(e for e in d['entries'] if e.get('url')=='/PSP/test2.iso');print(e.get('rap',''))")"
 
 # --------------------------------------- the console's own downloader (opt-in) -
 if [ "${1:-}" = "--with-dl" ]; then
