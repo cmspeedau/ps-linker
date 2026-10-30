@@ -17,6 +17,8 @@ Loopback is faster than any home network, so read these as "how much the server
 can push", never as "what a PS3 will see": a gigabit link tops out near 119
 MiB/s and the console's own HDD is the tighter limit well before that.
 """
+from __future__ import annotations
+
 import argparse
 import asyncio
 import os

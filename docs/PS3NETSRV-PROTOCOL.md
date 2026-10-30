@@ -150,9 +150,12 @@ Response (16 B): `int64_t file_size` (BE64, `-1` on error), `uint64_t mtime` (BE
   `OPEN_FILE` cannot distinguish "closed" from "missing". Use `STAT_FILE` if a
   client needs to.
 * Paths starting `/***PS3***/` or `/***DVD***/` build a virtual ISO on the fly
-  (§7.4). Our server does not implement this; §9.2.
-* A path that resolves to the share root itself plus `/.` is also treated as a
-  virtual ISO (upstream's way of letting a client mount the whole share).
+  and the answer is that image's size (§7.4).
+* A path that is exactly `/.` is also treated as a virtual ISO, in DVD mode:
+  upstream's way of letting a client mount the whole share.
+* The marker is honoured by this command alone. Every other command takes the
+  path as it stands, so `/***PS3***/GAME` in a `STAT_FILE` or an `OPEN_DIR`
+  names a directory that is not there and answers `-1`, here and upstream.
 * Sector-size probing happens here; §5.
 * `mtime` is the file's `st_mtime` as a Unix epoch. On error it is `0`.
 
@@ -194,6 +197,10 @@ in the lead-in and is never in a `.bin`. Confirmed against the reference source.
   answer at stride 2352 *and* 24 bytes late, because their probe misses the 2048
   stride entirely (§5, §8). A client that wants a plain image has to use
   `READ_FILE_CRITICAL`, which has no `+24`.
+* A virtual ISO (§7.4) is served at `start_sector * 2048` with no `+24`: a
+  synthesised image has no raw header, so there is nothing to skip. Upstream
+  applies the `+24` to it too, which answers 24 bytes into the sector the client
+  asked for (§9.2).
 * Used by PS1-class clients (`READ_CD_2048_CRITICAL` in the client's
   `netiso.h`). `Tested locally against a raw MODE2/2352 image`; §6.2.
 
@@ -372,11 +379,20 @@ future extensions in the `0x24xx` range; our server may answer an unknown
 
 ## 4. Command flows
 
-Mount and stream a PS3 ISO (folder games and virtual ISOs are upstream-only;
-§9.2):
+Mount and stream a PS3 ISO:
 
 ```
 OPEN_FILE  "/PS3ISO/BCUS12345-[Game].iso"     -> file_size, mtime
+loop while playing:
+    READ_FILE_CRITICAL  offset, 4 MiB           -> 4 MiB raw
+```
+
+The same, for a game that is a folder rather than an ISO (§7.4). The only
+difference is the path the client sends; everything after the mount is the
+normal file commands over the synthesised image:
+
+```
+OPEN_FILE  "/***PS3***/BCUS12345-[Game]"      -> image size, folder mtime
 loop while playing:
     READ_FILE_CRITICAL  offset, 4 MiB           -> 4 MiB raw
 ```
@@ -520,13 +536,13 @@ Results from each run are appended to `log.md`.
 
 ### 6.1 Verified locally
 
-* `server/netsrv/netsrv_test.py` — 62 unit and loopback end-to-end tests: the
+* `server/netsrv/netsrv_test.py` — 82 unit and loopback end-to-end tests: the
   wire layouts and their sizes, the probe against all seven candidate strides,
-  path handling, the slot rules, and streaming a real 617 MiB rip through the
-  server.
+  path handling, the slot rules, an ISO reader walking the synthesised images of
+  a virtual ISO, and streaming a real 617 MiB rip through the server.
 * `server/netsrv/netsrv_diff.py` — the same command script against our server,
-  webMAN's `ps3netsrv` and dirkvdb's `ps3netsrv++` on one tree: **48 identical,
-  15 declared (§9), 0 undeclared**, with `--psx` adding the stride measurement on
+  webMAN's `ps3netsrv` and dirkvdb's `ps3netsrv++` on one tree: **57 identical,
+  17 declared (§9), 0 undeclared**, with `--psx` adding the stride measurement on
   a real rip (§5). It runs our server with `LISTING_SORTED` switched off for the
   comparison, so the difference is the wire and not our chosen order.
 * `server/netsrv/netsrv_bench.py` — the table above.
@@ -593,9 +609,55 @@ zero-length trailer instead (§8).
 ### 7.4 Virtual ISO
 
 `/***PS3***/<dir>` turns a game folder into a PS3 ISO and `/***DVD***/<dir>`
-into a DVD/BD ISO, read on demand through upstream's `VIsoFile`. It means
-generating ISO 9660 with Rock Ridge and Joliet, ECMA-130 paths, and the PS3
-disc layout — a project on its own. Not implemented here; §9.2.
+into a DVD/BD ISO; upstream builds those on demand in `VIsoFile`. Our server has
+its own builder, `server/netsrv/virtual_iso.py`, and its images agree with
+upstream's **byte for byte** outside the parts upstream itself does not repeat —
+the PS3 disc-info sector, which is random bytes by design, and the creation
+timestamp each volume descriptor carries. That is measured on the wire, by the
+"virtual ISO image" scenario of `netsrv_diff.py`, so it covers the mount, the
+filesystem and the reads rather than the builder alone; the unit tests hold the
+same claim against fixture trees that are awkward in ways (`;1` collisions,
+204-byte truncation, empty files, deep nesting, 70-file directories, Joliet
+names, `.66600` splits).
+
+The shape, kept from upstream: sixteen zero system sectors; in PS3 mode the disc
+info in sectors 0 and 1 (`PlayStation3`, the `TITLE_ID` from
+`PS3_GAME/PARAM.SFO` written as `XXXX-XXXXX`, and random bytes in the rest of
+that sector); the primary volume descriptor in sector 16, the Joliet one in 17,
+the terminator in 18, sector 19 empty; the four path tables from byte `0xA000`
+(little-endian ISO, big-endian ISO, then Joliet's two); ISO directory blocks,
+then Joliet's, then the file data, then a pad out past a 32-sector boundary.
+Directory records are `0x27 + len(name)` bytes rounded to an even count — six
+zero bytes of slack past the name, because upstream computes the length that way
+— and never straddle a sector boundary: a record that would is moved whole into
+the next one. Names carry a `;1` version suffix, are truncated to 204 bytes and
+uppercased for ISO 9660 (so 207 with the suffix), and are UTF-16BE truncated to
+204 bytes for Joliet. Timestamps in records are seven-byte local time; the one
+in a volume descriptor is seventeen bytes of ASCII digits.
+
+Four things are deliberately not upstream's, and §9.2 explains each: a symlink
+or other special file never enters an image; a `.66600` split file is one file
+rather than a build failure; a part past 4 GiB is split into extents the 32-bit
+record field can hold; a CD read has no raw header to skip, so it reads at
+`sector * 2048`; and a `/.` mount names the volume after the share directory,
+where upstream writes the last element of the path it was handed — for that
+spelling, a bare `.`.
+
+The last two are what the one full-image comparison in `netsrv_diff.py` finds:
+mounting the whole share on both servers, the remaining 4.4 MB agree byte for
+byte.
+
+Only the filesystem structures are built at mount time, off the event loop, and
+only of the directory tree: file contents are read at whatever offset a client
+asks for, so a 30 GB folder game costs a few hundred kilobytes of RAM and no
+start-up pause. `PS3_GAME/PARAM.SFO` is read for its `TITLE_ID`, the way
+upstream reads it, and a PS3 mount without one is `-1`.
+
+The marker belongs to `OPEN_FILE` alone. `STAT_FILE`, `OPEN_DIR` and
+`GET_DIR_SIZE` take the path untranslated, exactly as upstream's
+`translate_path(path, NULL)` does, so `/***PS3***/GAME` in those commands names a
+directory that is not there and answers `-1`. A bare `/.` is the third spelling
+of a mount, and it mounts the whole share in DVD mode.
 
 ### 7.5 Filenames
 
@@ -608,14 +670,15 @@ from the filesystem for the same reason.
 
 `server/netsrv/netsrv_diff.py` runs a script of commands against our server and
 against upstream's own binaries on the same tree, and compares the answers. Its
-current tally is **48 byte-identical, 15 declared deviations (§9), 0
-undeclared**, and it is what the claims below rest on. Eight of the fifteen are
-one cause: the symlink inside the test share, which we refuse to follow (§9.4).
-Two more are the zero-length-trailer wedge (§9.9) and two are the sector probe
-(§9.5); the rest are one each for recursion depth, path checks, trailer length,
-and opening a directory. §9.2 (no virtual ISO) and §9.12 (no `.INI` merge) never
-show up, because the fixture cannot produce a valid synthesised ISO and neither
-binary merges folders the way the other does; those two stay declared and
+current tally is **57 byte-identical, 17 declared deviations (§9), 0
+undeclared**, and it is what the claims below rest on. Nine of the seventeen are
+one cause: the symlink inside the test share, which we refuse to follow and
+which we also leave out of a synthesised image (§9.4). Two more are the sector
+probe (§9.5), one is the zero-length-trailer wedge (§9.9), two are the path check
+(§9.6) — one of them on a `/***PS3***/` path — and one each is the trailer length
+(§9.7), opening a directory (§9.11), and the `+24` a CD read of a synthesised ISO
+should not have (§9.2). §9.12 (no `.INI` merge) never shows up, because neither
+binary merges folders the way the other does; that one stays declared and
 unproven.
 
 Six findings are worth more than a line, and all of them were measured, not
@@ -680,8 +743,8 @@ read out of the source:
   The `RMDIR` row is not a style difference: webMAN's server deletes a
   non-empty directory tree with the client's permissions. Ours is `rmdir(2)`,
   which is what the name promises (§3.11). `ps3netsrv++` also has no `.INI`
-  merge, no `/***PS3***/`, and no recursive `READ_DIR`, which is why §9.2 and
-  §9.12 can only be checked against webMAN's.
+  merge, no `/***PS3***/`, and no recursive `READ_DIR`, which is why §9.12 and
+  the virtual-ISO scenarios can only be checked against webMAN's.
 
 Still to be settled with a PS3 running webMAN MOD, with results logged in
 `log.md`:
@@ -710,10 +773,19 @@ outside the share. Everything else is byte-identical, which
 
 1. **Directory listing in read-only mode.** Upstream's `READ_ONLY` build drops
    `READ_DIR_ENTRY`/`_V2`. We always serve them.
-2. **Virtual ISO.** `/***PS3***/` and `/***DVD***/` are not implemented; such a
-   path is reported as not found (`OPEN_FILE` → `-1`) rather than answered with
-   a synthesised ISO. Keep upstream's binary available if a library needs
-   folder games.
+2. **Virtual ISO.** `/***PS3***/` and `/***DVD***/` are implemented (§7.4) and
+   the images match upstream's byte for byte, but five things inside the builder
+   are ours. A symlink or other special file never enters an image, because
+   upstream follows one straight out of the share and puts the file it points at
+   *into* the ISO (§9.4). A `.66600` split file is served as the one file it is —
+   upstream announces its summed size and then cannot read it. A part past 4 GiB
+   is broken into extents the 32-bit record field can hold. A
+   `READ_CD_2048_CRITICAL` on a synthesised image reads at `sector * 2048`: there
+   is no raw header in an image that was never on a disc, where upstream applies
+   its `+24` and answers 24 bytes into the sector the client asked for (§3.3).
+   And a `/.` mount names its volume after the share directory, where upstream
+   writes the last element of the path it was handed, which for that spelling is
+   `.`.
 3. **Listings are sorted, and recursion is complete.** Two related choices.
    Upstream hands back raw `readdir` order, which is not sorted and differs
    between filesystems, so the same library can arrive in a different order on

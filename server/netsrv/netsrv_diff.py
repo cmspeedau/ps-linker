@@ -26,12 +26,16 @@ reference that is missing are skipped, so the script never breaks a run that
 has no reference build. Build them outside this repository: both are GPL-3.0
 and stay out of our image.
 """
+from __future__ import annotations
+
 import argparse
 import asyncio
+import hashlib
 import os
 import re
 import shutil
 import socket
+import struct
 import subprocess
 import sys
 import tempfile
@@ -45,6 +49,37 @@ import netsrv_client as nc
 import ps3netsrv as ns
 
 RAMP = bytes(i % 251 for i in range(4096))
+
+
+def param_sfo(title_id: bytes = b"BCES00104") -> bytes:
+    """A minimal valid PARAM.SFO, with TITLE_ID in the data table.
+
+    The same builder is in ``netsrv_test.py``; the harnesses each keep their own
+    fixtures so either one stays runnable on its own.
+    """
+    entries = sorted(((b"TITLE", b"Test Game"), (b"TITLE_ID", title_id)))
+    keys = b""
+    data = b""
+    index = []
+    for key, value in entries:
+        key_at = len(keys)
+        keys += key + b"\0"
+        data_at = len(data)
+        data += value
+        maximum = (len(value) + 3) & ~3
+        data += b"\0" * (maximum - len(value))
+        index.append((key_at, 0x0204, len(value), maximum, data_at))
+    while len(keys) & 3:
+        keys += b"\0"
+    start = 0x14 + 16 * len(index)
+    data_start = start + len(keys)
+    out = struct.pack("<4sIIII", b"\0PSF", 0x00000101, start, data_start,
+                      len(index))
+    for key_at, fmt, length, maximum, data_at in index:
+        out += struct.pack("<HHIII", key_at, fmt, length, maximum, data_at)
+    return out + keys + data
+
+
 FIXTURE_FILES = {
     "GAMES/notes.txt": b"hello world",
     "GAMES/.hidden": b"hidden",
@@ -52,8 +87,23 @@ FIXTURE_FILES = {
     "GAMES/sub/deeper/deepest.dat": b"the deepest",
     "GAMES/unicode-é.bin": RAMP[:1000],
     "PS3ISO/game.iso": bytes(range(256)) * 64,
+    # A folder game and a plain folder, for the virtual-ISO mounts (§7.4). The
+    # PARAM.SFO has to be real: upstream reads TITLE_ID out of it and refuses a
+    # PS3 mount without one. Small, because the scenarios read an image back.
+    "PS3_GAME_DIR/PS3_GAME/PARAM.SFO": param_sfo(),
+    "PS3_GAME_DIR/PS3_GAME/USRDIR/EBOOT.BIN": RAMP[:4000],
+    "PS3_GAME_DIR/PS3_DISC.SFB": b"disc",
+    "MOVIE_DIR/VIDEO_TS/VIDEO_TS.IFO": b"ifodata",
 }
 OUTSIDE = b"outside-secret.txt"
+# A virtual ISO's header, up to and including the path tables, is the part two
+# servers can be compared on; 40 KiB is more than a small fixture needs.
+VISO_HEAD = 0xA000
+# The ranges a synthesised image is allowed to differ in: the PS3 disc-info
+# sector is random bytes by design, and each volume descriptor carries the
+# clock of the moment it was built.
+VISO_MASKS = ((0x800, 0x1000), (0x8000 + 813, 0x8000 + 847),
+              (0x8800 + 813, 0x8800 + 847))
 
 
 def free_port() -> int:
@@ -214,11 +264,88 @@ async def create_truncates(client, root):
     return result, (root / "trunc.bin").stat().st_size
 
 
-async def virtual_iso(client, root):
-    """``/***PS3***/`` asks the server to build an ISO from a folder."""
-    (root / "PS3_GAME_DIR/PS3_GAME").mkdir(parents=True, exist_ok=True)
-    (root / "PS3_GAME_DIR/PS3_GAME/PARAM.SFO").write_bytes(b"\x00" * 12)
-    return await client.open_file(b"/***PS3***/PS3_GAME_DIR")
+def iso_head(image: bytes) -> dict:
+    """A virtual ISO's opening 40 KiB, in a form two servers can be compared on.
+
+    A synthesised image is not byte-stable by design: the PS3 disc-info sector is
+    filled with random bytes, and both volume descriptors carry the clock at the
+    moment the mount happened. Those ranges are blanked out and the rest is
+    hashed — everything else about the layout has to be identical.
+    """
+    masked = bytearray(image)
+    for start, end in VISO_MASKS:
+        masked[start:end] = b"\0" * (end - start)
+    pvd = image[0x8000:0x8800]
+    return {"sha1": hashlib.sha1(bytes(masked)).hexdigest(),
+            "volume": pvd[40:72].rstrip(b" "),
+            "sectors": int.from_bytes(pvd[80:84], "little"),
+            "root_record": pvd[156:190].hex()}
+
+
+async def virtual_iso_open(client, root, marker=b"/***PS3***/", folder=b"PS3_GAME_DIR"):
+    """OPEN_FILE on a folder: what the server reports as its size and mtime."""
+    return await client.open_file(marker + folder)
+
+
+async def virtual_iso_image(client, root, marker=b"/***PS3***/", folder=b"PS3_GAME_DIR"):
+    """The image itself: its size, its header, and the pad sector it ends with."""
+    size, _ = await client.open_file(marker + folder)
+    if size < 0:
+        return "not-found"
+    head = await client.read_file(0, min(size, VISO_HEAD))
+    return {"size": size, **iso_head(head),
+            "tail": await client.read_file(size - 2048, 2048)}
+
+
+async def virtual_iso_dvd_image(client, root):
+    """``/***DVD***/`` names the volume after the folder, and writes no PS3 sectors."""
+    size, _ = await client.open_file(b"/***DVD***/MOVIE_DIR")
+    if size < 0:
+        return "not-found"
+    head = await client.read_file(0, min(size, VISO_HEAD))
+    return {"size": size, "disc_info": head[0x800:0x80C], **iso_head(head),
+            "tail": await client.read_file(size - 2048, 2048)}
+
+
+async def read_all(client, size: int, chunk: int = 1 << 20) -> bytes:
+    """A whole file or image, in pieces under the server's own limit."""
+    out = bytearray()
+    while len(out) < size:
+        part = await client.read_file(len(out), min(chunk, size - len(out)))
+        if not part:
+            break
+        out += part
+    return bytes(out)
+
+
+async def virtual_iso_whole(client, root, path=b"/."):
+    """The whole image a mount answers with, masked and hashed (§7.4)."""
+    size, _ = await client.open_file(path)
+    if size < 0:
+        return "not-found"
+    return {"size": size, **iso_head(await read_all(client, size))}
+
+
+async def virtual_iso_cd_read(client, root):
+    """Where a CD read takes sector 16 from, judged by what comes back.
+
+    A synthesised image is plain 2048-byte sectors, so the answer has to be the
+    same 2048 bytes an ordinary read of ``16 * 2048`` returns.
+    """
+    size, _ = await client.open_file(b"/***PS3***/PS3_GAME_DIR")
+    if size < 0:
+        return "not-found"
+    try:
+        sector = await client.read_cd_2048(16, 1)
+    except nc.ConnectionClosed:
+        return "closed"
+    return {"sector 16 is the file at 16*2048": sector == await client.read_file(16 * 2048, 2048),
+            "signature": sector[:7]}
+
+
+async def virtual_iso_listing(client, root):
+    """OPEN_DIR on a marker path, which only OPEN_FILE looks for (§7.4)."""
+    return await records(client, root, b"/***PS3***/PS3_GAME_DIR")
 
 
 def unsort(value):
@@ -376,9 +503,52 @@ SCENARIOS = [
                        "mallocs whatever the client announces and answers, so a "
                        "client can make it allocate 64 KiB per request at will "
                        "(§7.3, §9.7)"]),
-    scenario("virtual ISO path", virtual_iso, primary_only=True,
-             declares=["we do not build ISOs from folders (§9.2): the answer is "
-                       "not-found where upstream answers a synthesised ISO size"]),
+    # §7.4: a folder game mounted as an ISO. Upstream is the primary reference
+    # for this and the only one — ps3netsrv++ has no virtual ISO at all.
+    scenario("virtual ISO open", virtual_iso_open, primary_only=True),
+    scenario("virtual ISO image", virtual_iso_image, primary_only=True),
+    scenario("virtual ISO dvd mode", virtual_iso_dvd_image, primary_only=True),
+    scenario("virtual ISO cd read", virtual_iso_cd_read, primary_only=True,
+             declares=["upstream applies the raw-image +24 to a folder game too, "
+                       "so its answer for sector 16 is 24 bytes past the start of "
+                       "the one we mean; a synthesised image has no raw header "
+                       "to skip (§7.4, §9.2)"]),
+    scenario("virtual ISO listing", virtual_iso_listing, primary_only=True,
+             normalize=records_shape),
+    scenario("virtual ISO stat", lambda c, r: c.stat(b"/***PS3***/PS3_GAME_DIR"),
+             primary_only=True, normalize=ignore_stat_times,
+             declares=["both answers are -1; upstream also sends the timestamp "
+                       "fields and is_directory of a failed STAT uninitialised, "
+                       "which is its own declared difference (§8, §9.10)"]),
+    scenario("virtual ISO dir size",
+             lambda c, r: c.get_dir_size(b"/***PS3***/PS3_GAME_DIR"),
+             primary_only=True),
+    scenario("virtual ISO of a folder that is not a game",
+             lambda c, r: c.open_file(b"/***PS3***/GAMES"), primary_only=True),
+    scenario("virtual ISO of a file",
+             lambda c, r: c.open_file(b"/***PS3***/PS3ISO/game.iso"),
+             primary_only=True),
+    # ``/.`` is upstream's way of mounting the whole share, so this is the one
+    # scenario that reads a synthesised image back in full. Everything below is
+    # the symlink in the share; the rest of 4.4 MB agrees byte for byte.
+    scenario("virtual ISO of the share root", virtual_iso_whole,
+             primary_only=True,
+             declares=["this image covers the share's symlink: upstream follows "
+                       "it, gives it a record with the size of the file *outside "
+                       "the share* it points at and copies that file in, which "
+                       "moves every later file by one sector; we leave it out "
+                       "(§9.4). Upstream also names this volume ``.``, the last "
+                       "element of the path it was handed, where we name it "
+                       "after the share directory (§9.2)"]),
+    scenario("virtual ISO marker further in",
+             lambda c, r: c.open_file(b"/GAMES/***PS3***/notes.txt"),
+             primary_only=True),
+    scenario("virtual ISO escape",
+             lambda c, r: answered_or_closed(c, r, c.open_file,
+                                             b"/***PS3***/../../" + OUTSIDE),
+             primary_only=True,
+             declares=["we refuse any path with a ``..`` in it and disconnect; "
+                       "upstream answers -1 here (§7.1, §9.6)"]),
     scenario("mkdir create write delete rmdir", writable_round_trip),
     scenario("create truncates", create_truncates),
     scenario("write without create", lambda c, r: c.write_file(b"data")),

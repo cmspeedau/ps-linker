@@ -8,6 +8,8 @@ travel as ``bytes`` so non-UTF-8 names survive the round trip.
 Used by ``netsrv_test.py`` (against our own server) and ``netsrv_diff.py``
 (against upstream's ``ps3netsrv++`` and ours, back to back).
 """
+from __future__ import annotations
+
 import asyncio
 import struct
 

@@ -11,8 +11,11 @@ connection, where the byte layouts and the sandboxing have to hold up together.
 ``netsrv_diff.py`` is the companion script that compares our answers with
 upstream's ``ps3netsrv++`` byte for byte.
 """
+from __future__ import annotations
+
 import asyncio
 import os
+import socket
 import struct
 import sys
 import tempfile
@@ -23,9 +26,54 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import netsrv_client as nc
 import ps3netsrv as ns
+import virtual_iso as viso
 
 # A real PS1 rip, when this machine has one (not in the repo: 647 MB).
 PSX_BIN = os.environ.get("PSX_BIN", "")
+
+
+def loopback_aliases():
+    """Whether this machine lets a client bind any address in 127/8.
+
+    Two tests need to look like several consoles at once. Linux answers yes for
+    the whole range; macOS only for 127.0.0.1, so there they can only be
+    skipped, not weakened.
+    """
+    with socket.socket() as probe:
+        try:
+            probe.bind(("127.0.9.9", 0))
+        except OSError:
+            return False
+    return True
+
+
+LOOPBACK_ALIASES = loopback_aliases()
+
+
+def param_sfo(title_id: bytes = b"BCES00104") -> bytes:
+    """A minimal valid PARAM.SFO, with TITLE_ID in the data table."""
+    entries = sorted(((b"TITLE", b"Test Game"), (b"TITLE_ID", title_id)))
+    keys = b""
+    data = b""
+    index = []
+    for key, value in entries:
+        key_at = len(keys)
+        keys += key + b"\0"
+        data_at = len(data)
+        data += value
+        maximum = (len(value) + 3) & ~3
+        data += b"\0" * (maximum - len(value))
+        index.append((key_at, 0x0204, len(value), maximum, data_at))
+    while len(keys) & 3:
+        keys += b"\0"
+    start = 0x14 + 16 * len(index)
+    data_start = start + len(keys)
+    out = struct.pack("<4sIIII", b"\0PSF", 0x00000101, start, data_start,
+                      len(index))
+    for key_at, fmt, length, maximum, data_at in index:
+        out += struct.pack("<HHIII", key_at, fmt, length, maximum, data_at)
+    return out + keys + data
+
 
 
 def fill(size: int) -> bytes:
@@ -134,10 +182,18 @@ class PathRules(unittest.TestCase):
         self.assertEqual(ns.encode_path(ns.decode_path(raw)), raw)
 
     def test_virtual_iso_prefixes_recognised(self):
-        for prefix in (b"/***PS3***/GAME", b"/***DVD***/MOVIE", b"/***PS3***"):
-            with self.subTest(prefix=prefix):
-                self.assertTrue(ns.virtual_iso(prefix))
-        self.assertFalse(ns.virtual_iso(b"/PS3ISO/GAME"))
+        self.assertEqual(ns.virtual_iso_mode(b"/***PS3***/GAME"), "ps3")
+        self.assertEqual(ns.virtual_iso_mode(b"/***DVD***/MOVIE"), "dvd")
+        # A bare "/." mounts the whole share; anywhere else it is a component.
+        self.assertEqual(ns.virtual_iso_mode(b"/."), "dvd")
+        self.assertIsNone(ns.virtual_iso_mode(b"/GAMES/."))
+        # The marker has to open the path, exactly like upstream's strncmp.
+        self.assertIsNone(ns.virtual_iso_mode(b"/***PS3***"))
+        self.assertIsNone(ns.virtual_iso_mode(b"/PS3ISO/GAME"))
+        self.assertIsNone(ns.virtual_iso_mode(b"/x/***PS3***/GAME"))
+        self.assertEqual(ns.strip_virtual_prefix(b"/***PS3***/GAME"), b"/GAME")
+        self.assertEqual(ns.strip_virtual_prefix(b"/***DVD***/"), b"/")
+        self.assertEqual(ns.strip_virtual_prefix(b"/PS3ISO/GAME"), b"/PS3ISO/GAME")
 
     def test_listable(self):
         self.assertFalse(ns.listable("."))
@@ -196,6 +252,213 @@ class SectorProbe(unittest.TestCase):
             self.assertEqual(ns.detect_sector_size(fh, size), 2352)
 
 
+# --------------------------------------------------------------------------
+# Virtual ISO 9660 images
+# --------------------------------------------------------------------------
+
+def iso_entries(image: bytes, start: int, size: int):
+    """Directory records of one directory, in on-disk order."""
+    base = start * 2048
+    position = 0
+    while position < size:
+        length = image[base + position]
+        if length == 0:
+            # Records never cross a sector boundary; skip the rest of it.
+            position = (position // 2048 + 1) * 2048
+            continue
+        record = image[base + position:base + position + length]
+        yield {
+            "start": int.from_bytes(record[2:6], "little"),
+            "size": int.from_bytes(record[10:14], "little"),
+            "is_dir": bool(record[25] & 2),
+            "name": record[33:33 + record[32]],
+        }
+        position += length
+
+
+def iso_lookup(image: bytes, path, joliet: bool = False):
+    """Walk an ISO 9660 image the way a reader would, and return the record."""
+    pvd = image[(17 if joliet else 16) * 2048:]
+    record = {
+        "start": int.from_bytes(pvd[156 + 2:156 + 6], "little"),
+        "size": int.from_bytes(pvd[156 + 10:156 + 14], "little"),
+        "is_dir": True,
+        "name": b"\0",
+    }
+    for component in path:
+        if joliet:
+            wanted = [component.decode("utf8").encode("utf-16-be"),
+                      (component.decode("utf8") + ";1").encode("utf-16-be")]
+        else:
+            wanted = [component.upper(), component.upper() + b";1"]
+        for entry in iso_entries(image, record["start"], record["size"]):
+            if entry["name"] in wanted:
+                record = entry
+                break
+        else:
+            raise KeyError(component)
+    return record
+
+
+def iso_file(image: bytes, path, joliet: bool = False) -> bytes:
+    record = iso_lookup(image, path, joliet)
+    start = record["start"] * 2048
+    return image[start:start + record["size"]]
+
+
+class VirtualIsoTest(unittest.TestCase):
+    """The synthesised filesystem, checked with an ISO reader of our own."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name) / "Game Folder"
+        (self.root / "PS3_GAME" / "USRDIR").mkdir(parents=True)
+        (self.root / "PS3_GAME" / "PARAM.SFO").write_bytes(param_sfo())
+        (self.root / "PS3_GAME" / "USRDIR" / "EBOOT.BIN").write_bytes(b"boot" * 800)
+        (self.root / "PS3_GAME" / "USRDIR" / "ICON0.PNG").write_bytes(b"\x89PNG" + b"z" * 5000)
+        (self.root / "PS3_DISC.SFB").write_bytes(b"disc")
+        (self.root / "empty.dat").write_bytes(b"")
+        (self.root / "a.bin").write_bytes(bytes(range(256)) * 9)
+        (self.root / "unicode-\u00e9.txt").write_bytes(b"accent")
+        (self.root / "SPLIT.BIN.66600").write_bytes(b"A" * 4096)
+        (self.root / "SPLIT.BIN.66601").write_bytes(b"B" * 1000)
+        (self.root / "deep" / "one" / "two").mkdir(parents=True)
+        (self.root / "deep" / "one" / "two" / "far.dat").write_bytes(b"far away")
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def image(self, ps3=True, **kwargs):
+        iso = viso.VirtualIso(self.root, ps3, **kwargs)
+        self.addCleanup(iso.close)
+        return iso, iso.read_at(0, iso.size)
+
+    def test_volume_descriptors_and_disc_info(self):
+        iso, image = self.image()
+        self.assertEqual(len(image) % 2048, 0)
+        self.assertEqual(image[16 * 2048:16 * 2048 + 7], b"\x01CD001\x01")
+        self.assertEqual(image[17 * 2048:17 * 2048 + 7], b"\x02CD001\x01")
+        self.assertEqual(image[18 * 2048:18 * 2048 + 6], b"\xffCD001")
+        self.assertEqual(image[2048:2060], b"PlayStation3")
+        self.assertEqual(image[2048 + 0x10:2048 + 0x30],
+                         b"BCES-00104" + b" " * 22)
+        # Volume space size (both byte orders) equals the image in sectors.
+        self.assertEqual(int.from_bytes(image[16 * 2048 + 80:16 * 2048 + 84], "little"),
+                         len(image) // 2048)
+        self.assertEqual(int.from_bytes(image[16 * 2048 + 84:16 * 2048 + 88], "big"),
+                         len(image) // 2048)
+
+    def test_files_are_readable_through_the_filesystem(self):
+        _, image = self.image()
+        self.assertEqual(iso_file(image, [b"PS3_DISC.SFB"]), b"disc")
+        self.assertEqual(iso_file(image, [b"PS3_GAME", b"USRDIR", b"EBOOT.BIN"]),
+                         b"boot" * 800)
+        self.assertEqual(iso_file(image, [b"a.bin"]), bytes(range(256)) * 9)
+        self.assertEqual(iso_file(image, [b"empty.dat"]), b"")
+        self.assertEqual(iso_file(image, [b"deep", b"one", b"two", b"far.dat"]),
+                         b"far away")
+
+    def test_joliet_names_keep_their_case_and_accents(self):
+        _, image = self.image()
+        self.assertEqual(iso_file(image, [b"unicode-\xc3\xa9.txt"], joliet=True),
+                         b"accent")
+        self.assertEqual(iso_lookup(image, [b"a.bin"], joliet=True)["size"], 9 * 256)
+
+    def test_666_split_files_are_one_logical_file(self):
+        iso, image = self.image()
+        self.assertEqual(iso_lookup(image, [b"SPLIT.BIN"])["size"], 5096)
+        self.assertEqual(iso_file(image, [b"SPLIT.BIN"]),
+                         b"A" * 4096 + b"B" * 1000)
+        root = iso_lookup(image, [])
+        names = [e["name"] for e in iso_entries(image, root["start"], root["size"])]
+        self.assertNotIn(b"SPLIT.BIN.66601;1", names)
+        self.assertEqual(sum(1 for e in iso._extents if e[3].name.startswith("SPLIT")), 2)
+
+    def test_ps3_mode_needs_a_title_id(self):
+        (self.root / "PS3_GAME" / "PARAM.SFO").write_bytes(b"not an sfo")
+        with self.assertRaises(OSError):
+            viso.VirtualIso(self.root, True)
+
+    def test_dvd_mode_uses_the_folder_name_and_no_ps3_sectors(self):
+        iso, image = self.image(ps3=False)
+        self.assertEqual(image[2048:2056], b"\0" * 8)
+        self.assertEqual(image[16 * 2048 + 40:16 * 2048 + 72].rstrip(b" "),
+                         b"GAME FOLDER")
+        self.assertEqual(iso.mtime, int(self.root.stat().st_mtime))
+
+    def test_reads_are_clamped_to_the_image(self):
+        iso, _ = self.image()
+        self.assertEqual(iso.read_at(iso.size, 10), b"")
+        self.assertEqual(len(iso.read_at(iso.size - 10, 100)), 10)
+        self.assertEqual(iso.read_at(1024, 0), b"")
+
+    def test_padding_between_files_and_at_the_end_is_zero(self):
+        iso, image = self.image()
+        # The last file ends before the final 32-sector pad.
+        self.assertEqual(image[-2048:], b"\0" * 2048)
+        self.assertTrue(iso.read_at(iso.size - 32 * 2048, 2048 * 32) == b"\0" * (2048 * 32))
+
+    def test_symlinks_and_special_files_are_not_in_the_image(self):
+        outside = Path(self.tmp.name) / "outside.txt"
+        outside.write_bytes(b"secret")
+        os.symlink(outside, self.root / "leak.bin")
+        _, image = self.image()
+        root = iso_lookup(image, [])
+        names = [e["name"] for e in iso_entries(image, root["start"], root["size"])]
+        self.assertNotIn(b"LEAK.BIN;1", names)
+        self.assertEqual(iso_file(image, [b"PS3_DISC.SFB"]), b"disc")
+
+    def test_a_file_past_4_GiB_gets_one_record_per_extent(self):
+        # A 4 GiB fixture is not worth building; the record split is arithmetic.
+        big = viso.Entry(name=b"BIG.BIN", path=self.root / "a.bin",
+                        size=viso.MULTIEXTENT_PART * 2 + 1000, mtime=0,
+                        parts=[(self.root / "a.bin", 0)])
+        self.assertEqual(viso._extent_sizes(big),
+                         [viso.MULTIEXTENT_PART, viso.MULTIEXTENT_PART, 1000])
+        self.assertEqual(sum(viso._extent_sizes(big)), big.size)
+        # An ordinary file is one record, however many parts it is split over.
+        split = viso.Entry(name=b"SPLIT.BIN", path=self.root / "a.bin",
+                           size=5096, mtime=0,
+                           parts=[(self.root / "a.bin", 4096),
+                                  (self.root / "a.bin", 1000)])
+        self.assertEqual(viso._extent_sizes(split), [5096])
+
+    def test_directory_content_matches_the_size_it_declares(self):
+        # The size a directory advertises in its own record has to be the size
+        # it was built to, or a client walks off the end of it.
+        iso, _ = self.image()
+        for directory in iso._dirs:
+            self.assertEqual(directory.size, len(directory.content))
+            self.assertEqual(directory.size_joliet, len(directory.content_joliet))
+            self.assertEqual(directory.size % 2048, 0)
+
+    def test_a_read_across_the_end_of_a_file_is_data_then_padding(self):
+        iso, image = self.image()
+        record = iso_lookup(image, [b"a.bin"])
+        start = record["start"] * 2048
+        data = bytes(range(256)) * 9
+        self.assertEqual(iso.read_at(start, 100), data[:100])
+        # a.bin is 2304 bytes in a 4096-byte area: the rest of the last sector
+        # is padding, and the next file's bytes are not a continuation of it.
+        self.assertEqual(record["size"], len(data))
+        self.assertEqual(iso.read_at(start + 2000, 2000),
+                         data[2000:] + b"\0" * (2000 - (len(data) - 2000)))
+        self.assertEqual(iso.read_at(start, 4096),
+                         data + b"\0" * (4096 - len(data)))
+        self.assertEqual(image[start:start + 4096],
+                         data + b"\0" * (4096 - len(data)))
+
+    def test_a_read_across_a_split_file_boundary_joins_the_parts(self):
+        iso, image = self.image()
+        record = iso_lookup(image, [b"SPLIT.BIN"])
+        start = record["start"] * 2048
+        joined = b"A" * 4096 + b"B" * 1000
+        # 100 bytes either side of the seam between .66600 and .66601.
+        self.assertEqual(iso.read_at(start + 4096 - 100, 200), joined[3996:4196])
+        self.assertEqual(iso_file(image, [b"SPLIT.BIN"]), joined)
+        self.assertEqual(image[start:start + len(joined)], joined)
+
+
 class Whitelist(unittest.TestCase):
     def test_patterns(self):
         self.assertIsNone(ns.parse_whitelist(""))
@@ -225,6 +488,8 @@ ODD_NAME = b"bad\xff\xfename"          # not valid UTF-8
 GAME_ISO = b"PS3ISO/game.iso"
 RAW_BIN = b"PSXISO/raw2352.bin"
 PLAIN_ISO = b"PSXISO/plain2048.iso"
+VISO_PS3 = b"VISO/BCES00104"            # a folder game, for /***PS3***/ (§7.4)
+VISO_DVD = b"VISO/Movie Disc"           # a folder, for /***DVD***/
 
 
 class EndToEnd(unittest.TestCase):
@@ -239,7 +504,7 @@ class EndToEnd(unittest.TestCase):
         cls.root.mkdir()
         for rel in (GAME_ISO, RAW_BIN, PLAIN_ISO, b"GAMES/.hidden",
                     b"GAMES/notes.txt", b"GAMES/sub/deep.dat",
-                    b"GAMES/sub/deeper/deepest.dat", b"GAMES/" + ODD_NAME):
+                    b"GAMES/sub/deeper/deepest.dat"):
             path = cls.root / ns.decode_path(rel)
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_bytes(b"filler")
@@ -252,6 +517,25 @@ class EndToEnd(unittest.TestCase):
         (cls.base / "outside-secret.txt").write_bytes(b"do not read me")
         os.symlink(cls.base / "outside-secret.txt", cls.root / "GAMES/escape.iso")
         os.symlink(cls.root / "GAMES/notes.txt", cls.root / "GAMES/linked.txt")
+        # A name that is not valid UTF-8, on a filesystem that will hold one.
+        # APFS refuses it (Errno 92), so the check on it is a bonus, not a
+        # requirement: the share still has to work without it.
+        cls.odd_name = None
+        try:
+            (cls.root / "GAMES").joinpath(os.fsdecode(ODD_NAME)).write_bytes(b"odd")
+            cls.odd_name = ODD_NAME
+        except OSError:
+            pass
+        # Folder games, for the /***PS3***/ and /***DVD***/ mounts (§7.4).
+        game = cls.root / ns.decode_path(VISO_PS3)
+        (game / "PS3_GAME" / "USRDIR").mkdir(parents=True)
+        (game / "PS3_GAME" / "PARAM.SFO").write_bytes(param_sfo())
+        (game / "PS3_GAME" / "USRDIR" / "EBOOT.BIN").write_bytes(fill(6000))
+        (game / "PS3_DISC.SFB").write_bytes(b"disc")
+        movie = cls.root / ns.decode_path(VISO_DVD)
+        (movie / "VIDEO_TS").mkdir(parents=True)
+        (movie / "VIDEO_TS" / "VIDEO_TS.IFO").write_bytes(b"ifodata")
+        (cls.root / "VISO/NoSfo").mkdir(parents=True)
 
     @classmethod
     def tearDownClass(cls):
@@ -416,6 +700,97 @@ class EndToEnd(unittest.TestCase):
         self.assertEqual(st["is_dir"], 0)
         self.assertNotEqual(st["size"], (self.base / "outside-secret.txt").stat().st_size)
 
+    # -- virtual ISO (§7.4) ---------------------------------------------------
+
+    def mount(self, client, path: bytes) -> tuple[bytes, int]:
+        """OPEN_FILE on a folder, and the whole image the server answers with."""
+        size, mtime = self.run_async(client.open_file(path))
+        self.assertGreater(size, 0, path)
+        self.assertEqual(size % 2048, 0)
+        image = self.run_async(client.read_file(0, size))
+        self.assertEqual(len(image), size)
+        return image, mtime
+
+    def test_a_folder_game_mounts_as_an_iso(self):
+        _, port = self.start()
+        client = self.client(port)
+        image, mtime = self.mount(client, b"/***PS3***/" + VISO_PS3)
+        self.assertEqual(image[2048:2060], b"PlayStation3")
+        self.assertEqual(image[2048 + 0x10:2048 + 0x1A], b"BCES-00104")
+        self.assertEqual(image[16 * 2048:16 * 2048 + 7], b"\x01CD001\x01")
+        folder = self.root / ns.decode_path(VISO_PS3)
+        self.assertEqual(mtime, int(folder.stat().st_mtime))
+        root = iso_lookup(image, [])
+        names = [e["name"] for e in iso_entries(image, root["start"], root["size"])]
+        self.assertIn(b"PS3_GAME", names)
+        self.assertIn(b"PS3_DISC.SFB;1", names)
+        self.assertEqual(iso_file(image, [b"PS3_GAME", b"USRDIR", b"EBOOT.BIN"]),
+                         fill(6000))
+
+    def test_a_dvd_folder_mounts_under_its_own_name(self):
+        _, port = self.start()
+        client = self.client(port)
+        image, _ = self.mount(client, b"/***DVD***/" + VISO_DVD)
+        # DVD mode writes no PS3 disc info, and names the volume after the folder.
+        self.assertEqual(image[2048:2056], b"\0" * 8)
+        self.assertEqual(image[16 * 2048 + 40:16 * 2048 + 72].rstrip(b" "),
+                         b"MOVIE DISC")
+        self.assertEqual(iso_file(image, [b"VIDEO_TS", b"VIDEO_TS.IFO"]), b"ifodata")
+
+    def test_a_cd_read_of_a_virtual_iso_has_no_raw_header(self):
+        # A synthesised image is plain 2048-byte sectors, so sector 16 is at
+        # 16*2048 exactly — there is nothing to skip (§7.4).
+        _, port = self.start()
+        client = self.client(port)
+        image, _ = self.mount(client, b"/***PS3***/" + VISO_PS3)
+        self.assertEqual(self.run_async(client.read_cd_2048(16, 2)),
+                         image[16 * 2048:18 * 2048])
+
+    def test_a_folder_without_a_param_sfo_is_not_mounted(self):
+        _, port = self.start()
+        client = self.client(port)
+        self.assertEqual(self.run_async(client.open_file(b"/***PS3***/VISO/NoSfo"))[0], -1)
+        # Refused like a missing file, so the connection stays usable.
+        self.assertEqual(self.run_async(client.stat(b"/GAMES/notes.txt"))["size"], 11)
+
+    def test_the_share_root_mounts_as_an_iso(self):
+        # A bare "/." is how upstream lets a client mount the whole share, and
+        # it is DVD mode: the volume is named after the share directory and the
+        # PS3 disc-info sector stays empty (§3.1, §7.4).
+        _, port = self.start()
+        client = self.client(port)
+        size, _ = self.run_async(client.open_file(b"/."))
+        self.assertGreater(size, 0)
+        self.assertEqual(size % 2048, 0)
+        # The header and the directory blocks, without reading the files in them.
+        head = self.run_async(client.read_file(0, 0x14000))
+        self.assertEqual(head[16 * 2048 + 40:16 * 2048 + 72].rstrip(b" "), b"SHARE")
+        self.assertEqual(head[2048:2060], b"\0" * 12)
+        root = iso_lookup(head, [])
+        names = {e["name"] for e in iso_entries(head, root["start"], root["size"])}
+        wanted = {b"GAMES", b"PS3ISO", b"PSXISO", b"VISO"}
+        self.assertEqual(wanted & names, wanted)
+
+    def test_a_virtual_path_cannot_escape_the_share(self):
+        _, port = self.start()
+        client = self.client(port)
+        with self.assertRaises(nc.ConnectionClosed):
+            self.run_async(client.open_file(b"/***PS3***/../outside-secret.txt"))
+
+    def test_the_marker_mounts_for_open_file_only(self):
+        # Upstream looks for the marker in OPEN_FILE alone (``translate_path``
+        # gets a null viso pointer everywhere else), so for every other command
+        # the marker is a path component that is not there (§7.4).
+        _, port = self.start()
+        client = self.client(port)
+        st = self.run_async(client.stat(b"/***PS3***/" + VISO_PS3))
+        self.assertEqual((st["size"], st["is_dir"]), (-1, 0))
+        self.assertEqual(self.run_async(client.get_dir_size(b"/***PS3***/" + VISO_PS3)), -1)
+        self.assertEqual(self.run_async(client.open_dir(b"/***DVD***/" + VISO_DVD)), -1)
+        # The folder is still there under its own name, marker or no marker.
+        plain = self.run_async(client.stat(b"/" + VISO_PS3))
+        self.assertEqual(plain["is_dir"], 1)
+
     # -- directory listing ----------------------------------------------------
 
     def test_read_dir_entry_listing(self):
@@ -427,7 +802,8 @@ class EndToEnd(unittest.TestCase):
         self.assertEqual(names, sorted(names) if ns.LISTING_SORTED else names)
         self.assertIn(b"notes.txt", names)
         self.assertIn(b".hidden", names)
-        self.assertIn(ODD_NAME, names)
+        if self.odd_name is not None:
+            self.assertIn(ODD_NAME, names)
         self.assertIn(b"sub", names)
         for size, fn_len, is_dir, name in entries:
             self.assertEqual(fn_len, len(name))
@@ -513,7 +889,7 @@ class EndToEnd(unittest.TestCase):
     def test_get_dir_size_sums_recursively(self):
         _, port = self.start()
         client = self.client(port)
-        expected = sum(p.stat(follow_symlinks=False).st_size
+        expected = sum(p.lstat().st_size
                        for p in (self.root / "GAMES").rglob("*")
                        if p.is_file() and not p.is_symlink())
         self.assertEqual(self.run_async(client.get_dir_size(b"/GAMES")), expected)
@@ -563,11 +939,15 @@ class EndToEnd(unittest.TestCase):
         client = self.client(port)
         self.run_async(client.expect_closed(client.header(0x2412)))
 
-    def test_truncated_command_closes(self):
+    def test_a_truncated_header_closes_once_the_client_stops_writing(self):
+        """Two bytes of a 16-byte header, then nothing more: no command to run."""
         _, port = self.start()
         client = self.client(port)
         client.writer.write(b"\x12\x24")
         self.run_async(client.writer.drain())
+        # Half-close (the drain above left nothing pending), so the server sees
+        # the end of the stream rather than a client it must keep waiting for.
+        client.writer.write_eof()
         with self.assertRaises(nc.ConnectionClosed):
             self.run_async(client.read_raw(16))
 
@@ -657,6 +1037,8 @@ class EndToEnd(unittest.TestCase):
     def test_more_than_max_clients_is_refused(self):
         """Distinct source IPs, so the same-IP takeover rule does not collapse
         the slots: 127.0.0.0/8 is all local on Linux."""
+        if not LOOPBACK_ALIASES:
+            self.skipTest("this machine will not bind a second loopback address")
         _, port = self.start()
         clients = [self.client(port, source=f"127.0.0.{i + 1}")
                    for i in range(ns.MAX_CLIENTS)]
@@ -667,6 +1049,12 @@ class EndToEnd(unittest.TestCase):
             self.run_async(extra.stat(b"/GAMES/notes.txt"))
 
     def test_whitelist_rejects_other_addresses(self):
+        # The addresses here are only about the whitelist decision, and that is
+        # covered by the Whitelist unit tests; binding them is the part that
+        # needs a machine which allows it.
+        if not LOOPBACK_ALIASES:
+            self.skipTest("this machine will not bind a second loopback address")
+
         async def bind():
             server = ns.NetisoServer(ns.Share(self.root),
                                      whitelist=ns.parse_whitelist("127.0.9.*"))

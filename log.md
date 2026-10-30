@@ -6,6 +6,92 @@ it records *what was actually run and observed*, including bugs found while test
 
 ---
 
+## 2026-10-30 (server) — folder games: the virtual ISO is implemented
+
+`/***PS3***/<dir>` and `/***DVD***/<dir>` had been answered with "not found" —
+the one deviation in the protocol a real library could hit (§9.2). They now
+build the image. `server/netsrv/virtual_iso.py` is a port of webMAN's
+`VIsoFile`: the same extents, the same directory records, the same path tables,
+with file contents read off disk at whatever offset a client asks for, so a
+30 GB folder game costs a few hundred kilobytes of RAM and no start-up pause.
+The image ships in two files now (`COPY netsrv/ps3netsrv.py
+netsrv/virtual_iso.py`), and `--build-arg NETSRV=ps3netsrv++` is no longer a
+reason to reach for the fallback: that one has no virtual ISO either.
+
+### How it was checked
+
+Three ways, because "it looks like an ISO" is not a claim worth much.
+
+* **Against upstream's own builder.** `VIsoFile.cpp` compiles standalone, so a
+  `makeiso` binary was built outside the repo and pointed at the same fixtures:
+  a plain PS3 game, a complex one (deep nesting, a 70-file directory, a Joliet
+  name, an empty file, a name truncated at 204 bytes), and the complex one again
+  in DVD mode. **No differing bytes**, in any of them, once the PS3 disc-info
+  sector (random by design) and each volume descriptor's creation timestamp are
+  blanked.
+* **Against upstream's server, on the wire.** `netsrv_diff.py` grew twelve
+  virtual-ISO scenarios: the same folder mounted on both servers, comparing the
+  size and mtime; then 40 KiB of the image read out of each and compared with
+  those same fields blanked; then DVD mode, the CD-read stride, `STAT_FILE` /
+  `OPEN_DIR` / `GET_DIR_SIZE` on a marked path, a folder that is not a game, a
+  file, the share root, a marker further in, and a marked path with `..` in it.
+  One of them, `/.`, reads the whole synthesised image back from both servers —
+  4,456,448 bytes of a mixed tree: nested directories, a non-ASCII name, a
+  hidden file, names with spaces, a symlink. **Every byte of the two images
+  agrees** except the record upstream gives that symlink (with the size of the
+  file outside the share it points at, which then shifts every later file by one
+  sector) and the volume identifier of that particular mount (§9.4, §9.2). The
+  tally is now **57 identical answers, 17 declared deviations, 0 undeclared**,
+  against a reference built on this Mac.
+* **82 tests** in `netsrv_test.py` (was 62), run on Alpine 3.20's Python 3.12 as
+  well as here: an ISO reader of our own walks the synthesised image and asks it
+  for the folder's files by name, in both name spaces, plus an end-to-end pass
+  that mounts a folder game over a loopback socket and reads it back.
+
+### What reading upstream turned up
+
+* **The marker is `OPEN_FILE`'s alone.** `translate_path` takes a `viso`
+  pointer and only `process_open_cmd` passes one — `STAT_FILE`, `OPEN_DIR`,
+  `GET_DIR_SIZE`, `CREATE`, `DELETE`, `MKDIR`, `RMDIR` all pass `NULL` — so
+  upstream does *not* strip the marker for those and answers not-found. This
+  server stripped it everywhere until the new scenarios caught it; that
+  deviation is gone rather than declared.
+* **Upstream's CD read is wrong for a folder game.**
+  `process_read_cd_2048_critical_cmd` always seeks to
+  `sector * CD_SECTOR_SIZE + 24`, and a synthesised image is plain 2048-byte
+  sectors with no raw header: upstream answers 24 bytes into the sector the
+  client asked for. We read at `sector * 2048` and declare it (§3.3, §9.2).
+* **Upstream's `.66600` support does not work.** The path it builds for a part
+  truncates one byte too many, so a folder with a split file fails the whole
+  build rather than serving it. Ours concatenates the parts into one file, which
+  is what the summed size in upstream's own directory record promises.
+* **`/.`, exactly, is a third mount spelling**: upstream mounts the whole share,
+  in DVD mode. Implemented; the reported size matches on the harness tree.
+
+### Bugs that fell out of testing
+
+A split file came out of the image as two directory records with the same name,
+because the code laying out the *image* was also deciding what the *directory*
+would say, and those are different questions: one record per file, extents only
+past 4 GiB. A zero-length file put an extent starting exactly where the next
+file starts, which hid that file from any lookup at its beginning.
+`netsrv_test.py`'s `setUpClass` wrote a non-UTF-8 name, which APFS refuses
+outright — so the suite could not run on a Mac at all; three checks that need a
+second loopback address, or a disk that will hold such a name, now skip instead,
+and both platforms are green. And `test_truncated_command_closes` was passing
+for the wrong reason: on Python 3.11+ `asyncio.TimeoutError` *is* `TimeoutError`,
+which *is* an `OSError`, so the client's 10-second read timeout was laundered
+into the `ConnectionClosed` the test asserted. It now half-closes the socket and
+watches the server notice, which takes no time at all.
+
+Getting the suite to run here at all needed `from __future__ import annotations`
+in the four scripts (the images and annotations are 3.10 syntax and this Mac is
+on 3.9) and `Path.lstat()` for one `stat(follow_symlinks=False)`, which is 3.10
+too. Nothing about the behaviour changed; the deployment image is Alpine 3.20 on
+Python 3.12 either way, and the suite now runs on both.
+
+---
+
 ## 2026-10-24 (server) — ps3netsrv rewritten in Python, checked against the real binaries
 
 The image used to `git clone` dirkvdb's `ps3netsrv--` and compile a C++ server

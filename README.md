@@ -36,13 +36,11 @@ Then:
 
 The netiso server shares `GAMES_DIR` read-only. Set `NETSRV_WHITELIST=192.168.1.*`
 to accept only that subnet, or `NETSRV_WRITE=1` to let PS3 clients create, write
-and delete files. If the library has *folder* games (a directory with a
-`PS3_GAME/` inside, which webMAN mounts through `/***PS3***/`), those are not
-served yet — build the fallback instead:
-
-```bash
-docker build -t ps-linker --build-arg NETSRV=ps3netsrv++ server/
-```
+and delete files. *Folder* games — a directory with a `PS3_GAME/` inside, which
+webMAN mounts through `/***PS3***/` — are served as well: the server builds the
+ISO 9660 image around the folder as the client reads it, so a 30 GB folder game
+costs a few hundred kilobytes of RAM and no start-up pause
+(`docs/PS3NETSRV-PROTOCOL.md` §7.4).
 
 ### Store (server-side only)
 
@@ -230,10 +228,16 @@ wrong `X-SHA256` is rejected with `rc=-11`.
 - [x] **ps3netsrv rewritten in house** (`server/netsrv/ps3netsrv.py`, stdlib
       Python 3): the netiso protocol on port 38008, no third-party binary in the
       image. Checked byte-for-byte against upstream's own binaries on one tree
-      with `server/netsrv/netsrv_diff.py` — 48 identical answers, 15 declared
-      deviations, 0 undeclared — plus 62 tests in `netsrv_test.py`; spec and
+      with `server/netsrv/netsrv_diff.py` — 57 identical answers, 17 declared
+      deviations, 0 undeclared — plus 82 tests in `netsrv_test.py`; spec and
       findings in `docs/PS3NETSRV-PROTOCOL.md`. Ships in the image as the default,
       with `--build-arg NETSRV=ps3netsrv++` kept as the fallback
+- [x] **Virtual ISO** (`server/netsrv/virtual_iso.py`): `/***PS3***/` and
+      `/***DVD***/` mount a game *folder* by synthesising its ISO 9660 image,
+      built from upstream's `VIsoFile` and byte-identical to it outside the
+      fields upstream itself does not repeat (the random PS3 disc-info sector,
+      the volume timestamps). File contents are read at whatever offset a client
+      asks for, so nothing is prebuilt or cached. §7.4
 
 ### In progress
 - [x] **Store view on the PSP, rendered by the Cover Flow module** —
@@ -273,10 +277,6 @@ wrong `X-SHA256` is rejected with `rc=-11`.
       at the end of `docs/PS3NETSRV-PROTOCOL.md` §8 (which opcodes a real client
       sends, whether it holds one connection or several, what it makes of the
       sector probe's 848 MiB ceiling)
-- [ ] Virtual ISO: serve folder games through `/***PS3***/`, which means
-      synthesising an ISO 9660 filesystem over a directory tree. Until then the
-      Docker image keeps `--build-arg NETSRV=ps3netsrv++` as the fallback, and a
-      library with folder games needs it
 
 ### Later
 - [ ] Web GUI: **Add Games** panel wired to `POST /api/upload` — the endpoint is
