@@ -283,8 +283,6 @@ wrong `X-SHA256` is rejected with `rc=-11`.
       fields upstream itself does not repeat (the random PS3 disc-info sector,
       the volume timestamps). File contents are read at whatever offset a client
       asks for, so nothing is prebuilt or cached. §7.4
-
-### In progress
 - [x] **Store view on the PSP, rendered by the Cover Flow module** —
       `psp/store.c` feeds `ui/coverflow.c` (built for the debug screen through
       `psp/coverflow_psp.c`) and `Triangle` opens it from the browser. It parses
@@ -323,6 +321,8 @@ wrong `X-SHA256` is rejected with `rc=-11`.
       way (sprite attribute packing, and GPU-side framebuffers outliving
       `sceGuTerm`), documented in `log.md` (2026-10-31). Real PSP hardware is
       still untested.
+
+### In progress
 - [ ] Cover Flow on the PS3 app — `ps3/main.c` writes ANSI to the TTY so
       `has_colors=1` applies directly, but its browser has no size/category to
       show until the share reports per-entry metadata (listed under Later)
