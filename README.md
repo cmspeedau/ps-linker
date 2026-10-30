@@ -332,6 +332,12 @@ wrong `X-SHA256` is rejected with `rc=-11`.
       (watched `.store-queue.json` works today)
 - [ ] GTK/Qt GUI front-end for Linux (manage games + edit catalog metadata)
 - [ ] PS3: RSX pixel-graphics renderer (currently ANSI console output)
+- [ ] PS4 support: platform-aware share (ps4 alongside psp/ps3 in upload tags,
+      metadata, and GUI sections) organizing PKG titles and the user's own
+      .rap licenses like everything else, plus docs/PS4.md for the real
+      consumers (old-firmware browser on /gui/, PS4 Linux payload curl with
+      Range/resume, exFAT USB installs) — a signed native client is
+      exploit-dependent and stays out of scope
 - [ ] HTTPS support on the HTTP share
 
 ## License
