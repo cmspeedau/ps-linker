@@ -1,8 +1,9 @@
 # PS Linker — UI Reference (Media Go derived)
 
-This is the visual specification for PS Linker's interface, derived from Sony's
-**Media Go** application and stripped of everything PS Linker doesn't need:
-no music, video, photo, or podcast management, no store, no playlists.
+This is the visual specification for PS Linker's browser interface, derived
+from Sony's **Media Go** application and stripped of unrelated media-library
+features. The PSP Store is documented separately and uses the shared Cover Flow
+renderer.
 
 What remains is Media Go's **shell** (dark theme, sidebar, list view, status
 bar, progress bar) applied to two screens: the **NAS browser** and the
@@ -78,8 +79,8 @@ Navigation entries (fixed list, not dynamic):
 
 - Active entry: full-width accent bar, `text.primary`.
 - Inactive entries: `text.secondary` on `bg.panel`.
-- In v1.2 the sidebar is display-only; entries are wired to real views
-  in a later version. Until then only BROWSE is visually "active".
+- The file-browser sidebar remains display-only; the Store is opened from the
+  browser with Triangle.
 
 ### List panel (file browser)
 - One row per file on the NAS share: filename only, no icons, no columns.

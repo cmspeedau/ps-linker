@@ -656,3 +656,83 @@ item), so even a running build is not yet observable on-screen.
 - All source changes from this session are **uncommitted** working-tree edits
   (`README.md`, `ps3/Makefile`, `ps3/main.c`, `psp/Makefile`, `psp/main.c`,
   `psp/resume.c`); nothing has been committed or pushed.
+
+---
+
+## 2026-10-30 (PSP) — Store wired to shared Cover Flow
+
+Implemented the PSP Store integration on a local worker branch. `Triangle` now
+opens it from the file browser; the catalog feeds the shared Cover Flow renderer
+with `has_colors=0` and a 40-column PSP screen width. The parser accepts both
+`items` and generated-catalog `entries`, formats integer `size` values, and the
+client derives PSP EBOOT/ISO/CSO destinations locally. Favourites and the eight
+most recent successful installs are stored in `store_state.txt` beside
+`settings.txt`; installs use the existing resumable downloader.
+
+A small host test was added for the pure size/path helpers. **Validation was
+blocked in this sandbox:** `make`, `gcc`/`cc`, and Docker are unavailable, so
+neither requested Make target nor the PSP container build could run. No PSP or
+emulator runtime check was performed. The roadmap item remains in progress
+until builds/tests and runtime behavior are verified.
+
+---
+
+## 2026-10-30 (PSP) — Store view built, run in PPSSPP, five bugs fixed
+
+`make` and `cc` are present on this Mac and podman runs, so the entry above is
+now superseded: `psp/` cross-builds in `pspdev/pspdev` and the resulting
+`EBOOT.PBP` was driven in PPSSPPSDL 1.20.4 against a logging HTTP share with
+Range support. `make -C ui test` (197 assertions) and `make -C psp/tests test`
+(24 assertions) pass; the toolchain build is warning-free apart from the
+pre-existing `sceHttpCreateRequestWithURL` const discard in `store.c`.
+
+Driving the pad from the CLI needed more than AppleScript: `keystroke` and
+`key code` reach PPSSPP's own menus but not the emulated pad, because SDL only
+feeds the pad while the window owns input focus. A real mouse click on the
+title bar (CoreGraphics, `pslkey.swift` in the scratch dir) before each press
+fixes it. `EnableWlan = True` is required or `sceNetApctlConnect` never gets an
+IP; on this Mac the live ini is `~/.config/ppsspp/PSP/SYSTEM/ppsspp.ini`.
+
+What was watched, not inferred: Triangle opens the Store
+(`GET /catalog.json -> 200 ua=PSLinkerStore`); Left/Right move the carousel and
+clamp at the ends; R/L switch category; Select toggles the 3xN grid; Square adds
+then removes the `F:` line in `store_state.txt`; Start is unmapped in this view
+and changes nothing; O returns to the browser. Installs: two `EBOOT.PBP`s and a
+3 MB ISO each landed on the memory stick with a sha256 equal to the served
+blob, and `store_state.txt` came back through a restart with `R:` rows newest
+first.
+
+Fixed, all of it found by running it:
+
+- `psp/store.c` used `SCREEN_COLS 40`. The debug screen is 480 px on an 8-px
+  cell, so the real width is 60: the frame filled 58% of the screen and cut the
+  description mid-word ("Needs a WAD you ow"). Truncations now track
+  SCREEN_COLS, and the tiles grow to 14+2+20+2+14.
+- `psp/store_logic.c` derived an `EBOOT.PBP`'s game folder from the title, and
+  `generate_catalog.py` titles every one of them `EBOOT` (the file stem). Two
+  homebrew therefore shared `ms0:/PSP/GAME/EBOOT/EBOOT.PBP`, and the second
+  resumed against the first file's bytes: `GET /Games/CaveStory/EBOOT.PBP` with
+  `Range: bytes=1048576-` against a 512 KB file answered **416**, and it could
+  never install. The folder now comes from the URL's parent directory, with the
+  title as fallback and `//host` rejected as a folder name.
+- `ends_with_ci` folded only the subject, not the suffix, so a suffix passed in
+  upper case never matched. That is what hid the bug above; both sides fold now.
+- `psp/main.c` did not resync `browser()`'s pad edge-detect after `store_run()`
+  returned, so the O that closed the Store was read again as "up one level" —
+  and at the share root that quits the app (`sceKernelExitGame()` observed on
+  screen). It now waits for the pad to clear; closing the Store lands back on
+  the listing.
+- `store_derive_path` returns `-2` when the path does not fit, so an unsupported
+  type no longer reports "Install path too long".
+
+Open, and not caused by this change:
+
+- Cover Flow's category tabs are a fixed enum filtering on `category` starting
+  with "PSP"/"PS3", while the generator sets category to the top-level library
+  folder, so a normal library shows `(no items in 'PSP Games')`. `store.c`'s own
+  parsed categories (`g_categories`) are collected and never displayed.
+- `generate_catalog.py` lists its own `<name>.meta.json` sidecars as catalog
+  entries, so they appear as items that cannot be installed.
+- `main.c` still uses `SCREEN_COLS 68` on a 60-column screen; only padding
+  spills past the edge, which is why it went unnoticed.
+- No real PSP hardware has been tried.
