@@ -16,7 +16,9 @@ the README points people at for downloads.
 Routing in `server/store/http_server.py` is therefore: `/api/*`, then `/gui/`
 (and `/ui/*`), then everything else resolved **inside the library directory** —
 files with `Range`/`206` support, and listings in the format the device apps
-parse.
+parse: plain `href` anchors, with our own shares additionally carrying
+`data-size`/`data-cat` after the quote for the apps' row chrome (the apps
+ignore what follows the closing quote, so foreign shares parse unchanged).
 
 ## Files
 

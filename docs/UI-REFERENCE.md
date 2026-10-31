@@ -129,6 +129,13 @@ Navigation entries (fixed list, not dynamic):
 - Sidebar: BROWSE active.
 - List panel: fetched NAS directory listing (see `parse_listing` in
   `psp/main.c` — flat list, subdirectories filtered out).
+  The share's own anchors may carry `data-size` (bytes) and `data-cat`
+  (catalog category) *after* the quoted href — invisible to the parser,
+  which stops at the closing quote. When present, file rows render them
+  right-aligned (size, plus the category where the path header does not
+  already state it; directory rows show neither). Foreign shares (stock
+  `http.server`, nginx autoindex) never send the attributes, and rows
+  then render exactly as before.
 - Status bar: hints left, file count right.
 - Interactions: ↑/↓ move selection (wraps), X = download, O = quit.
 

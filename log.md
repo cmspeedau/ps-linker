@@ -1072,3 +1072,68 @@ and the grid gaining the new cards on its own. A queue-row `✕` removed a
 pending item mid-modal. No console errors. The claim-409 and both
 validation guards are covered by the suite rather than the browser, since
 the windows are too small to click.
+
+## 2026-10-31 (Server, PSP, PS3) — Browser rows carry store chrome (data-size / data-cat)
+
+The flat listing got the same metadata the store view has been rendering,
+without touching the format the apps (and other people's shares) parse.
+`list_directory` now emits `<a href="name" data-size="N" data-cat="C">` —
+the attributes ride *after* the closing quote, where the apps' `href="`
+scan and foreign parsers (stock `http.server`, nginx autoindex) stop and
+never look. Category semantics copy `generate_catalog.py`: a file's
+category is its top-level folder, a root folder is its own category, root
+files are `Uncategorized`; directories carry only `data-cat`.
+
+`FileEntry` grows `size` (−1 = the share didn't say) and `category` on
+both apps. The parsers gained `attr_at()`, scanning `key="value"` only
+between an anchor's quote and the next `<` so a neighbouring entry can't
+leak into this one. All three browser renderers (`psp/main.c`,
+`ps3/ui_pix.c`, `ps3/ui_text.c`) right-align `size  category` on file
+rows — size via the shared `store_format_size` so it reads exactly like
+the store's cards — suppress the category when the path header already
+starts with it, and show nothing for directories. A share without the
+attributes renders pixel-for-pixel the old rows.
+
+`check_share.sh` reaches 111 assertions with five listing checks (file
+size, file category, a dir's own-name category, a nested file keeping the
+top folder, root file = `Uncategorized`). PSP `EBOOT.PBP`, the PS3 pixel
+`.self` and the `TEXT_UI=1` variant all build warning-free in the pspdev
+/ ps3dev containers (same two benign pre-existing PSP warnings), and
+`make -C ui test` is green.
+
+RPCS3 end-to-end with the new `.self`: the root listing shows
+`TestRoot.bin — 977 KB  Uncategorized`, directory rows stay clean,
+`/Homebrew/` shows `2 MB` with the category suppressed (the header says
+`/Homebrew`), and the nested `/Games/UT2004/` shows `2 MB` for the ISO.
+`X` on the file downloads: server logs a plain `GET … 200`, the app
+answers `Done: ResumeTest.bin`, and the file lands on the emulated HDD
+sha256-identical to the share's copy.
+
+The earlier "browser download fails with −7" scare from this session
+was two unrelated things, neither of them the feature:
+
+1. **A completed file resumes as 416.** The previous session's download
+   had left a *finished* 2,000,000-byte `ResumeTest.bin`, so
+   `resume.c` sent `Range: bytes=2000000-`, the share answered 416 and
+   the app maps "neither 200 nor 206" to −7. Deleting the file fixes the
+   test; re-X on a completed download will keep failing until a
+   "already downloaded, overwrite?" prompt exists (roadmap fodder).
+2. **`cwd_up()` in `ps3/main.c` dropped the trailing slash without
+   removing the component**: `"Games/"` went *up* to `"Games"`, so
+   Circle looked like a no-op (the next fetch re-requested `/Games/`)
+   and entering a directory from that state built `/GamesUT2004/` (404).
+   The PSP one handled this correctly; the PS3 copy lost the second
+   `strrchr` pass. Fixed to match ("a/" → root, "a/b/" → "a/"), verified
+   at both depths in RPCS3 — `GET /Games/UT2004/ 200` then `GET /` on
+   the way back.
+
+Emulator-harness findings worth keeping: this box's RPCS3 runs with its
+`dev_hdd0` on `/run/media/google/Data/PCSX3/` — the copy under
+`~/.config/rpcs3/dev_hdd0` is never read, which is why seeded settings
+"didn't apply" and a download "didn't land" for several rounds. Two
+`rpcs3.appimage` processes can coexist and take turns at the same
+window; `pkill -x rpcs3` matches neither (the comm is
+`rpcs3.appimage`). A leftover store-GUI demo server kept holding
+:18000 so each "restarted" share silently failed to bind, and a stale
+`slow_cdn.py` on :18001 ate a proxy meant to capture the app's exact
+bytes. `ss -tlnp` before blaming the app, always.

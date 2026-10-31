@@ -369,6 +369,12 @@ wrong `X-SHA256` is rejected with `rc=-11`.
       `/api/catalog` — and the whole flow (add → run → live dock → extracted
       card, plus the delete path) was driven in a real browser against a
       throttled CDN; evidence in `log.md` (2026-10-31).
+- [x] Browser metadata: the share's listing anchors carry each entry's
+      `data-size`/`data-cat` (attributes after the quoted href — invisible to
+      the apps' `href="` scan and to foreign parsers), and both browsers draw
+      store-style file rows from them: size, plus the category where the path
+      header doesn't already state it. Stock `http.server`/nginx shares need
+      no change — no attributes, old plain rows
 
 ### In progress
 - [ ] Real cover art: extract ICON0.PNG from PSP ISO/CSO and PS3 game folders
@@ -386,8 +392,6 @@ wrong `X-SHA256` is rejected with `rc=-11`.
       sector probe's 848 MiB ceiling)
 
 ### Later
-- [ ] Browser metadata: have the share report size and category per entry so the
-      flat file list can carry the same chrome as the store view
 - [ ] GTK/Qt GUI front-end for Linux (manage games + edit catalog metadata)
 - [ ] PS4 support: platform-aware share (ps4 alongside psp/ps3 in upload tags,
       metadata, and GUI sections) organizing PKG titles and the user's own
