@@ -18,7 +18,7 @@ The server runs both services in one container:
   our own implementation of the ps3netsrv protocol. Stdlib Python 3, nothing to
   compile, no third-party binary in the image.
 - **HTTP share** on port `8000` (PSP/PS3 NASDL app downloads; supports `Range`/resume)
-- **Server-side Store**: fetches queued CDN titles into the same games library and regenerates `catalog.json` (served at `/catalog.json`) every `STORE_INTERVAL` seconds
+- **Server-side Store**: fetches queued CDN titles into the same games library and regenerates `catalog.json` (served at `/catalog.json`) every `STORE_INTERVAL` seconds; the web GUI's Store panel edits the queue and shows download activity, with a *Download now* that fetches on demand
 
 ### Quick start
 
@@ -351,6 +351,25 @@ wrong `X-SHA256` is rejected with `rc=-11`.
       overlap) — evidence in `log.md` (2026-10-31). Real PS3 hardware is
       still untested.
 
+- [x] **Web GUI: Store queue management + download activity** — the sidebar
+      gains a Store entry (pending-count badge) opening a queue modal: add
+      `url`/`title`/`category`, remove a queued item, and *Download now*
+      (`POST /api/store/run`, which spawns the fetcher detached instead of
+      waiting on `STORE_INTERVAL`). Live progress and a newest-first history
+      render in a Store section of the now-shared transfer dock (`dock.js`,
+      which Uploads moved into too), and the shell refetches the catalog
+      when a finished download has changed it so new cards appear without a
+      reload. The fetcher now *claims* the queue (atomic rename, so a
+      mid-run append waits for the next pass rather than being wiped) and
+      publishes a throttled status file, guarding its own `category` and url
+      because the queue is hand-editable; a `../` category wrote outside the
+      library before that guard. `check_share.sh` grows to 106 assertions —
+      validation codes, hidden queue file, claimed-url `409`, stale-status
+      idle, and a real run byte-matched against the served file and reaching
+      `/api/catalog` — and the whole flow (add → run → live dock → extracted
+      card, plus the delete path) was driven in a real browser against a
+      throttled CDN; evidence in `log.md` (2026-10-31).
+
 ### In progress
 - [ ] Real cover art: extract ICON0.PNG from PSP ISO/CSO and PS3 game folders
       into the catalog so tiles show real covers instead of placeholders
@@ -367,12 +386,8 @@ wrong `X-SHA256` is rejected with `rc=-11`.
       sector probe's 848 MiB ceiling)
 
 ### Later
-- [ ] Web GUI: Store queue management and download-activity panels (the shell
-      renders the catalog today; watched `.store-queue.json` works)
 - [ ] Browser metadata: have the share report size and category per entry so the
       flat file list can carry the same chrome as the store view
-- [ ] Store queue interface: simple web UI endpoint to queue CDN downloads
-      (watched `.store-queue.json` works today)
 - [ ] GTK/Qt GUI front-end for Linux (manage games + edit catalog metadata)
 - [ ] PS4 support: platform-aware share (ps4 alongside psp/ps3 in upload tags,
       metadata, and GUI sections) organizing PKG titles and the user's own

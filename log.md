@@ -992,3 +992,83 @@ default keyboard mapping is arrows=D-pad, `X`=Cross, `C`=Circle, `Z`=Square,
 land while the game window is focused; the first Vulkan launch pays a
 one-time ~4-minute shader-variant precompile before boot. RPCS3's
 `Internet enabled` was flipped to `Enabled` for the run and restored.
+
+## 2026-10-31 (Server) — Store queue API + web GUI activity panels
+
+The Store's queue was a file you edited by hand; it now has a contract.
+`store_fetch.py` stopped trimming `.store-queue.json` in place and *claims*
+it instead — an atomic rename to `.store-queue.json.processing` — so an
+item the web GUI appends mid-run waits for the next pass instead of being
+deleted unprocessed (the old code rewrote the file after each item, and
+whatever raced in would vanish). While the claim lives it publishes
+`.store-status.json`: `phase` (`idle|downloading|extracting`), a `current`
+item with `bytes`/`total` throttled to one write per 0.4 s, and a
+newest-first `history` of the last 30 outcomes that *survives across runs*
+(each entrypoint tick is a fresh process; the panel wants the log, not just
+this run). The claim file is the only proof a download is live, so
+`/api/store/status` synthesizes `idle` when the phase says otherwise and no
+claim exists — a crashed run's stale `"downloading"` cannot ghost the panel.
+
+`http_server.py` grows `GET/POST/DELETE /api/store/queue`,
+`GET /api/store/status`, and `POST /api/store/run`. Adds/removes
+read-modify-write the pending file under a `threading.Lock` and refuse to
+touch a URL the claim holds (`409`); a duplicate url is `409`, a bad
+scheme or a `category` that is not exactly one visible path component is
+`400`. `run` spawns the fetcher with `start_new_session=True` (its stdout
+lands in the container log), `409` while a claim lives, `400` on an empty
+queue, `202` once started — two overlapping spawns are harmless because
+only one rename can win the claim.
+
+Two guards the tests earned:
+
+- the first `store_url_ok` reused `BAD_NAME_RE`, which is the *filename*
+  guard and contains `/` — so every URL failed validation. URLs need only
+  scheme, length and control-char checks; the filename rule was the wrong
+  neighbour to borrow.
+- a hand-written queue item with `"category": "../Escape"` wrote outside
+  the library, because only the GUI-side endpoint validated. The fetcher
+  now enforces `_safe_category` itself (queue files are hand-editable), and
+  the endpoint mirrors the rule, so neither process trusts the other.
+
+The fetcher also regenerates `catalog.json` after a drain (same command the
+entrypoint loop runs; the generator's write is atomic so an overlap is just
+idempotent work). Without it, *Download now* finished in seconds and the
+new card then took up to a `STORE_INTERVAL` (300 s) to appear — the GUI's
+completion refresh would read a catalog the fetcher had not rewritten yet.
+The shell side knows the claim is released *before* that rewrite finishes,
+so its catalog refetch is id-signature-gated and repeated through a 2-minute
+cooldown rather than trusted once.
+
+GUI: the corner dock became a shared transfer dock (`dock.js` — titled,
+individually collapsible sections, whole panel hidden while every section
+has nothing to say; Uploads moved in unchanged in behaviour). New `store.js`
+owns the sidebar Store entry (pending-count badge), the queue modal (add
+form with a category datalist over the library's own categories, remove
+with `✕`, Download now, current-item bar, recent history), and the dock's
+Store section (spinner row + last 3 outcomes, kept up for 2 min after a
+run). Polling is 2 s while live or the modal is open, 60 s otherwise;
+Escape closes the modal; a finished ok download refetches the catalog and
+new cards appear with no reload.
+
+`check_share.sh` reaches 106 assertions with a store section: the validation
+codes, the queue file hidden from the device listing, DELETE of a claimed
+url refused `409` while a foreign claim lives, a stale-status file reading
+back as `idle`, a real `POST /api/store/run` against the share's own file
+whose landing bytes sha256-match the source, and the drained item reaching
+`/api/catalog` without waiting for the loop tick. The failing download
+check leaves a status/library/server-log dump instead of a bare FAIL — the
+first version of this section failed on the fixture having renamed
+`test.iso` away in an earlier section, which took two blind runs to spot.
+
+Real-browser run against a throttled CDN (a fake CDN handler dripping one
+256 KiB chunk per 30 ms, so progress bars have seconds of movement rather
+than a local-loopback blur): two items added through the modal (one with a
+typed title, one taking its URL stem), `Download now`, the dock's Store
+section catching `alpha.bin` at 100 %/`Downloading` while `beta.bin` ran
+under it, the badge counting down, the history persisting across a page
+reload, `big.zip` landing extracted (`blob.bin` + `sub/inner.txt`, archive
+consumed) with all six entries in `/api/catalog` seconds after the drain,
+and the grid gaining the new cards on its own. A queue-row `✕` removed a
+pending item mid-modal. No console errors. The claim-409 and both
+validation guards are covered by the suite rather than the browser, since
+the windows are too small to click.
