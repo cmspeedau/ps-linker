@@ -347,11 +347,17 @@
   .up-list { list-style: none; margin: 12px 0 0; padding: 0;
     display: flex; flex-direction: column; gap: 8px; }
   .up-row {
-    display: grid; grid-template-columns: 1fr 110px 84px; gap: 10px;
+    /* minmax(0,...): a grid's 1fr defaults to minmax(auto,1fr), and a long
+     * single-word name (FIFA_Club_3_..._PSP-Googglecus.iso) has a min-content
+     * width of the whole word - with auto it widened the row past the modal
+     * instead of letting the name ellipsize. */
+    display: grid; grid-template-columns: minmax(0, 1fr) 110px 84px;
+    gap: 10px;
     align-items: center; background: var(--surface);
     border: 1px solid var(--line); border-radius: var(--radius-sm);
-    padding: 8px 12px;
+    padding: 8px 12px; min-width: 0;
   }
+  .up-row > div:first-child { min-width: 0; }   /* the name cell */
   .up-name { font-size: 12.5px; white-space: nowrap; overflow: hidden;
     text-overflow: ellipsis; }
   .up-size { font-size: 11px; color: var(--muted); }
