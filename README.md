@@ -508,13 +508,23 @@ wrong `X-SHA256` is rejected with `rc=-11`.
       Store reduced to `All | Homebrew` with Quake under All, and an
       install from there still landing pkg + license md5-identical
       (`log.md` 2026-10-31, screenshots `psp4-*.png`, `ps3-*.png`).
+- [x] **Store flow proven end-to-end through the Docker container** — the
+      built image (`server/Dockerfile`, `NETSRV=python`) ran the whole
+      chain against a throwaway library: a real `.store-queue.json` with
+      three items on a local HTTP CDN (two raw files + one zip), the
+      entrypoint's immediate pass fetched all three (zip extracted,
+      archive removed, queue claimed/drained, status history all `ok`),
+      `generate_catalog.py` regenerated `catalog.json` (the zip's
+      `.meta.json` sidecar supplied the title and the `PSP` platform
+      label, which the listing then served as `data-platform`), every byte
+      md5-matched the source through :8000 including a `206`
+      `Range` resume, and the PSP app booted against the container's
+      port 8000: root `All | Games | Utilities | Downloads` with the
+      `PS3` folder filtered, a `Clock_Tool.PBP` download landing intact,
+      and the Store reduced to exactly the container's two PSP titles
+      (`log.md` 2026-10-31, screenshots `ctn2-*.png`).
 
 ### In progress
-- [ ] Test Store flow end-to-end through the Docker container with a real queue
-      file + local HTTP CDN. Share-level resume is automated now
-      (`server/store/check_share.sh --with-dl`); what remains is the container
-      path — entrypoint → fetcher → catalog regeneration → app download against
-      port 8000 in the built image
 
 ### Planned
 - [ ] Validate the netiso server on a real PS3 with webMAN MOD (the console is

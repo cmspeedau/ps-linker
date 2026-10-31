@@ -6,6 +6,44 @@ it records *what was actually run and observed*, including bugs found while test
 
 ---
 
+## 2026-10-31 (server) — the Store chain proven end-to-end inside the Docker image
+
+Finished the last open "In progress" roadmap item: container path —
+entrypoint → fetcher → catalog regeneration → app download against port
+8000. Built `server/Dockerfile` (`NETSRV=python`) as `ps-linker-e2e`, ran
+it on a throwaway bind-mount library with `STORE_INTERVAL=8`, and fed it
+a real `.store-queue.json`: two raw files plus a zip on a local HTTP CDN.
+The CDN had to run as a *peer container* on a user-defined network
+(`pscdn`, plain `python3 -m http.server` inside the same image) — the
+host's firewall drops container→host-IP connections, which the first
+attempt surfaced as the fetcher hanging on a 0-byte `.part` against a
+timed-out `urlopen`.
+
+On boot the entrypoint's immediate pass drained everything: both raw
+files fetched byte-identical (md5), the zip extracted and its archive
+removed, the queue claimed and deleted, `.store-status.json` showing
+`phase: idle` with all three items `ok` in history, and
+`generate_catalog.py` regenerating `catalog.json` — the sidecar the zip
+carried supplied the title ("Clock Tool") and platform `PSP`, which the
+listing served as `data-platform="PSP"` on the file row. Through the
+published port (host 18000→8000; the machine's real Store already owns
+8000) a `Range: bytes=100000-` fetch answered `206` with the md5 of the
+tail slice matching, and the netiso port answered a TCP connect
+(`[netsrv] [1] connection from 172.18.0.1`).
+
+Then the app against the container: PPSSPP booted NASDL straight at it —
+root rail `All | Games | Utilities | Downloads` `[1/2]` (the container's
+`PS3/` folder filtered away by the new console rules), `/Utilities/`
+holding the zip-extracted `Clock_Tool.PBP 879 KB`, Cross downloading it
+intact ("Done: Clock_Tool.PBP"), and the Store showing exactly the
+container's two PSP titles (`EBOOT 293 KB`, Clock Tool) under
+`All | Games | Utilities`. Screenshots `ctn2-*.png` — an earlier set
+(`ctn-*.png`) is wrong and stayed in the shots dir for honesty: the old
+pkill pattern `PPSS[P]SDL` never matched the real `PPSSPPSDL` (doubled
+P), so a pre-container instance had survived and its window answered the
+driver's regex; with exactly one PPSSPPSDL running the rerun is the
+clean one. Container, CDN, network and ms0 residue all removed after.
+
 ## 2026-10-31 (clients) — one console, one library: the PS3 menu is gone and foreign files hid
 
 "ok lets remove the ps3 menu from the ps3 client and psp and ps3 should
