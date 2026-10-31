@@ -40,6 +40,8 @@ int bm_build(coverflow_item_t *items, int cap,
              const bm_entry_t *share, int share_n,
              const bm_entry_t *dl, int dl_n,
              const char *const *skip, int skip_n,
+             const char *const *hide, int hide_n,
+             const char *console,
              int downloads_active,
              char tabs[COVERFLOW_MAX_DYNAMIC_CATEGORIES]
                      [COVERFLOW_DYNAMIC_CATEGORY_LEN],
@@ -48,16 +50,27 @@ int bm_build(coverflow_item_t *items, int cap,
 {
     if (tabs_n) *tabs_n = 0;
 
+    /* Would this share entry be shown at all? The console filter is the
+       same rule the device uses everywhere else: a file the machine
+       cannot use never becomes a cover. */
+    #define SHOWN(e) (!(console) || (e)->is_dir ||                 \
+                      store_platform_ok((e)->name, (e)->platform, console))
+
     /* Tab rail, always derived from the SHARE listing so it does not change
        when the Downloads view is open: All, then share categories in
-       first-appearance order, then Downloads. "" is the wildcard tab
-       (renders as "All"); coverflow_set_categories keeps it. */
+       first-appearance order (only for categories that still have a visible
+       entry, and minus the hidden ones), then Downloads. "" is the wildcard
+       tab (renders as "All"); coverflow_set_categories keeps it. */
     if (tabs && tabs_n) {
         tabs[0][0] = '\0';                     /* the All tab */
         (*tabs_n) = 1;
-        for (int i = 0; i < share_n && *tabs_n < COVERFLOW_MAX_DYNAMIC_CATEGORIES - 1; i++)
-            if (!in_skip(skip, skip_n, share[i].category))
-                add_tab(tabs, tabs_n, share[i].category);
+        for (int i = 0; i < share_n && *tabs_n < COVERFLOW_MAX_DYNAMIC_CATEGORIES - 1; i++) {
+            const bm_entry_t *e = &share[i];
+            if (in_skip(skip, skip_n, e->category)) continue;
+            if (in_skip(hide, hide_n, e->category)) continue;
+            if (!SHOWN(e)) continue;
+            add_tab(tabs, tabs_n, e->category);
+        }
         if (dl)
             add_tab(tabs, tabs_n, BM_DOWNLOADS_LABEL);
     }
@@ -71,6 +84,7 @@ int bm_build(coverflow_item_t *items, int cap,
         const bm_entry_t *e = &src[i];
         if (!e->name || !e->name[0] || e->name[0] == '.') continue;
         if (!downloads_active && in_skip(skip, skip_n, e->category)) continue;
+        if (!downloads_active && !SHOWN(e)) continue;
 
         coverflow_item_t *it = &items[out];
         memset(it, 0, sizeof *it);
@@ -97,5 +111,6 @@ int bm_build(coverflow_item_t *items, int cap,
         if (map) map[out] = i;
         out++;
     }
+    #undef SHOWN
     return out;
 }

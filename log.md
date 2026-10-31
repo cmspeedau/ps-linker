@@ -6,6 +6,63 @@ it records *what was actually run and observed*, including bugs found while test
 
 ---
 
+## 2026-10-31 (clients) — one console, one library: the PS3 menu is gone and foreign files hid
+
+"ok lets remove the ps3 menu from the ps3 client and psp and ps3 should
+only view and get files for there repective consoles". One shared
+predicate, `store_platform_ok(name, platform, console)` in
+`ui/store_logic.{c,h}`, decides everywhere: console-exclusive extensions
+win (.pkg/.rap only ever help a PS3, .pbp/.cso only a PSP — even against a
+contradicting label, since only one machine can open the file), then a
+"psp"/"ps3" platform label prefix, then everything else passes (an
+unlabelled `.iso` is both machines' business). The suffix test runs over
+`strcspn(name, "?")` so full catalog URLs work.
+
+To let the *browser* filter file-by-file, the share listing grew a third
+anchor attribute: `data-platform`. `server/store/http_server.py` reads the
+catalog into a stat-cached (mtime_ns/size) url→platform map and labels
+file rows; directories never carry it, and foreign shares send no
+attributes at all — the apps then skip filtering, the safe fallback. Both
+clients parse it into `FileEntry.platform` and pass it to the model as
+`bm_entry_t.platform`. `bm_build()` gained `hide[]` (a category with no
+tab whose entries stay visible — the PS3 client's own `PS3` category now
+lives under All instead of offering a menu that duplicates it) and
+`console` (files the machine cannot use vanish from items *and* from tab
+derivation; folders and Downloads rows pass untouched); tab derivation now
+consults only visible entries, so a fully filtered category never leaves
+an empty tab behind.
+
+Both Stores run the same predicate over the parsed catalog before any
+cover exists: the PSP store compacts `PS3`/`Licenses` items away entirely,
+the PS3 store drops standalone `.rap`s and PSP entries, each then rebuilds
+its rail from what survived via `store_category_add` — and both gain an
+`All` wildcard tab the browser and the web GUI already had. A catalog with
+nothing for this console says so instead of drawing an empty carousel. The
+filter exposed one server-side wart: `.meta.json` sidecars were listed,
+and with files filtered per-console a sidecar could sit orphaned where its
+file was hidden — listings skip `.meta.json`/`.sha256` like they already
+skip `catalog.json`.
+
+Host side: `browser_model_test.c` moved to the new signature and grew
+console-filter, hidden-tab, Downloads-exempt and whole-PS3-shape checks
+(coverflow included); `store_logic_test.c` asserts extension-beats-label,
+query-URL suffixes, case folding and the NULL-console escape. All four
+suites green, ASan/UBSan clean, PS3 build warning-free, PSP build carries
+only the old `store.c` const warning.
+
+Device runs, keys injected, one emulator at a time (KWin's focus-stealing
+prevention silently ate keystrokes whenever both windows lived — a fatal
+RPCS3 error dialog was what the PSP run's keys were actually hitting):
+PPSSPP's root rail read `All | Games | Homebrew | Utilities | Downloads`
+with no `PS3`/`Licenses` covers, `/Games/UT2004/` still showed its
+`UT2004.iso`, and the Store showed exactly four PSP items with no
+`.pkg`/`.rap`. RPCS3's rail had no `PS3` tab while the `PS3/` folder sat
+on the All carousel `[3/4]`; inside it `Quake_1.08.pkg` and its `.rap`
+remained (`[1/2]`, sidecar unlisted), `/Games/UT2004/` answered "(no items
+in this tab)", and the Store collapsed to `All | Homebrew` with `Quake
+1.08` under All — installing it from there still wrote pkg + license,
+md5-identical to the served files. Screenshots `psp4-*.png`, `ps3-*.png`.
+
 ## 2026-10-31 (clients) — the Downloads tab became a download *list*
 
 "for the download menu on both clients it should show as a list with the

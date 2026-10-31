@@ -114,7 +114,10 @@ sudo systemctl enable --now ps-linker
 The PSP app boots into the pixel Cover Flow browser (sceGu, 480x272): the
 HTTP share is the carousel, the tab rail is `All | categories | Downloads`
 (the Downloads tab is a row list: name plus progress bar per download),
-and `Licenses`/`PS3` entries are hidden. Cross downloads (with resume
+and a PSP sees PSP files only — `Licenses`/`PS3` categories are skipped
+outright, and files the other console owns (by extension or by the
+listing's `data-platform` label) never appear in the browser *or* the
+Store. Cross downloads (with resume
 support) or opens a folder, Triangle opens the Store. Settings — the one
 remaining debug-screen view — sits behind SELECT.
 
@@ -137,7 +140,11 @@ installs derive `/dev_hdd0` destinations (`.pkg` to `packages/`, disc images
 to `PS3ISO`/`PSPISO`, `.rap` to `exdata/`). A game whose catalog entry names
 an attached `rap` downloads that license into `exdata/` in the same action,
 so the `Licenses` category has no menu on this device (hidden in both the
-browser and the Store).
+browser and the Store). PSP files never appear either — the browser's
+covers, the Store catalog and the tab rail all run through the same
+console filter (`store_platform_ok`); the `PS3` category is the only
+category left with no tab (this machine *is* the PS3), so its files
+answer to `All`.
 
 ```bash
 cd ps3
@@ -409,10 +416,13 @@ wrong `X-SHA256` is rejected with `rc=-11`.
       and `coverflow_set_items()` (swap item storage under a live state —
       the share ⇄ Downloads swap keeps the rail); `store_gui_browse()` draws
       the frame on both pixel backends with the browser's own hints and the
-      cwd in the header. On the PSP, `Licenses` and `PS3` are filtered out
-      of covers *and* tabs — in the browser and in the Store — because a PSP
-      cannot act on them; the PS3 hides only `Licenses` (a game's `.rap`
-      installs with the game, see below — its `PS3` category stays). The
+      cwd in the header. Each client now browses and fetches its own
+      console's files only (see the per-console entries below): on the PSP
+      `Licenses` and `PS3` are filtered out of covers *and* tabs — in the
+      browser and in the Store — and the shared `store_platform_ok` filter
+      drops any file the PSP cannot use; the PS3 skips `Licenses`, gives
+      its own `PS3` category no tab (its files answer to `All`) and loses
+      PSP files entirely. The
       debug-screen Settings
       picker survives behind SELECT only (`gui_to_debug()` reusing the
       after-GE VRAM trick); the PS3 app deleted `ui_text.c`, the
@@ -459,6 +469,45 @@ wrong `X-SHA256` is rejected with `rc=-11`.
       a real 30 % `.part` bar and `paused` rows side by side, with
       `settings.txt`/`EBOOT.PBP` correctly absent (`log.md` 2026-10-31,
       screenshots `dl-psp-*.png`, `dl-ps3-*.png`).
+- [x] **Each console sees only its own files** — "remove the ps3 menu from
+      the ps3 client and psp and ps3 should only view and get files for
+      there respective consoles". One shared predicate decides everywhere:
+      `store_platform_ok(name, platform, console)` (`ui/store_logic.{c,h}`)
+      lets console-exclusive extensions rule (.pkg/.rap → PS3, .pbp/.cso →
+      PSP, beating a contradicting label), falls back to a catalog/listing
+      platform prefix, and passes anything else (.iso without a label,
+      plain files). The share listing gained a third anchor attribute,
+      `data-platform` (`server/store/http_server.py` reads catalog.json
+      into a stat-cached url→platform map; foreign shares send nothing and
+      the apps skip filtering), parsed beside `data-cat`/`data-size` into
+      `FileEntry.platform` on both clients and carried through
+      `bm_entry_t.platform`. `bm_build()` grew `hide[]` (category gets no
+      tab but keeps its entries — the PS3 client's own `PS3` category now
+      answers to `All` instead of showing a menu duplicating it) and
+      `console` (files the machine cannot use are dropped from items *and*
+      from tab derivation; folders and Downloads rows pass untouched), and
+      tabs are now derived from visible entries only, so a category whose
+      files are all filtered never leaves an empty tab. Both Stores apply
+      the same rule to the parsed catalog — the PSP store compacts its
+      `PS3`/`Licenses` categories away, the PS3 store drops standalone
+      `.rap` files and PSP entries — rebuild their rails from the items
+      that survived (both now also get an `All` wildcard tab, matching the
+      browser and the web GUI), and report "no files for this console"
+      rather than an empty carousel when nothing remains. A side effect of
+      per-file filtering: the share listing no longer lists `.meta.json` /
+      `.sha256` sidecars (metadata, like the skipped `catalog.json` — they
+      used to appear orphaned next to a filtered-out file). Host suites
+      grew console-filter, hidden-tab and PS3-shape checks plus predicate
+      assertions (`make -C ui test`, ASan/UBSan clean); warning-free device
+      builds (PSP unchanged pre-existing warning). Driven in PPSSPP and
+      RPCS3: PSP rail `All | Games | Homebrew | Utilities | Downloads`
+      with no `PS3`/`Licenses` covers and its `.iso`/`EBOOT` kept; PS3
+      rail `All | Games | Homebrew | Utilities | Downloads` — no `PS3`
+      tab — with the `PS3/` folder and `Quake_1.08.pkg` + `.rap` still
+      under All, `/Games/UT2004/` reporting "(no items in this tab)", the
+      Store reduced to `All | Homebrew` with Quake under All, and an
+      install from there still landing pkg + license md5-identical
+      (`log.md` 2026-10-31, screenshots `psp4-*.png`, `ps3-*.png`).
 
 ### In progress
 - [ ] Test Store flow end-to-end through the Docker container with a real queue

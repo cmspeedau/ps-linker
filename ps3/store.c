@@ -53,6 +53,11 @@ static catalog_item_t g_items[STORE_MAX_ITEMS];
 static catalog_t g_catalog = { g_items, STORE_MAX_ITEMS, 0, {{0}}, 0 };
 static int g_item_count = 0;
 
+/* Tab categories rebuilt from the items this PS3 keeps (rail adds the
+   All wildcard and drops "PS3", which names this machine itself). */
+static char g_categories[STORE_CATEGORY_LIMIT][STORE_CATEGORY_LEN];
+static int g_category_count = 0;
+
 static char g_favorites[STORE_MAX_STATE][STORE_ID_LEN];
 static int g_favorite_count;
 static char g_recent[STORE_MAX_STATE][STORE_ID_LEN];
@@ -247,6 +252,36 @@ int store_run(const char *nas_base, store_input_cb poll)
     }
 
     load_store_state();
+
+    /* This machine IS the PS3: standalone licenses go (their game's
+       .rap rides along with the install), the platform filter drops
+       what only a PSP can use, and PSP-labelled files vanish from the
+       catalog before any cover or tab exists to select them. */
+    int kept = 0;
+    for (int i = 0; i < g_item_count; i++) {
+        catalog_item_t *it = &g_items[i];
+        if (strcasecmp(it->category, "Licenses") == 0) continue;
+        if (url_is_rap(it->url)) continue;
+        if (!store_platform_ok(it->url, it->platform, "PS3")) continue;
+        if (kept != i) g_items[kept] = g_items[i];
+        kept++;
+    }
+    g_item_count = kept;
+    g_catalog.count = kept;
+    if (g_item_count == 0) {
+        ui_status("PS Linker Store", "Catalog has no files for a PS3.",
+                  "Press any button to return");
+        wait_any(poll);
+        ui_exit_backend();
+        return -2;
+    }
+
+    /* The rail follows what survived: categories in first-appearance
+       order of the remaining items (store_category_add drops ""). */
+    g_category_count = 0;
+    for (int i = 0; i < g_item_count; i++)
+        store_category_add(g_categories, &g_category_count, g_items[i].category);
+
     for (int i = 0; i < g_item_count; i++) {
         snprintf(g_covers[i].title, sizeof(g_covers[i].title), "%s", g_items[i].title);
         snprintf(g_covers[i].category, sizeof(g_covers[i].category), "%s", g_items[i].category);
@@ -265,18 +300,20 @@ int store_run(const char *nas_base, store_input_cb poll)
         ui_exit_backend();
         return -3;
     }
-    if (g_catalog.category_count > 0) {
-        /* The Licenses menu is gone on the PS3: a game's .rap rides along
-           with its install (see below), so standalone license entries get
-           no tab — and no covers to reach one — any more. */
-        const char *categories[STORE_CATEGORY_LIMIT];
+    /* Rail: the All wildcard first (mirrors the browser and the web
+       GUI), then one tab per category the surviving items have — minus
+       "PS3", whose files answer to All: this machine IS the PS3, so a
+       PS3 tab would only duplicate it. */
+    {
+        const char *categories[STORE_CATEGORY_LIMIT + 1];
         int n = 0;
-        for (int i = 0; i < g_catalog.category_count &&
-                        n < STORE_CATEGORY_LIMIT; i++) {
-            if (strcasecmp(g_catalog.categories[i], "Licenses") == 0) continue;
-            categories[n++] = g_catalog.categories[i];
+        categories[n++] = "";                   /* the All tab */
+        for (int i = 0; i < g_category_count &&
+             n < (int)(sizeof categories / sizeof categories[0]); i++) {
+            if (strcasecmp(g_categories[i], "PS3") == 0) continue;
+            categories[n++] = g_categories[i];
         }
-        if (n > 0) coverflow_set_categories(&cf, categories, (size_t)n);
+        coverflow_set_categories(&cf, categories, (size_t)n);
     }
 
     unsigned pressed;

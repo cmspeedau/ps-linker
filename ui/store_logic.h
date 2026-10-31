@@ -29,6 +29,15 @@ int store_derive_path(const char *url, const char *title,
 int store_derive_path_ps3(const char *url, const char *title,
                           const char *platform, char *out, size_t outlen);
 
+/* May an entry with this file/URL name and platform label be browsed or
+   fetched by `console` ("psp" or "ps3", case-insensitive; NULL/empty = no
+   filter)? Console-exclusive extensions decide on their own (.pkg/.rap
+   only ever help a PS3, .pbp/.cso only a PSP); otherwise a label starting
+   with "psp"/"ps3" decides, and anything else — a plain .iso, a text
+   file — is fine on either machine. */
+int store_platform_ok(const char *name, const char *platform,
+                      const char *console);
+
 /* Companion URL for an attached license: the catalog's "rap" field is the
    file name of a .rap stored in the game's own folder (the web GUI records
    it there), so the download URL is the entry URL's parent folder plus that

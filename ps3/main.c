@@ -189,7 +189,8 @@ static int attr_at(const char *start, const char *end, const char *key,
     return 0;
 }
 
-static int add_file(const char *href, long long size, const char *category)
+static int add_file(const char *href, long long size, const char *category,
+                    const char *platform)
 {
     if (href[0] == '\0') return 0;
     if (strncmp(href, "../", 3) == 0) return 0;   /* parent link      */
@@ -220,6 +221,7 @@ static int add_file(const char *href, long long size, const char *category)
     e->is_dir = is_dir;
     e->size = size;
     snprintf(e->category, sizeof(e->category), "%s", category ? category : "");
+    snprintf(e->platform, sizeof(e->platform), "%s", platform ? platform : "");
 
     g_file_count++;
     return 1;
@@ -238,19 +240,21 @@ static int parse_listing(const char *html)
             char href[512];
             memcpy(href, p, len);
             href[len] = '\0';
-            /* The rest of this anchor may carry data-size / data-cat; the
-               search stops at the next tag so no neighbouring entry leaks
-               in, and a share without the attributes just parses as before. */
+            /* The rest of this anchor may carry data-size / data-cat /
+               data-platform; the search stops at the next tag so no
+               neighbouring entry leaks in, and a share without the
+               attributes just parses as before. */
             const char *tag_end = strchr(end, '<');
             if (!tag_end) tag_end = end;
-            char sizebuf[24], cat[64];
+            char sizebuf[24], cat[64], plat[16];
             long long size = -1;
-            cat[0] = '\0';
+            cat[0] = plat[0] = '\0';
             if (attr_at(end + 1, tag_end, "data-size", sizebuf,
                         sizeof sizebuf))
                 size = strtoll(sizebuf, NULL, 10);
             attr_at(end + 1, tag_end, "data-cat", cat, sizeof cat);
-            add_file(href, size, cat);
+            attr_at(end + 1, tag_end, "data-platform", plat, sizeof plat);
+            add_file(href, size, cat, plat);
         }
         p = end + 1;
     }
@@ -468,7 +472,9 @@ static int settings_view(void)
    is a row list (name + progress bar) of what landed in DEST_DIR, .part
    resumes included as paused rows. Licenses is hidden here (and in the
    Store): a game's .rap rides along with its install, so the menu has
-   nothing left to offer; PS3 categories stay visible on a PS3. */
+   nothing left to offer. The PS3 category gets no tab either — this
+   machine IS the PS3 — but its files stay visible under All, and the
+   data-platform chrome drops PSP files from covers and tabs. */
 
 #include <dirent.h>
 
@@ -477,6 +483,11 @@ static int settings_view(void)
 /* Useless as a menu on this device: .raps install with their game. */
 static const char *const PS3_SKIP_CATEGORIES[] = { "Licenses" };
 #define PS3_SKIP_COUNT 1
+
+/* The tab, not the files: this machine IS the PS3, so a "PS3" tab would
+   only duplicate All — its entries stay visible there (browser_model). */
+static const char *const PS3_HIDE_TABS[] = { "PS3" };
+#define PS3_HIDE_COUNT 1
 
 typedef struct {
     char name[MAX_PATH_LEN];
@@ -536,18 +547,21 @@ static void browser_fill(int reset_tab)
     for (int i = 0; i < g_file_count; i++) {
         sh[i].name = g_files[i].name;
         sh[i].category = g_files[i].category;
+        sh[i].platform = g_files[i].platform;
         sh[i].size = g_files[i].size;
         sh[i].is_dir = g_files[i].is_dir;
     }
     for (int i = 0; i < g_dl_count; i++) {
         dl[i].name = g_dl[i].name;
         dl[i].category = "";
+        dl[i].platform = "";
         dl[i].size = g_dl[i].size;
         dl[i].is_dir = 0;
     }
 
     int n = bm_build(g_cf_items, MAX_FILES, sh, g_file_count,
                      dl, g_dl_count, PS3_SKIP_CATEGORIES, PS3_SKIP_COUNT,
+                     PS3_HIDE_TABS, PS3_HIDE_COUNT, "PS3",
                      g_downloads_active, g_tabs, &g_tab_count, g_cf_map);
 
     g_downloads_tab = (g_tab_count > 0 &&

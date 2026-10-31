@@ -2,6 +2,7 @@
 #include <math.h>
 #include <stdio.h>
 #include <string.h>
+#include <strings.h>              /* strcasecmp / strncasecmp            */
 
 int store_category_add(char categories[STORE_CATEGORY_LIMIT][STORE_CATEGORY_LEN],
                        int *count, const char *category)
@@ -185,6 +186,34 @@ int store_derive_path_ps3(const char *url, const char *title,
                     : "/dev_hdd0/PS3ISO/";
     int n = snprintf(out, outlen, "%s%s", dir, file);
     return n >= 0 && (size_t)n < outlen ? 0 : -2;
+}
+
+/* Console family of an entry: console-exclusive extensions win over the
+   platform label, because only one machine can open the file at all. */
+static int entry_family(const char *name, const char *platform)
+{
+    if (name && name[0]) {
+        size_t len = strcspn(name, "?");
+        if (ends_with_ci(name, len, ".pkg") || ends_with_ci(name, len, ".rap"))
+            return 2;                               /* PS3 only      */
+        if (ends_with_ci(name, len, ".pbp") || ends_with_ci(name, len, ".cso"))
+            return 1;                               /* PSP only      */
+    }
+    if (platform && platform[0]) {
+        if (strncasecmp(platform, "psp", 3) == 0) return 1;
+        if (strncasecmp(platform, "ps3", 3) == 0) return 2;
+    }
+    return 0;                                       /* both          */
+}
+
+int store_platform_ok(const char *name, const char *platform,
+                      const char *console)
+{
+    if (!console || !console[0]) return 1;
+    const int fam = entry_family(name, platform);
+    if (fam == 0) return 1;
+    if (fam == 1) return strcasecmp(console, "psp") == 0;
+    return strcasecmp(console, "ps3") == 0;
 }
 
 int store_license_url(const char *item_url, const char *rap,

@@ -21,8 +21,10 @@ One port serves three things, in this routing order:
    (both apps parse ``href`` entries, trailing ``/`` meaning a directory), and
    files with ``Range``/``206`` support so an interrupted download resumes from
    its partial file instead of restarting. Anchors additionally carry the
-   entry's ``data-size`` (files) and ``data-cat`` (catalog category: top-level
-   folder, root files ``Uncategorized``) *after* the quoted href — invisible
+   entry's ``data-size`` (files), ``data-cat`` (catalog category: top-level
+   folder, root files ``Uncategorized``) and ``data-platform`` (the catalog's
+   "PSP"/"PS3" label, so each app can hide the other console's files)
+   *after* the quoted href — invisible
    to the apps' ``href="`` scan and to foreign parsers, and the apps render
    the old plain rows whenever a share omits them.
 
@@ -62,7 +64,11 @@ RANGE_RE = re.compile(r"^bytes=(\d*)-(\d*)$")
 BAD_NAME_RE = re.compile(r"[\x00-\x1f\x7f/\\]")
 ALLOWED_EXT = {".iso", ".cso", ".pbp", ".zip", ".7z", ".rar", ".pkg", ".rap",
                ".bin", ".cue"}
-LISTING_SKIP_SUFFIX = (".part",)
+# .part = interrupted download; .meta.json/.sha256 = catalog metadata
+# sidecars (catalog.json itself is skipped separately). Like the catalog,
+# they are metadata, not library entries — listing them would put a
+# sidecar on screen even where the console filter hides its file.
+LISTING_SKIP_SUFFIX = (".part", ".meta.json", ".sha256")
 CHUNK = 256 * 1024
 
 
@@ -106,6 +112,38 @@ def catalog_load_items(path: str) -> list:
         if isinstance(data.get(key), list):
             return data[key]
     return []
+
+
+# url -> platform label, read from the generated catalog and kept until the
+# file changes (stat signature). Built lazily per listing; (key, map) pair.
+_CATALOG_PLATFORMS: tuple = ()
+
+
+def catalog_platforms(path: str) -> dict:
+    """{catalog url: platform} for entries that carry a platform label.
+
+    Directory listings use this to send each file a ``data-platform``
+    attribute, so the PSP/PS3 apps can hide files the other console owns.
+    Anything unreadable yields an empty map: listings then omit the
+    attribute and the apps skip filtering — the foreign-share fallback.
+    """
+    global _CATALOG_PLATFORMS
+    try:
+        st = os.stat(path)
+        key = (path, st.st_mtime_ns, st.st_size)
+    except OSError:
+        return {}
+    if _CATALOG_PLATFORMS and _CATALOG_PLATFORMS[0] == key:
+        return _CATALOG_PLATFORMS[1]
+    platforms = {}
+    for item in catalog_load_items(path):
+        if not isinstance(item, dict):
+            continue
+        url, plat = item.get("url"), item.get("platform")
+        if isinstance(url, str) and url and isinstance(plat, str) and plat:
+            platforms[url] = plat
+    _CATALOG_PLATFORMS = (key, platforms)
+    return platforms
 
 
 def catalog_save_items(path: str, items: list) -> None:
@@ -498,14 +536,18 @@ def make_handler(games_dir: str):
             display = "Library root" if rel == "." else rel
             # Catalog model, same as generate_catalog.py: an entry's category
             # is the top-level folder it lives under (a root folder is its own
-            # category; a root file is "Uncategorized"). Anchors carry it, and
-            # a file's exact size, as data-* attributes so the device
-            # browsers can draw the store's row chrome. Compatibility is by
+            # category; a root file is "Uncategorized"). Anchors carry it, a
+            # file's exact size, and the catalog's platform label ("PSP",
+            # "PS3"), as data-* attributes so the device browsers can draw
+            # the store's row chrome and hide files the other console owns
+            # (each app filters with store_platform_ok). Compatibility is by
             # layout: the parsers scan href="..." and stop at the quote, so
             # attributes after it change nothing for them, and foreign shares
             # (python -m http.server, nginx autoindex) simply never send the
-            # attributes — the apps then render exactly the old rows.
+            # attributes — the apps then render exactly the old rows,
+            # unfiltered.
             top = "" if rel == "." else rel.split("/")[0]
+            platforms = catalog_platforms(catalog_path)
             rows = []
             if rel != ".":
                 rows.append('<li><a href="../">../</a></li>')
@@ -526,6 +568,14 @@ def make_handler(games_dir: str):
                     except OSError:
                         pass          # vanished mid-listing: name only
                     cat = top or "Uncategorized"
+                    # Console the catalog says this file belongs to, if it
+                    # labelled one; folders never carry it (they are open to
+                    # both apps).
+                    url = name if rel == "." else f"{rel}/{name}"
+                    plat = platforms.get("/" + url)
+                    if plat:
+                        attrs += (f' data-platform='
+                                  f'"{html.escape(plat, quote=True)}"')
                 if cat:
                     attrs += f' data-cat="{html.escape(cat, quote=True)}"'
                 suffix = "/" if is_dir else ""

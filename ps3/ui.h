@@ -22,6 +22,7 @@ typedef struct {
     char url[256];
     long long size;
     char category[64];
+    char platform[16];    /* data-platform ("PSP"/"PS3"), "" if none */
     int  is_dir;
 } FileEntry;
 

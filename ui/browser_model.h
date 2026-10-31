@@ -26,6 +26,8 @@
 typedef struct {
     const char *name;       /* display name; no brackets, no trailing slash */
     const char *category;   /* share data-cat; "" when the share says none  */
+    const char *platform;   /* share data-platform ("PSP"/"PS3"); NULL/""
+                               when the share says nothing                  */
     long long   size;       /* bytes, or -1 when unknown                    */
     int         is_dir;
 } bm_entry_t;
@@ -42,6 +44,13 @@ typedef struct {
  *   skip/skip_n     category names to hide (case-insensitive); entries in
  *                   them, and entries whose name starts with '.', are not
  *                   shown at all
+ *   hide/hide_n     category names that get NO tab but keep their entries
+ *                   (visible on the All tab; the PS3 passes {"PS3"} — the
+ *                   machine is that category already)
+ *   console         "PSP"/"PS3": files that machine cannot use
+ *                   (store_platform_ok) are dropped from items AND from
+ *                   tab derivation; directories and Downloads entries pass
+ *                   untouched; NULL disables the filter
  *   downloads_active  non-zero: the items are built from dl instead
  *   tabs/tabs_n     out: tab names, first entry "" (the All tab)
  *
@@ -52,6 +61,8 @@ int bm_build(coverflow_item_t *items, int cap,
              const bm_entry_t *share, int share_n,
              const bm_entry_t *dl, int dl_n,
              const char *const *skip, int skip_n,
+             const char *const *hide, int hide_n,
+             const char *console,
              int downloads_active,
              char tabs[COVERFLOW_MAX_DYNAMIC_CATEGORIES]
                      [COVERFLOW_DYNAMIC_CATEGORY_LEN],

@@ -374,6 +374,35 @@ int store_run(const char *nas_base) {
     }
 
     load_store_state();
+
+    /* One machine, one library: the PSP store carries PSP files. Items
+       in categories a PSP cannot act on (PS3 installs, raw licenses)
+       and files whose extension or platform label names the other
+       console are dropped before any cover or tab is built, so nothing
+       foreign can be selected, favourite-counted or downloaded here. */
+    int kept = 0;
+    for (int i = 0; i < g_item_count; i++) {
+        const StoreItem *it = &g_items[i];
+        if (strcasecmp(it->category, "PS3") == 0 ||
+            strcasecmp(it->category, "Licenses") == 0) continue;
+        if (!store_platform_ok(it->url, it->platform, "PSP")) continue;
+        if (kept != i) g_items[kept] = g_items[i];
+        kept++;
+    }
+    g_item_count = kept;
+    if (g_item_count == 0) {
+        ui_status("PS Linker Store", "Catalog has no files for a PSP.", NULL);
+        sceKernelDelayThread(1500000);
+        ui_exit();
+        return -2;
+    }
+
+    /* The rail follows what survived: categories in first-appearance
+       order of the remaining items (store_category_add drops ""). */
+    g_category_count = 0;
+    for (int i = 0; i < g_item_count; i++)
+        store_category_add(g_categories, &g_category_count, g_items[i].category);
+
     memset(g_covers, 0, sizeof(g_covers));
     for (int i = 0; i < g_item_count; i++) {
         snprintf(g_covers[i].title, sizeof(g_covers[i].title), "%s", g_items[i].title);
@@ -391,20 +420,16 @@ int store_run(const char *nas_base) {
         ui_exit();
         return -3;
     }
-    if (g_category_count > 0) {
-        /* Tabs a PSP cannot act on are useless here: PS3 installs and
-           .rap licenses stay hidden (their covers have no tab to live
-           under either, since the tab list is the only filter the Store
-           rail exposes). */
-        const char *categories[STORE_CATEGORY_LIMIT];
+    /* Rail: the All wildcard first (mirrors the browser and the web
+       GUI), then one tab per category the surviving items have. */
+    {
+        const char *categories[STORE_CATEGORY_LIMIT + 1];
         int n = 0;
-        for (int i = 0; i < g_category_count && n < STORE_CATEGORY_LIMIT; i++) {
-            if (strcasecmp(g_categories[i], "PS3") == 0 ||
-                strcasecmp(g_categories[i], "Licenses") == 0)
-                continue;
+        categories[n++] = "";                   /* the All tab */
+        for (int i = 0; i < g_category_count &&
+             n < (int)(sizeof categories / sizeof categories[0]); i++)
             categories[n++] = g_categories[i];
-        }
-        if (n > 0) coverflow_set_categories(&cf, categories, (size_t)n);
+        coverflow_set_categories(&cf, categories, (size_t)n);
     }
     unsigned prev = 0;
     while (1) {

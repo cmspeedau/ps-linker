@@ -184,6 +184,7 @@ typedef struct {
     char url[MAX_PATH_LEN];    /* absolute URL for fetch/download   */
     long long size;            /* bytes from data-size, -1 unknown  */
     char category[64];         /* data-cat (catalog category), "" if none */
+    char platform[16];         /* data-platform ("PSP"/"PS3"), "" if none */
     int  is_dir;               /* entry is a subdirectory (trailing /) */
 } FileEntry;
 
@@ -266,7 +267,8 @@ static int build_url(const char *name, char *out, size_t outlen) {
     return 0;
 }
 
-static int add_file(const char *href, long long size, const char *category) {
+static int add_file(const char *href, long long size, const char *category,
+                    const char *platform) {
     /* Skip parent links and server-absolute links */
     if (href[0] == '\0') return 0;
     if (strstr(href, "../") == href) return 0;
@@ -294,6 +296,7 @@ static int add_file(const char *href, long long size, const char *category) {
     e->is_dir = is_dir;
     e->size = size;
     snprintf(e->category, sizeof(e->category), "%s", category ? category : "");
+    snprintf(e->platform, sizeof(e->platform), "%s", platform ? platform : "");
     g_file_count++;
     return 1;
 }
@@ -331,18 +334,20 @@ static int parse_listing(const char *html) {
             char href[MAX_PATH_LEN];
             memcpy(href, p, len);
             href[len] = '\0';
-            /* The rest of this anchor may carry data-size / data-cat; the
-               search stops at the next tag so no neighbouring entry leaks
-               in, and a share without the attributes parses as before. */
+            /* The rest of this anchor may carry data-size / data-cat /
+               data-platform; the search stops at the next tag so no
+               neighbouring entry leaks in, and a share without the
+               attributes parses as before. */
             const char *tag_end = strchr(end, '<');
             if (!tag_end) tag_end = end;
-            char sizebuf[24], cat[64];
+            char sizebuf[24], cat[64], plat[16];
             long long size = -1;
-            cat[0] = '\0';
+            cat[0] = plat[0] = '\0';
             if (attr_at(end + 1, tag_end, "data-size", sizebuf, sizeof sizebuf))
                 size = strtoll(sizebuf, NULL, 10);
             attr_at(end + 1, tag_end, "data-cat", cat, sizeof cat);
-            add_file(href, size, cat);
+            attr_at(end + 1, tag_end, "data-platform", plat, sizeof plat);
+            add_file(href, size, cat, plat);
         }
         p = end + 1;
     }
@@ -560,7 +565,9 @@ static int settings_view(void) {
    tab rail), and store_gui_browse draws it. Tabs: All | share
    categories | Downloads - the Downloads tab is a row list (name +
    progress bar) of what landed in DEST_DIR, .part resumes included as
-   paused rows. Licenses and PS3 entries never become covers or tabs. */
+   paused rows. A PSP browses and fetches PSP files only: Licenses and
+   PS3 categories are skipped outright, and the data-platform chrome
+   drops any remaining foreign-console file from covers and tabs. */
 
 #define MAX_TABS COVERFLOW_MAX_DYNAMIC_CATEGORIES
 
@@ -626,19 +633,22 @@ static void browser_fill(int reset_tab) {
     for (int i = 0; i < g_file_count; i++) {
         sh[i].name = g_files[i].name;
         sh[i].category = g_files[i].category;
+        sh[i].platform = g_files[i].platform;
         sh[i].size = g_files[i].size;
         sh[i].is_dir = g_files[i].is_dir;
     }
     for (int i = 0; i < g_dl_count; i++) {
         dl[i].name = g_dl[i].name;
         dl[i].category = "";
+        dl[i].platform = "";
         dl[i].size = g_dl[i].size;
         dl[i].is_dir = 0;
     }
 
     int n = bm_build(g_cf_items, MAX_FILES, sh, g_file_count,
                      dl, g_dl_count,
-                     PSP_SKIP_CATEGORIES, PSP_SKIP_COUNT, g_downloads_active,
+                     PSP_SKIP_CATEGORIES, PSP_SKIP_COUNT,
+                     NULL, 0, "PSP", g_downloads_active,
                      g_tabs, &g_tab_count, g_cf_map);
 
     g_downloads_tab = (g_tab_count > 0 &&

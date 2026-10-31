@@ -147,6 +147,35 @@ int main(void)
     store_hsl_to_rgb(-90, 100, 50, rgb);   /* wraps to 270 */
     assert(rgb[0] == 128 && rgb[1] == 0 && rgb[2] == 255);
 
+    /* --- console filter: each client shows and fetches its own files --- */
+    /* Console-exclusive extensions decide on their own... */
+    assert(store_platform_ok("Quake_1.08.pkg", "PS3", "ps3") == 1);
+    assert(store_platform_ok("Quake_1.08.pkg", "PS3", "PSP") == 0);
+    assert(store_platform_ok("GAME.PBP", "", "PSP") == 1);
+    assert(store_platform_ok("GAME.PBP", "", "ps3") == 0);
+    assert(store_platform_ok("field.cso", NULL, "PSP") == 1);
+    assert(store_platform_ok("BLES00001.rap", "", "PS3") == 1);
+    assert(store_platform_ok("BLES00001.rap", "", "PSP") == 0);
+    /* ...and beat a contradicting label, because only one machine can
+       open the file at all. */
+    assert(store_platform_ok("EBOOT.PBP", "PS3", "psp") == 1);
+    assert(store_platform_ok("EBOOT.PBP", "PS3", "ps3") == 0);
+    /* Without a decisive extension, the label speaks. */
+    assert(store_platform_ok("UT2004.iso", "PSP", "psp") == 1);
+    assert(store_platform_ok("UT2004.iso", "PSP", "PS3") == 0);
+    assert(store_platform_ok("Doom.iso", "ps3", "PSP") == 0);
+    assert(store_platform_ok("Doom.iso", "ps3", "PS3") == 1);
+    assert(store_platform_ok("Doom.iso", "", "PSP") == 1);   /* unlabelled: both */
+    assert(store_platform_ok("Doom.iso", NULL, "PS3") == 1);
+    assert(store_platform_ok("notes.txt", "Dreamcast", "PSP") == 1); /* not ours */
+    /* Query strings must not defeat the extension test. */
+    assert(store_platform_ok("http://h/s/Quake.pkg?v=2", NULL, "ps3") == 1);
+    assert(store_platform_ok("http://h/s/Quake.pkg?v=2", NULL, "PSP") == 0);
+    assert(store_platform_ok("http://h/s/a.iso?k=.pkg", "PSP", "PS3") == 0);
+    /* No console named: the filter is off. */
+    assert(store_platform_ok("Quake.pkg", "PS3", NULL) == 1);
+    assert(store_platform_ok("Quake.pkg", "PS3", "") == 1);
+
     /* Tile fill: opaque everywhere, top row at hsl(hue,42,26), bottom at
        hsl(hue+40,52,12), and deterministic across calls. */
     static uint32_t tile[3 * 4];
