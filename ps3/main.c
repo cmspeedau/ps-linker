@@ -1,29 +1,31 @@
 /*
  * PS Linker - PS3 NAS Downloader (PSL1GHT port of the PSP version)
  *
- * Same Media Go-inspired workflow as the PSP build: initialize the
- * network, fetch the NAS HTTP share's directory listing, pick a file
- * with the D-pad, and download it to the HDD. Triangle opens the
- * Store (Cover Flow over catalog.json) like the PSP build does.
+ * The app boots into the Cover Flow browser (the pixel view the Store
+ * also uses): fetch the NAS HTTP share's directory listing, flip
+ * through covers, download to the HDD. Triangle opens the Store
+ * (Cover Flow over catalog.json) like the PSP build does.
  *
  * Files land in /dev_hdd0/NASDL/<filename>.
  *
  * Build with the PSL1GHT toolchain: make
  * Requires CFW/HEN to install and run the generated package.
  *
- * Controls:  Up/Down = move, Cross = download / enter directory,
- *            Circle = parent directory (quit at root),
- *            Select = Settings (edit NAS URL),
- *            Triangle = Store
+ * Controls in browser:  Left/Right = cover, Up/Down = jump five,
+ *                       L1/R1 = tab (All | categories | Downloads),
+ *                       Square = flow/grid, Cross = open/download,
+ *                       Circle = parent directory (Downloads view off,
+ *                                quit at root),
+ *                       Select = Settings (edit NAS URL),
+ *                       Triangle = Store
  * Settings:  Left/Right = pick char, Up/Down = jump a row,
  *            Cross = insert, Circle = delete char,
  *            Start = save & exit, Select = cancel
  *
  * Output goes to the RSX pixel display (ps3/gfx.c: CPU-drawn frames
- * flipped through two RSX buffers, so the TV shows the app). If the
- * display cannot be initialised - or the build passes
- * -DNASDL_TEXT_UI - every screen falls back to the ANSI-colored TTY
- * (netdebug) instead.
+ * flipped through two RSX buffers, so the TV shows the app). The app
+ * is pixel-only: the old ANSI/netdebug UI (ui_text.c) went away with
+ * the Cover Flow browser redesign.
  */
 
 #include <stdio.h>
@@ -42,6 +44,7 @@
 #include "resume.h"
 #include "store.h"
 #include "ui.h"
+#include "../ui/browser_model.h"
 
 /* ------------------------------------------------------------------ */
 /* Config                                                              */
@@ -455,8 +458,110 @@ static int settings_view(void)
 }
 
 /* ------------------------------------------------------------------ */
-/* Browser                                                             */
+/* Browser (Cover Flow)                                                */
 /* ------------------------------------------------------------------ */
+
+/* The browser IS the Cover Flow frame: main.c drives the shared
+   ui/coverflow.c state through ui/browser_model.c (listing -> covers +
+   tab rail), and ui_browse draws it with the Store's pixel cards.
+   The tab rail is All | <share categories> | Downloads; Downloads lists
+   what already landed in DEST_DIR. Licenses/PS3 filtering is a PSP
+   concern (the PSP passes a skip list); the PS3 shows every category. */
+
+#include <dirent.h>
+
+#define MAX_TABS COVERFLOW_MAX_DYNAMIC_CATEGORIES
+
+typedef struct {
+    char name[MAX_PATH_LEN];
+    long long size;
+} DlEntry;
+
+static DlEntry g_dl[MAX_FILES];
+static int g_dl_count = 0;
+
+static coverflow_state_t g_cf;
+static coverflow_item_t g_cf_items[MAX_FILES];
+static int g_cf_map[MAX_FILES];      /* item slot -> g_files / g_dl index */
+static char g_tabs[MAX_TABS][COVERFLOW_DYNAMIC_CATEGORY_LEN];
+static int g_tab_count = 0;
+static int g_downloads_tab = -1;
+static int g_downloads_active = 0;
+
+static void scan_downloads(void)
+{
+    g_dl_count = 0;
+    DIR *d = opendir(DEST_DIR);
+    if (!d) return;
+    struct dirent *de;
+    while (g_dl_count < MAX_FILES && (de = readdir(d)) != NULL) {
+        if (de->d_name[0] == '.') continue;         /* hidden / partial   */
+        size_t nl = strlen(de->d_name);
+        if (nl >= 5 && strcmp(de->d_name + nl - 5, ".part") == 0) continue;
+        char path[MAX_PATH_LEN + 32];
+        snprintf(path, sizeof(path), DEST_DIR "%.255s", de->d_name);
+        struct stat st;
+        if (stat(path, &st) != 0 || !S_ISREG(st.st_mode)) continue;
+        snprintf(g_dl[g_dl_count].name, sizeof(g_dl[g_dl_count].name),
+                 "%.255s", de->d_name);
+        g_dl[g_dl_count].size = (long long)st.st_size;
+        g_dl_count++;
+    }
+    closedir(d);
+}
+
+/* Rebuild the cover items for the active source. reset_tab (a new
+   listing) also rebuilds the tab rail and lands on the All tab; a tab
+   switch keeps the rail and only swaps the items under it. */
+static void browser_fill(int reset_tab)
+{
+    static bm_entry_t sh[MAX_FILES];
+    static bm_entry_t dl[MAX_FILES];
+
+    if (reset_tab) g_downloads_active = 0;
+
+    for (int i = 0; i < g_file_count; i++) {
+        sh[i].name = g_files[i].name;
+        sh[i].category = g_files[i].category;
+        sh[i].size = g_files[i].size;
+        sh[i].is_dir = g_files[i].is_dir;
+    }
+    for (int i = 0; i < g_dl_count; i++) {
+        dl[i].name = g_dl[i].name;
+        dl[i].category = "";
+        dl[i].size = g_dl[i].size;
+        dl[i].is_dir = 0;
+    }
+
+    int n = bm_build(g_cf_items, MAX_FILES, sh, g_file_count,
+                     dl, g_dl_count, NULL, 0, g_downloads_active,
+                     g_tabs, &g_tab_count, g_cf_map);
+
+    g_downloads_tab = (g_tab_count > 0 &&
+                       strcmp(g_tabs[g_tab_count - 1], BM_DOWNLOADS_LABEL) == 0)
+                      ? g_tab_count - 1 : -1;
+
+    if (coverflow_set_items(&g_cf, g_cf_items, (size_t)n) != 0) return;
+    if (reset_tab) {
+        const char *tabs[MAX_TABS];
+        for (int i = 0; i < g_tab_count; i++) tabs[i] = g_tabs[i];
+        coverflow_set_categories(&g_cf, tabs, (size_t)g_tab_count);
+    }
+}
+
+static coverflow_key_t browser_key(unsigned pressed)
+{
+    if (pressed & PAD_BTN_LEFT)     return COVERFLOW_KEY_LEFT;
+    if (pressed & PAD_BTN_RIGHT)    return COVERFLOW_KEY_RIGHT;
+    if (pressed & PAD_BTN_UP)       return COVERFLOW_KEY_UP;
+    if (pressed & PAD_BTN_DOWN)     return COVERFLOW_KEY_DOWN;
+    if (pressed & PAD_BTN_L1)       return COVERFLOW_KEY_SHOULDER_L;
+    if (pressed & PAD_BTN_R1)       return COVERFLOW_KEY_SHOULDER_R;
+    if (pressed & PAD_BTN_SQUARE)   return COVERFLOW_KEY_TAB;   /* flow/grid */
+    if (pressed & PAD_BTN_CROSS)    return COVERFLOW_KEY_ENTER;
+    if (pressed & PAD_BTN_CIRCLE)   return COVERFLOW_KEY_BACK;
+    return COVERFLOW_KEY_NONE;
+}
 
 /* Returns:  0 = quit at root, -1 = retry the listing, -2 = system quit */
 static int browser(void)
@@ -471,72 +576,118 @@ static int browser(void)
         return -1;
     }
 
-    int sel = 0, top = 0;
-    while (1) {
-        const int rows = ui_browser_rows();
-        if (sel < top) top = sel;
-        if (sel >= top + rows) top = sel - rows + 1;
+    if (coverflow_init(&g_cf, g_cf_items, 0, 80, 40, 0) != 0) {
+        ui_error("Out of memory.", "");
+        sleep(3);
+        return -2;
+    }
+    scan_downloads();
+    browser_fill(1);
 
-        char status[64];
-        snprintf(status, sizeof(status), "%d entries - %d selected",
-                 g_file_count, sel + 1);
-        ui_browser(g_cwd, g_files, g_file_count, sel, top, status);
+    int rc = 0;
+    while (1) {
+        const char *ids[MAX_FILES];
+        const char *descs[MAX_FILES];
+        for (size_t i = 0; i < g_cf.item_count; i++) {
+            ids[i]   = g_downloads_active ? g_dl[g_cf_map[i]].name
+                                          : g_files[g_cf_map[i]].url;
+            descs[i] = "";
+        }
+        ui_browse(&g_cf, ids, descs, g_cwd);
 
         unsigned pressed;
         int prc;
         do { usleep(16000); prc = get_pressed(&pressed); } while (prc == -1);
-        if (prc < 0) return -2;
+        if (prc < 0) { rc = -2; break; }
 
         if (pressed & PAD_BTN_SELECT) {
-            if (settings_view() < 0) return -2;
+            if (settings_view() < 0) { rc = -2; break; }
             continue;   /* URL may have changed: redraw */
-        } else if (pressed & PAD_BTN_TRIANGLE) {
+        }
+        if (pressed & PAD_BTN_TRIANGLE) {
             store_run(g_nas_base, get_pressed);
             continue;   /* the listing may predate an install */
-        } else if (pressed & PAD_BTN_DOWN) {
-            sel = (sel + 1) % g_file_count;
-        } else if (pressed & PAD_BTN_UP) {
-            sel = (sel - 1 + g_file_count) % g_file_count;
-        } else if (pressed & PAD_BTN_CROSS) {
-            FileEntry *e = &g_files[sel];
+        }
 
+        coverflow_key_t key = browser_key(pressed);
+        if (key == COVERFLOW_KEY_NONE) continue;
+
+        const int tab_before = (int)g_cf.category;
+        coverflow_action_t action;
+        coverflow_handle_key(&g_cf, key, &action);
+
+        /* Tab rail crossed into/out of Downloads: swap the item source. */
+        if ((int)g_cf.category != tab_before) {
+            const int want_dl = (g_downloads_tab >= 0 &&
+                                 (int)g_cf.category == g_downloads_tab);
+            if (want_dl != g_downloads_active) {
+                g_downloads_active = want_dl;
+                if (want_dl) scan_downloads();
+                browser_fill(0);
+            }
+        }
+
+        if (action == COVERFLOW_ACTION_SELECT) {
+            const coverflow_item_t *cur = coverflow_current(&g_cf);
+            if (!cur) continue;
+            const int slot = (int)(cur - g_cf_items);
+
+            if (g_downloads_active) {
+                char msg[256];
+                snprintf(msg, sizeof(msg), "%s is already on this HDD",
+                         g_dl[g_cf_map[slot]].name);
+                ui_result(1, msg);
+                if (wait_button() < 0) { rc = -2; break; }
+                continue;
+            }
+
+            FileEntry *e = &g_files[g_cf_map[slot]];
             if (e->is_dir) {
-                /* Enter the directory and reload its listing. */
                 ui_splash("Loading directory...");
+                char saved[MAX_PATH_LEN];
+                snprintf(saved, sizeof(saved), "%s", g_cwd);
                 if (cwd_enter(e->name) != 0 || fetch_listing() != 0) {
-                    cwd_up();   /* roll back on failure */
+                    snprintf(g_cwd, sizeof(g_cwd), "%s", saved);  /* rollback */
                     ui_error("Could not open directory.", "");
-                    if (wait_button() < 0) return -2;
+                    if (wait_button() < 0) { rc = -2; break; }
                     continue;
                 }
-                sel = 0; top = 0;
+                browser_fill(1);
                 continue;
             }
 
             char dest[MAX_PATH_LEN + 32];
             snprintf(dest, sizeof(dest), DEST_DIR "%s", e->name);
-
-            int rc = download_file(e->url, dest, e->name);
+            int drc = download_file(e->url, dest, e->name);
             char msg[256];
-            if (rc == 0) snprintf(msg, sizeof(msg), "Done: %s", e->name);
-            else         snprintf(msg, sizeof(msg), "Failed (%d): %s", rc, e->name);
-            ui_result(rc == 0, msg);
-            if (wait_button() < 0) return -2;
-        } else if (pressed & PAD_BTN_CIRCLE) {
+            if (drc == 0) snprintf(msg, sizeof(msg), "Done: %s", e->name);
+            else          snprintf(msg, sizeof(msg), "Failed (%d): %s", drc, e->name);
+            ui_result(drc == 0, msg);
+            if (wait_button() < 0) { rc = -2; break; }
+            scan_downloads();      /* the new file belongs in the tab */
+            if (g_downloads_active) browser_fill(0);
+        } else if (action == COVERFLOW_ACTION_BACK) {
+            if (g_downloads_active) {          /* leave the Downloads view */
+                g_cf.category = COVERFLOW_CAT_ALL;
+                browser_fill(1);
+                continue;
+            }
             if (g_cwd[0] != '\0') {
-                /* Go up one level and reload. */
                 ui_splash("Going up...");
                 cwd_up();
                 if (fetch_listing() != 0) {
                     ui_error("Could not reload parent directory.", "");
-                    if (wait_button() < 0) return -2;
+                    if (wait_button() < 0) { rc = -2; break; }
                 }
-                sel = 0; top = 0;
+                browser_fill(1);
                 continue;
             }
-            return 0;   /* at root: quit */
+            break;                  /* at root: quit (rc stays 0) */
         }
     }
+
+    coverflow_shutdown(&g_cf);
+    return rc;
 }
 
 /* ------------------------------------------------------------------ */

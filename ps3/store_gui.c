@@ -112,7 +112,10 @@ static void draw_tabs(const coverflow_state_t *cf)
 
     int w[COVERFLOW_MAX_DYNAMIC_CATEGORIES];
     for (int i = 0; i < n; i++)
-        w[i] = gfx_text_width(cf->dynamic_categories[i], 2) + 40;
+        /* Empty name = wildcard tab; the browser passes "" and the label
+           convention (ui/coverflow.c) is to render it "All". */
+        w[i] = gfx_text_width(cf->dynamic_categories[i][0]
+                                  ? cf->dynamic_categories[i] : "All", 2) + 40;
 
     /* Window the rail around the active tab; an active tab is never
        wider than the screen, so sliding `start` right terminates. */
@@ -134,7 +137,9 @@ static void draw_tabs(const coverflow_state_t *cf)
             gfx_rect(x, TABS_Y, w[i], TABS_H, COL_CARD);
             gfx_rect(x, TABS_Y + TABS_H - 5, w[i], 5, COL_HEADER);
         }
-        gfx_text(x + 20, TABS_Y + 14, cf->dynamic_categories[i],
+        gfx_text(x + 20, TABS_Y + 14,
+                 cf->dynamic_categories[i][0] ? cf->dynamic_categories[i]
+                                              : "All",
                  active ? COL_TEXT : COL_DIM, 2);
         x += w[i];
     }
@@ -266,6 +271,30 @@ void store_gui_draw(const coverflow_state_t *cf,
     if (cf->view == COVERFLOW_VIEW_GRID) draw_grid(cf, ids, descs);
     else                                 draw_flow(cf, ids, descs);
     draw_hints(cf->view == COVERFLOW_VIEW_GRID);
+    gfx_end();
+}
+
+/* The browser's Cover Flow frame (main.c browser()): same layout as the
+ * Store's, browser keys in the hint bar, and the cwd in the header where
+ * the store shows the platform tag. */
+void store_gui_browse(const coverflow_state_t *cf,
+                      const char *const *ids, const char *const *descs,
+                      const char *path)
+{
+    gfx_begin(COL_BG);
+    char head[300];
+    snprintf(head, sizeof head, "NAS /%s", path ? path : "");
+    draw_header("PS Linker", head);
+    draw_tabs(cf);
+    if (cf->view == COVERFLOW_VIEW_GRID) draw_grid(cf, ids, descs);
+    else                                 draw_flow(cf, ids, descs);
+
+    gfx_rect(0, STATUS_Y, SCR_W, SCR_H - STATUS_Y, COL_LINE);
+    gfx_text(18, STATUS_Y + 12,
+             cf->view == COVERFLOW_VIEW_GRID
+                 ? "Arrows move  L1R1 tab  Sq flow  X open  O up  Sel settings"
+                 : "L/R cover  UpDn jump  L1R1 tab  Sq grid  X open  O up  Sel/Tri",
+             COL_TEXT, 2);
     gfx_end();
 }
 

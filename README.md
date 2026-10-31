@@ -5,9 +5,9 @@ Two components:
 | Component | Target | What it does |
 |---|---|---|
 | `server/` | Docker / Linux / NAS (host) | Streams games to PS3 via the ps3netsrv protocol, serves files over HTTP for PSP/PS3 download (with Range/resume), and runs the server-side Store (downloads queued CDN titles into the same unified library) |
-| `psp/` | PSP (homebrew) | `NAS Downloader` app: connects to Wi-Fi, browses/downloads files from the PS Linker server to the Memory Stick (resumable downloads); the Store view is a pixel (sceGu) GUI |
-| `ps3/` | PS3 (homebrew, PSL1GHT) | `nasdl` app: RSX pixel browser + Store (Cover Flow over catalog.json), downloads files from the PS Linker server to the HDD (resumable downloads) |
-| `ui/` | shared source | Cover Flow renderer + key state machine both device apps can build against (ANSI only, no GPU); see `ui/INTEGRATION.md` |
+| `psp/` | PSP (homebrew) | `NAS Downloader` app: boots into the pixel (sceGu) Cover Flow browser of the share, downloads to the Memory Stick with resume support; the Store view shares the same GUI |
+| `ps3/` | PS3 (homebrew, PSL1GHT) | `nasdl` app: pixel Cover Flow browser + Store over the RSX display, downloads files from the PS Linker server to the HDD (resumable downloads) |
+| `ui/` | shared source | Cover Flow state machine + browser model (listing → covers and tab rail) both pixel device apps build against; see `ui/INTEGRATION.md` |
 
 > Intended for homebrew and legally-owned content. This project does not provide or encourage piracy.
 
@@ -111,7 +111,11 @@ sudo systemctl enable --now ps-linker
 
 ## PSP app (NAS Downloader)
 
-The PSP app browses the HTTP share, shows optional catalog icons/metadata, and downloads with resume support.
+The PSP app boots into the pixel Cover Flow browser (sceGu, 480x272): the
+HTTP share is the carousel, the tab rail is `All | categories | Downloads`,
+and `Licenses`/`PS3` entries are hidden. Cross downloads (with resume
+support) or opens a folder, Triangle opens the Store. Settings — the one
+remaining debug-screen view — sits behind SELECT.
 
 ```bash
 cd psp
@@ -123,13 +127,12 @@ make
 
 The PS3 app draws every screen on the RSX pixel display (`ps3/gfx.c`:
 CPU-drawn frames copied into two RSX buffers, flipped on vsync — no shaders,
-so RPCS3 and CFW both scan it out reliably) at a virtual 1280x720 grid: the
-Media Go-style browser, Settings picker, and the Store (Triangle) with its
-Cover Flow / grid views. Browse the HTTP share and download to the HDD with
-resume support; Store installs derive `/dev_hdd0` destinations (`.pkg` to
-`packages/`, disc images to `PS3ISO`/`PSPISO`, `.rap` to `exdata/`). If the
-display cannot be initialised — or the build passes `-DNASDL_TEXT_UI` —
-everything falls back to the ANSI-colored netdebug console instead.
+so RPCS3 and CFW both scan it out reliably) at a virtual 1280x720 grid. It
+boots straight into the Cover Flow browser (the share listing as covers, the
+tab rail `All | categories | Downloads`); Settings and the Store (Triangle)
+share the same pixel look. Download to the HDD with resume support; Store
+installs derive `/dev_hdd0` destinations (`.pkg` to `packages/`, disc images
+to `PS3ISO`/`PSPISO`, `.rap` to `exdata/`).
 
 ```bash
 cd ps3
@@ -388,6 +391,30 @@ wrong `X-SHA256` is rejected with `rc=-11`.
       sidecars and hidden covers travelling, license-pairing rules), and
       controls cover art (upload, re-extract, clear — all on the same
       `.icon0` sidecar convention, no second UI stack to build or drift)
+- [x] **The browser IS the Cover Flow — both clients went pixel-only** — the
+      text/list browsers are gone: boot opens the shared Cover Flow state with
+      the share listing as its covers, driven by the new
+      `ui/browser_model.c` (listing → cover items + tab rail: a wildcard
+      `All` tab, one tab per share category in first-seen order, then
+      `Downloads`, which lists the device's own download folder;
+      dotfiles and `.part` resumes stay hidden). L1/R1 move tabs, Square
+      toggles flow ⇄ grid, Cross opens/downloads, Circle leaves the
+      Downloads view, up one level, and quits at root. `ui/coverflow.c` grew
+      the empty-name wildcard category (renders `All`, matches everything)
+      and `coverflow_set_items()` (swap item storage under a live state —
+      the share ⇄ Downloads swap keeps the rail); `store_gui_browse()` draws
+      the frame on both pixel backends with the browser's own hints and the
+      cwd in the header. On the PSP, `Licenses` and `PS3` are filtered out
+      of covers *and* tabs — in the browser and in the Store — because a PSP
+      cannot act on them; the PS3 keeps them. The debug-screen Settings
+      picker survives behind SELECT only (`gui_to_debug()` reusing the
+      after-GE VRAM trick); the PS3 app deleted `ui_text.c`, the
+      `TEXT_UI` build and every ANSI branch. 208 Cover Flow assertions plus
+      the new `browser_model` tests (`make -C ui test`, ASan/UBSan clean),
+      zero-warning device builds, and both apps driven end-to-end with
+      injected keys — boot, tab switch, grid toggle and a populated
+      Downloads view screenshotted in PPSSPP and RPCS3 (`log.md`
+      2026-10-31). Real hardware is still untested.
 
 ### In progress
 - [ ] Test Store flow end-to-end through the Docker container with a real queue

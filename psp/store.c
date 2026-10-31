@@ -9,10 +9,10 @@
  * with catalogs pointing at legally distributable content (homebrew,
  * freeware, demos, or the user's own purchases).
  *
- * Rendering runs through a small backend switch: by default the pixel
- * view (gui.c/store_gui.c, sceGu), with -DNASDL_TEXT_UI restoring the
- * original pspDebugScreen layout. Both draw the same ui/coverflow.c
- * state; only the ui_* dispatch functions differ.
+ * Rendering is the pixel view (gui.c/store_gui.c, sceGu); the whole app
+ * went pixel-only with the Cover Flow browser redesign. The ui_*
+ * dispatch functions draw the same ui/coverflow.c state the browser
+ * drives.
  *
  * Integrates with psp/main.c — see store.h for the one-line hookup.
  */
@@ -27,6 +27,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 
 #include "store.h"
 #include "catalog.h"
@@ -391,9 +392,19 @@ int store_run(const char *nas_base) {
         return -3;
     }
     if (g_category_count > 0) {
+        /* Tabs a PSP cannot act on are useless here: PS3 installs and
+           .rap licenses stay hidden (their covers have no tab to live
+           under either, since the tab list is the only filter the Store
+           rail exposes). */
         const char *categories[STORE_CATEGORY_LIMIT];
-        for (int i = 0; i < g_category_count; i++) categories[i] = g_categories[i];
-        coverflow_set_categories(&cf, categories, (size_t)g_category_count);
+        int n = 0;
+        for (int i = 0; i < g_category_count && n < STORE_CATEGORY_LIMIT; i++) {
+            if (strcasecmp(g_categories[i], "PS3") == 0 ||
+                strcasecmp(g_categories[i], "Licenses") == 0)
+                continue;
+            categories[n++] = g_categories[i];
+        }
+        if (n > 0) coverflow_set_categories(&cf, categories, (size_t)n);
     }
     unsigned prev = 0;
     while (1) {

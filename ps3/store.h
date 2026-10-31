@@ -1,10 +1,10 @@
 /*
  * PS Linker - PS3 Store module, public entry point
  *
- * store_run() takes over the screen (pixel backend when gfx is up, the
- * ANSI Cover Flow frame with -DNASDL_TEXT_UI) and browses the catalog
- * until Circle. Input is polled through the caller's callback so the
- * pad, its edge detection and the sysutil quit flag stay in main.c.
+ * store_run() takes over the screen (the pixel backend in store_gui.c)
+ * and browses the catalog until Circle. Input is polled through the
+ * caller's callback so the pad, its edge detection and the sysutil quit
+ * flag stay in main.c.
  *
  * Returns 0 on a normal exit to the browser, <0 on catalog failure.
  */

@@ -64,6 +64,7 @@ int coverflow_init(coverflow_state_t *s,
     if (n == 0) return 0;
     s->filtered = (size_t *)calloc(n, sizeof(size_t));
     if (!s->filtered) return -1;
+    s->filtered_cap = n;
     coverflow_recompute_filter(s);
     return 0;
 }
@@ -76,7 +77,10 @@ void coverflow_set_categories(coverflow_state_t *s,
         for (size_t i = 0; i < count &&
              s->dynamic_category_count < COVERFLOW_MAX_DYNAMIC_CATEGORIES; i++) {
             const char *name = categories[i];
-            if (!name || !name[0]) continue;
+            if (!name) continue;                    /* NULL ends the list    */
+            /* An empty name is kept: it is the wildcard "All" tab (see the
+               header). It is only ever stored deliberately — the Store's
+               catalog never emits empty categories. */
             char label[COVERFLOW_DYNAMIC_CATEGORY_LEN];
             snprintf(label, sizeof label, "%s", name);
             int duplicate = 0;
@@ -97,6 +101,27 @@ void coverflow_shutdown(coverflow_state_t *s) {
     free(s->filtered);
     s->filtered = NULL;
     s->filtered_len = 0;
+    s->filtered_cap = 0;
+}
+
+int coverflow_set_items(coverflow_state_t *s,
+                        coverflow_item_t *items, size_t n) {
+    if (!s || (!items && n != 0)) return -1;
+
+    /* Grow (never shrink — the callers reuse static item arrays, and a
+       smaller listing must not force a realloc churn) the index buffer
+       before pointing the state at the new storage. */
+    if (n > s->filtered_cap) {
+        size_t *grown = (size_t *)calloc(n, sizeof(size_t));
+        if (!grown) return -1;
+        free(s->filtered);
+        s->filtered = grown;
+        s->filtered_cap = n;
+    }
+    s->items      = items;
+    s->item_count = n;
+    coverflow_recompute_filter(s);
+    return 0;
 }
 
 /* ---- Filtering --------------------------------------------------------- */
@@ -129,8 +154,9 @@ void coverflow_recompute_filter(coverflow_state_t *s) {
         if (s->dynamic_category_count) {
             int cat = (int)s->category;
             matches = cat >= 0 && (size_t)cat < s->dynamic_category_count &&
-                      strcmp(s->items[i].category,
-                             s->dynamic_categories[cat]) == 0;
+                      (s->dynamic_categories[cat][0] == '\0' /* "All" tab */
+                       || strcmp(s->items[i].category,
+                                 s->dynamic_categories[cat]) == 0);
         } else {
             matches = item_matches_category(&s->items[i], s->category);
         }
@@ -208,6 +234,8 @@ static void cover_title(char *dst, size_t cap, const char *title, int inner_w) {
 static const char *state_category_label(const coverflow_state_t *s, int category) {
     if (s && s->dynamic_category_count) {
         if (category < 0 || (size_t)category >= s->dynamic_category_count) return "?";
+        /* Empty name = wildcard tab (see coverflow_set_categories). */
+        if (s->dynamic_categories[category][0] == '\0') return "All";
         return s->dynamic_categories[category];
     }
     return coverflow_category_label((coverflow_category_t)category);

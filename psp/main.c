@@ -1,19 +1,29 @@
 /*
- * PS Linker - PSP NAS Downloader with interactive browser
+ * PS Linker - PSP NAS Downloader with Cover Flow browser
  *
- * Connects to Wi-Fi, browses the NAS HTTP share's directory listing,
- * lets you pick a file with the D-pad, and downloads it to the
- * Memory Stick. Files land in ms0:/PSP/GAME/NASDL/<filename>.
+ * Connects to Wi-Fi and boots straight into the pixel Cover Flow view
+ * (the same frame the Store uses): the share's directory listing is the
+ * carousel, the tab rail is All | share categories | Downloads, Cross
+ * downloads or opens, and Triangle opens the Store (catalog.json).
+ * Files land in ms0:/PSP/GAME/NASDL/<filename>, which is what the
+ * Downloads tab lists.
  *
- * UI is styled after Sony's Media Go: dark charcoal panels, a left
- * sidebar, blue selection highlight, and an accent-colored header and
- * status bar.
+ * Categories a PSP cannot act on (Licenses, PS3) never appear as
+ * covers or tabs - see ui/browser_model.c's skip list.
+ *
+ * UI: everything the user browses draws through gui.c/store_gui.c at
+ * 480x272. The pspDebugScreen character grid survives only behind
+ * SELECT (Settings), per the design note in store.c's ui_exit.
  *
  * Build with pspdev toolchain: make
  * Requires CFW (ARK-4 / PRO) to run.
  *
- * Controls in browser:  Up/Down = move, X = download (or enter dir),
- *                       O = parent dir (quit at root)
+ * Controls in browser:  Left/Right = cover, Up/Down = jump five,
+ *                       L1/R1 = tab, Square = flow/grid,
+ *                       X = open / download,
+ *                       O = parent directory (Downloads view off,
+ *                           quit at root),
+ *                       Select = Settings, Triangle = Store
  * Controls in settings: Left/Right = pick char, X = insert/OK,
  *                       O = delete char, Start = save & back,
  *                       Select = back without saving
@@ -23,6 +33,7 @@
 #include <pspkernel.h>
 #include <pspdebug.h>
 #include <pspctrl.h>
+#include <pspdisplay.h>
 #include <pspwlan.h>
 #include <pspnet.h>
 #include <pspnet_inet.h>
@@ -30,12 +41,18 @@
 #include <psphttp.h>
 #include <pspiofilemgr.h>
 #include <psputility_netmodules.h>
+#include <stdint.h>
 #include <string.h>
+#include <strings.h>
 #include <stdio.h>
 #include <stdlib.h>
 
+#include "gui.h"
+#include "store_gui.h"
 #include "resume.h"
 #include "store.h"
+#include "../ui/coverflow.h"
+#include "../ui/browser_model.h"
 #include "../ui/store_logic.h"
 
 #define printf pspDebugScreenPrintf
@@ -53,7 +70,7 @@ PSP_MAIN_THREAD_ATTR(THREAD_ATTR_USER | THREAD_ATTR_VFPU);
    and persisted to SETTINGS_PATH. */
 #define DEFAULT_NAS_URL "http://192.168.1.50:8000"
 
-/* Destination directory on the Memory Stick */
+/* Destination directory on the Memory Stick (also the Downloads view) */
 #define DEST_DIR "ms0:/PSP/GAME/NASDL/"
 
 /* Settings file (plain text: one line, the base URL) */
@@ -62,34 +79,27 @@ PSP_MAIN_THREAD_ATTR(THREAD_ATTR_USER | THREAD_ATTR_VFPU);
 #define MAX_FILES     128
 #define MAX_PATH_LEN  256
 #define MAX_URL_LEN   128
-#define DL_BUF_SIZE   64 * 1024   /* 64 KB chunks */
 
 /* ------------------------------------------------------------------ */
-/* Media Go-style palette                                              */
-/* (PSP debug screen colors are 0xAABBGGRR)                            */
+/* Debug-screen style helpers (Settings screen only)                   */
 /* ------------------------------------------------------------------ */
 
 #define COL_BG        0xFF1D1D1D   /* charcoal background            */
-#define COL_PANEL     0xFF262626   /* sidebar / panel background     */
-#define COL_HEADER    0xFFCC7A00   /* accent bar (Media Go blue-ish) */
-#define COL_SELECT    0xFF714706   /* selection highlight            */
+#define COL_HEADER    0xFFCC7A00   /* accent bar                     */
 #define COL_TEXT      0xFFCCCCCC   /* normal text                    */
 #define COL_TEXT_DIM  0xFF808080   /* muted text                     */
 #define COL_TEXT_SEL  0xFFFFFFFF   /* text on selection              */
-#define COL_STATUS    0xFF333333   /* status bar background          */
+#define COL_SELECT    0xFF714706   /* selection highlight            */
 #define COL_OK        0xFF3EC13E   /* success green                  */
 #define COL_ERR       0xFF3D3DD5   /* error red                      */
-#define COL_PROGRESS  0xFFCC7A00   /* progress fill                  */
 
 typedef struct {
     u32 bg, fg;
 } Style;
 
 static const Style STYLE_HEADER = { COL_HEADER,   0xFF000000 };
-static const Style STYLE_SIDE   = { COL_PANEL,    COL_TEXT_DIM };
 static const Style STYLE_ROW    = { COL_BG,       COL_TEXT };
 static const Style STYLE_SEL    = { COL_SELECT,   COL_TEXT_SEL };
-static const Style STYLE_STATUS = { COL_STATUS,   COL_TEXT_DIM };
 
 static void set_style(const Style *s) {
     pspDebugScreenSetBackColor(s->bg);
@@ -117,29 +127,17 @@ static void draw_header(const char *title, const char *subtitle) {
     field(0, 0, SCREEN_COLS, &STYLE_HEADER, buf);
 }
 
-/* Left sidebar, Media Go style. active = currently highlighted item. */
-static const char *SIDEBAR[] = { "Games", "Downloads", "Settings" };
+/* Hand the display back from the GU to the debug screen at a VRAM
+   offset the GE never rendered to (same trick and reasoning as
+   store.c's ui_exit: buffered-rendering emulators keep a GPU-side copy
+   of every GE framebuffer and would present a frozen pixel frame for
+   addresses with GE history; 0x155000 has none). */
+#define DEBUG_VRAM_AFTER_GU ((void *)(intptr_t)(0x44000000 | 0x00155000))
 
-static void draw_sidebar(int row_from, int row_to, int active) {
-    for (int r = row_from; r <= row_to; r++) {
-        pspDebugScreenSetXY(0, r);
-        set_style(&STYLE_SIDE);
-        pad(14);
-        int idx = r - row_from - 2;
-        if (idx >= 0 && idx < (int)(sizeof(SIDEBAR) / sizeof(SIDEBAR[0]))) {
-            pspDebugScreenSetXY(2, r);
-            printf("%s%s", idx == active ? "> " : "  ", SIDEBAR[idx]);
-        }
-    }
-}
-
-/* Bottom status bar with hint text and an optional status message. */
-static void draw_status(const char *msg) {
-    char buf[SCREEN_COLS + 1];
-    /* Leave room for the fixed hint prefix; long messages are clipped. */
-    snprintf(buf, sizeof(buf), " X:Dl/Enter  O:Up  Select:Settings | %.28s",
-             msg ? msg : "");
-    field(0, SCREEN_ROWS - 1, SCREEN_COLS, &STYLE_STATUS, buf);
+static void gui_to_debug(void) {
+    gui_term();
+    pspDebugScreenInitEx(DEBUG_VRAM_AFTER_GU, PSP_DISPLAY_PIXEL_FORMAT_8888, 1);
+    pspDebugScreenClear();
 }
 
 /* ------------------------------------------------------------------ */
@@ -181,7 +179,7 @@ static int save_settings(void) {
 /* ------------------------------------------------------------------ */
 
 typedef struct {
-    char name[MAX_PATH_LEN];   /* display name (decoded)            */
+    char name[MAX_PATH_LEN];   /* display name (decoded, raw)       */
     char url[MAX_PATH_LEN];    /* absolute URL for fetch/download   */
     long long size;            /* bytes from data-size, -1 unknown  */
     char category[64];         /* data-cat (catalog category), "" if none */
@@ -281,7 +279,8 @@ static int add_file(const char *href, long long size, const char *category) {
     size_t hl = strlen(href);
     int is_dir = (hl > 0 && href[hl - 1] == '/');
 
-    /* Display name: strip trailing slash for dirs */
+    /* Display name: the raw name (directories carry no brackets - the
+       Cover Flow model adds the trailing '/' to folder titles). */
     char display[MAX_PATH_LEN];
     url_decode(display, href, sizeof(display));
     if (is_dir && hl > 0) display[hl - 1] = '\0';
@@ -290,7 +289,7 @@ static int add_file(const char *href, long long size, const char *category) {
 
     FileEntry *e = &g_files[g_file_count];
     if (build_url(href, e->url, MAX_PATH_LEN) != 0) return 0;
-    snprintf(e->name, MAX_PATH_LEN, is_dir ? "[%s]" : "%s", display);
+    snprintf(e->name, MAX_PATH_LEN, "%s", display);
     e->is_dir = is_dir;
     e->size = size;
     snprintf(e->category, sizeof(e->category), "%s", category ? category : "");
@@ -392,43 +391,38 @@ static int fetch_listing(void) {
 }
 
 /* ------------------------------------------------------------------ */
-/* Download with Media Go-style progress bar                           */
-/* Downloading goes through resume.c, which sends Range headers and    */
-/* continues an interrupted transfer from the partial file on disk.    */
+/* Download with the Store's pixel progress frame                      */
+/* resume.c sends Range headers and continues an interrupted transfer  */
+/* from the partial file on disk (kept as <name>.part, hidden from the */
+/* Downloads view).                                                    */
 /* ------------------------------------------------------------------ */
 
-/* Progress callback from resume.c: redraw the bar in place.
-   pct is 0-100, or -1 when the total size is unknown. */
+static char g_dl_name[MAX_PATH_LEN];
+static char g_dl_path[MAX_PATH_LEN + 32];
+static int g_dl_last_pct = -999;
+static long g_dl_last_total = 0;
+
 static void download_progress(int pct, long total) {
-    const int bar_w = SCREEN_COLS - 16;
-    int fill = (pct >= 0 && pct <= 100) ? (pct * bar_w) / 100 : 0;
-    char info[48];
-    if (pct >= 0)
-        snprintf(info, sizeof(info), "%d%%  (%ld KB)", pct, total / 1024);
-    else
-        snprintf(info, sizeof(info), "(%ld KB)", total / 1024);
-
-    Style st = { COL_BG, COL_TEXT };
-    field(0, SCREEN_ROWS - 6, SCREEN_COLS, &st, "Downloading...");
-
-    pspDebugScreenSetXY(0, SCREEN_ROWS - 5);
-    set_style(&STYLE_ROW);
-    pad(bar_w);                             /* empty track */
-    pspDebugScreenSetXY(0, SCREEN_ROWS - 5);
-    Style sp = { COL_PROGRESS, COL_PROGRESS };
-    field(0, SCREEN_ROWS - 5, fill, &sp, "");
-
-    Style si = { COL_BG, COL_TEXT_DIM };
-    field(bar_w + 1, SCREEN_ROWS - 5, 15, &si, info);
+    if (pct == g_dl_last_pct &&
+        !(pct < 0 && total - g_dl_last_total >= 1024 * 1024))
+        return;                          /* the pixel present is a full copy */
+    g_dl_last_pct = pct;
+    g_dl_last_total = total;
+    store_gui_progress(g_dl_name, g_dl_path, pct, total);
 }
 
-static int download_file(const char *url, const char *dest_path) {
-    draw_header("PS Linker", "Downloading...");
+static int download_file(const char *url, const char *dest_path,
+                         const char *shown_name) {
+    snprintf(g_dl_name, sizeof(g_dl_name), "%s", shown_name);
+    snprintf(g_dl_path, sizeof(g_dl_path), "%s", dest_path);
+    g_dl_last_pct = -999;
+    g_dl_last_total = 0;
+    store_gui_progress(g_dl_name, g_dl_path, -1, 0);
     return psp_resume_download(url, dest_path, download_progress);
 }
 
 /* ------------------------------------------------------------------ */
-/* UI                                                                  */
+/* Pad helpers                                                         */
 /* ------------------------------------------------------------------ */
 
 static void wait_button(void) {
@@ -446,20 +440,26 @@ static int get_pressed(unsigned *pressed, unsigned *prev_out) {
     return (*pressed != 0) ? 0 : -1;
 }
 
-/* Splash screen shown while connecting, Media Go style. */
+/* After a nested screen (Settings, Store) returns: wait until the pad
+   is clear, so the button that closed it is not seen as a fresh press
+   here (it would hit the "up one level" branch and quit at root). */
+static void pad_clear(unsigned *prev_out) {
+    SceCtrlData pad;
+    do {
+        sceCtrlReadBufferPositive(&pad, 1);
+        sceKernelDelayThread(16000);
+    } while (pad.Buttons);
+    *prev_out = 0;
+}
+
+/* Splash screen shown while connecting/fetching, pixel chrome. */
 static void draw_splash(const char *msg) {
-    set_style(&(Style){ COL_BG, COL_TEXT });
-    pspDebugScreenClear();
-    draw_header("PS Linker", "v1.3");
-    draw_sidebar(1, SCREEN_ROWS - 2, 0);
-    Style big = { COL_BG, COL_TEXT };
-    field(16, 12, 50, &big, "P S   L I N K E R");
-    field(16, 14, 50, &big, msg);
-    draw_status("Starting...");
+    store_gui_status("PS Linker", msg, "Starting...");
 }
 
 /* ------------------------------------------------------------------ */
 /* Settings view: edit the NAS URL with an on-screen character picker  */
+/* (the one remaining debug-screen UI - see the header comment)        */
 /* ------------------------------------------------------------------ */
 
 /* Single-row character strip, Media Go style. */
@@ -483,7 +483,6 @@ static int settings_view(void) {
     while (1) {
         pspDebugScreenClear();
         draw_header("PS Linker", "Settings");
-        draw_sidebar(1, SCREEN_ROWS - 2, 2);   /* highlight "Settings" */
 
         snprintf(url, sizeof(url), "%s", g_nas_base);
         Style lbl = { COL_BG, COL_TEXT_DIM };
@@ -515,8 +514,6 @@ static int settings_view(void) {
             }
             field(14 + i * 2, picker_row, 2, st, ch);
         }
-
-        draw_status("Settings");
 
         unsigned pressed;
         do { sceKernelDelayThread(16000); }
@@ -554,169 +551,242 @@ static int settings_view(void) {
 }
 
 /* ------------------------------------------------------------------ */
-/* Browser                                                             */
+/* Browser (Cover Flow)                                                */
 /* ------------------------------------------------------------------ */
+
+/* The browser IS the Store frame: main.c drives the shared
+   ui/coverflow.c state through ui/browser_model.c (listing -> covers +
+   tab rail), and store_gui_browse draws it. Tabs: All | share
+   categories | Downloads (what already landed in DEST_DIR). Licenses
+   and PS3 entries never become covers or tabs. */
+
+#define MAX_TABS COVERFLOW_MAX_DYNAMIC_CATEGORIES
+
+/* Categories useless on a PSP: they are skipped as covers AND as tabs. */
+static const char *const PSP_SKIP_CATEGORIES[] = { "Licenses", "PS3" };
+#define PSP_SKIP_COUNT ((int)(sizeof(PSP_SKIP_CATEGORIES) / sizeof(PSP_SKIP_CATEGORIES[0])))
+
+typedef struct {
+    char name[MAX_PATH_LEN];
+    long long size;
+} DlEntry;
+
+static DlEntry g_dl[MAX_FILES];
+static int g_dl_count = 0;
+
+static coverflow_state_t g_cf;
+static coverflow_item_t g_cf_items[MAX_FILES];
+static int g_cf_map[MAX_FILES];      /* item slot -> g_files / g_dl index */
+static char g_tabs[MAX_TABS][COVERFLOW_DYNAMIC_CATEGORY_LEN];
+static int g_tab_count = 0;
+static int g_downloads_tab = -1;
+static int g_downloads_active = 0;
+
+static void scan_downloads(void) {
+    g_dl_count = 0;
+    SceUID dir = sceIoDopen(DEST_DIR);
+    if (dir < 0) return;
+    SceIoDirent ent;
+    while (g_dl_count < MAX_FILES && sceIoDread(dir, &ent) > 0) {
+        if (FIO_SO_ISDIR(ent.d_stat.st_attr)) continue;
+        const char *n = ent.d_name;
+        if (n[0] == '.') continue;                    /* hidden          */
+        size_t nl = strlen(n);
+        if (nl >= 5 && strcmp(n + nl - 5, ".part") == 0) continue;  /* resume partial */
+        snprintf(g_dl[g_dl_count].name, sizeof(g_dl[g_dl_count].name), "%s", n);
+        g_dl[g_dl_count].size = (long long)(u32)ent.d_stat.st_size;
+        g_dl_count++;
+    }
+    sceIoDclose(dir);
+}
+
+/* Rebuild the cover items for the active source. reset_tab (a new
+   listing) also rebuilds the tab rail and lands on the All tab; a tab
+   switch keeps the rail and only swaps the items under it. */
+static void browser_fill(int reset_tab) {
+    static bm_entry_t sh[MAX_FILES];
+    static bm_entry_t dl[MAX_FILES];
+
+    if (reset_tab) g_downloads_active = 0;
+
+    for (int i = 0; i < g_file_count; i++) {
+        sh[i].name = g_files[i].name;
+        sh[i].category = g_files[i].category;
+        sh[i].size = g_files[i].size;
+        sh[i].is_dir = g_files[i].is_dir;
+    }
+    for (int i = 0; i < g_dl_count; i++) {
+        dl[i].name = g_dl[i].name;
+        dl[i].category = "";
+        dl[i].size = g_dl[i].size;
+        dl[i].is_dir = 0;
+    }
+
+    int n = bm_build(g_cf_items, MAX_FILES, sh, g_file_count,
+                     dl, g_dl_count,
+                     PSP_SKIP_CATEGORIES, PSP_SKIP_COUNT, g_downloads_active,
+                     g_tabs, &g_tab_count, g_cf_map);
+
+    g_downloads_tab = (g_tab_count > 0 &&
+                       strcmp(g_tabs[g_tab_count - 1], BM_DOWNLOADS_LABEL) == 0)
+                      ? g_tab_count - 1 : -1;
+
+    if (coverflow_set_items(&g_cf, g_cf_items, (size_t)n) != 0) return;
+    if (reset_tab) {
+        const char *tabs[MAX_TABS];
+        for (int i = 0; i < g_tab_count; i++) tabs[i] = g_tabs[i];
+        coverflow_set_categories(&g_cf, tabs, (size_t)g_tab_count);
+    }
+}
+
+static coverflow_key_t browser_key(unsigned pressed) {
+    if (pressed & PSP_CTRL_LEFT)      return COVERFLOW_KEY_LEFT;
+    if (pressed & PSP_CTRL_RIGHT)     return COVERFLOW_KEY_RIGHT;
+    if (pressed & PSP_CTRL_UP)        return COVERFLOW_KEY_UP;
+    if (pressed & PSP_CTRL_DOWN)      return COVERFLOW_KEY_DOWN;
+    if (pressed & PSP_CTRL_LTRIGGER)  return COVERFLOW_KEY_SHOULDER_L;
+    if (pressed & PSP_CTRL_RTRIGGER)  return COVERFLOW_KEY_SHOULDER_R;
+    if (pressed & PSP_CTRL_SQUARE)    return COVERFLOW_KEY_TAB;   /* flow/grid */
+    if (pressed & PSP_CTRL_CROSS)     return COVERFLOW_KEY_ENTER;
+    if (pressed & PSP_CTRL_CIRCLE)    return COVERFLOW_KEY_BACK;
+    return COVERFLOW_KEY_NONE;
+}
 
 static int browser(void) {
     draw_splash("Fetching listing from NAS...");
 
-    if (fetch_listing() != 0) {
+    if (fetch_listing() != 0 || g_file_count == 0) {
         char msg[96];
         snprintf(msg, sizeof(msg), "Could not reach %s", g_nas_base);
-        Style err = { COL_BG, COL_ERR };
-        field(16, 16, 50, &err, msg);
-        field(16, 17, 50, &err, "Press any button to retry.");
+        store_gui_status("PS Linker", msg, "Press any button to retry");
         wait_button();
         return -1;
     }
 
-    if (g_file_count == 0) {
-        Style err = { COL_BG, COL_ERR };
-        char msg[96];
-        snprintf(msg, sizeof(msg), "No files found at %s", g_nas_base);
-        field(16, 16, 50, &err, msg);
-        wait_button();
-        return -2;
+    if (coverflow_init(&g_cf, g_cf_items, 0, SCREEN_COLS, SCREEN_ROWS, 0) != 0) {
+        store_gui_status("PS Linker", "Out of memory.", "Exiting...");
+        sceKernelDelayThread(3000000);
+        return 0;
     }
+    scan_downloads();
+    browser_fill(1);
 
-    int sel = 0, top = 0;
+    int rc = 0;
     unsigned prev = 0;
     while (1) {
-        pspDebugScreenClear();
+        const char *ids[MAX_FILES];
+        const char *descs[MAX_FILES];
+        for (size_t i = 0; i < g_cf.item_count; i++) {
+            ids[i]   = g_downloads_active ? g_dl[g_cf_map[i]].name
+                                          : g_files[g_cf_map[i]].url;
+            descs[i] = "";
+        }
+        store_gui_browse(&g_cf, ids, descs, g_cwd);
 
-        /* Layout: rows 1..30 list area, sidebar cols 0..13 */
-        const int list_top = 2;
-        const int list_rows = SCREEN_ROWS - 7 - list_top;
-        if (sel < top) top = sel;
-        if (sel >= top + list_rows) top = sel - list_rows + 1;
+        unsigned pressed;
+        do { sceKernelDelayThread(16000); }
+        while (get_pressed(&pressed, &prev) != 0);
 
-        /* List panel background + header row (shows current dir) */
-        Style head = { COL_BG, COL_TEXT_DIM };
-        char headtxt[MAX_PATH_LEN + 16];
-        snprintf(headtxt, sizeof(headtxt), " NAS LIBRARY: %s",
-                 g_cwd[0] ? g_cwd : "/");
-        int hw = SCREEN_COLS - 14;
-        if ((int)strlen(headtxt) > hw) headtxt[hw] = '\0';
-        field(14, 1, hw, &head, headtxt);
-
-        for (int i = top; i < g_file_count && i < top + list_rows; i++) {
-            int w = SCREEN_COLS - 16;
-            /* Same store-card meta the PS3 backends render: the size, plus
-               the category where the path header does not already state it.
-               Shares without data-* attributes give size -1/category "", so
-               these rows render exactly as they used to. */
-            char meta[96];
-            meta[0] = '\0';
-            if (g_files[i].size >= 0) {
-                char sz[24];
-                store_format_size((uint64_t)g_files[i].size, sz, sizeof sz);
-                snprintf(meta, sizeof meta, "%s", sz);
-            }
-            if (!g_files[i].is_dir && g_files[i].category[0]) {
-                const char *cwd = g_cwd;
-                size_t cl = strlen(g_files[i].category);
-                if (!(strncmp(cwd, g_files[i].category, cl) == 0 &&
-                      (cwd[cl] == '\0' || cwd[cl] == '/'))) {
-                    strncat(meta, meta[0] ? "  " : "", sizeof meta - strlen(meta) - 1);
-                    strncat(meta, g_files[i].category, sizeof meta - strlen(meta) - 1);
-                }
-            }
-            int ml = (int)strlen(meta);
-
-            char line[MAX_PATH_LEN];
-            snprintf(line, sizeof(line), "%s", g_files[i].name);
-            if (ml && (int)strlen(line) + ml <= w - 1) {
-                char padded[MAX_PATH_LEN + 96];
-                snprintf(padded, sizeof padded, "%-*s%s", w - ml, line, meta);
-                snprintf(line, sizeof line, "%.*s",
-                         (int)sizeof(line) - 1, padded);   /* w-bounded fit */
-            } else if ((int)strlen(line) > w) {
-                line[w] = '\0';
-            }
-            field(15, list_top + (i - top), w,
-                  i == sel ? &STYLE_SEL : &STYLE_ROW, line);
+        /* Screens that own the pad (and partly the display) themselves. */
+        if (pressed & PSP_CTRL_TRIANGLE) {
+            gui_to_debug();          /* store_run brings the GU back up */
+            store_run(g_nas_base);
+            gui_init();
+            pad_clear(&prev);
+            continue;                /* the listing may predate an install */
+        }
+        if (pressed & PSP_CTRL_SELECT) {
+            gui_to_debug();
+            settings_view();
+            gui_init();
+            pad_clear(&prev);
+            continue;                /* URL may have changed: redraw */
         }
 
-        draw_sidebar(1, SCREEN_ROWS - 2, 0);
+        coverflow_key_t key = browser_key(pressed);
+        if (key == COVERFLOW_KEY_NONE) continue;
 
-        char status[64];
-        snprintf(status, sizeof(status), "%d entries - %d selected",
-                 g_file_count, sel + 1);
-        draw_status(status);
+        const int tab_before = (int)g_cf.category;
+        coverflow_action_t action;
+        coverflow_handle_key(&g_cf, key, &action);
 
-        /* Simple edge-detect: poll until a new button press appears */
-        unsigned pressed;
-        do {
-            sceKernelDelayThread(16000);
-        } while (get_pressed(&pressed, &prev) != 0);
+        /* Tab rail crossed into/out of Downloads: swap the item source. */
+        if ((int)g_cf.category != tab_before) {
+            const int want_dl = (g_downloads_tab >= 0 &&
+                                 (int)g_cf.category == g_downloads_tab);
+            if (want_dl != g_downloads_active) {
+                g_downloads_active = want_dl;
+                if (want_dl) scan_downloads();
+                browser_fill(0);
+            }
+        }
 
-        if (pressed & PSP_CTRL_TRIANGLE) {
-            store_run(g_nas_base);
-            /* The Store has its own button handling; wait until the pad is
-               clear before reading again. Without this the O that closed the
-               Store is still down here, gets seen as a fresh press, and hits
-               the "up one level" branch below - which at the share root quits
-               the app instead of returning to the browser. */
-            SceCtrlData released;
-            do {
-                sceCtrlReadBufferPositive(&released, 1);
-                sceKernelDelayThread(16000);
-            } while (released.Buttons);
-            prev = 0;
-        } else if (pressed & PSP_CTRL_SELECT) {
-            settings_view();
-        } else if (pressed & PSP_CTRL_DOWN) {
-            sel = (sel + 1) % g_file_count;
-        } else if (pressed & PSP_CTRL_UP) {
-            sel = (sel - 1 + g_file_count) % g_file_count;
-        } else if (pressed & PSP_CTRL_CROSS) {
-            FileEntry *e = &g_files[sel];
+        if (action == COVERFLOW_ACTION_SELECT) {
+            const coverflow_item_t *cur = coverflow_current(&g_cf);
+            if (!cur) continue;
+            const int slot = (int)(cur - g_cf_items);
 
+            if (g_downloads_active) {
+                char msg[96];
+                snprintf(msg, sizeof(msg), "%s is already on this card",
+                         g_dl[g_cf_map[slot]].name);
+                store_gui_status("PS Linker", msg, "Press any button to continue");
+                wait_button();
+                continue;
+            }
+
+            FileEntry *e = &g_files[g_cf_map[slot]];
             if (e->is_dir) {
-                /* Enter subdirectory: rollback g_cwd if the fetch fails */
+                draw_splash("Loading directory...");
                 char saved[MAX_PATH_LEN];
                 snprintf(saved, sizeof(saved), "%s", g_cwd);
-                /* strip display name back to raw href form */
-                char raw[MAX_PATH_LEN];
-                snprintf(raw, sizeof(raw), "%s", e->name + 1);   /* skip '[' */
-                raw[strlen(raw) - 1] = '\0';                     /* drop ']' */
-                if (cwd_enter(raw) != 0 || fetch_listing() != 0 ||
+                if (cwd_enter(e->name) != 0 || fetch_listing() != 0 ||
                     g_file_count == 0) {
-                    snprintf(g_cwd, sizeof(g_cwd), "%s", saved);
-                    Style err = { COL_BG, COL_ERR };
-                    field(16, SCREEN_ROWS - 4, 50, &err,
-                          "Could not open folder.");
+                    snprintf(g_cwd, sizeof(g_cwd), "%s", saved);  /* rollback */
+                    store_gui_status("PS Linker", "Could not open folder.",
+                                     "Press any button to continue");
+                    wait_button();
+                    continue;
+                }
+                browser_fill(1);
+                continue;
+            }
+
+            char dest[MAX_PATH_LEN + 32];
+            snprintf(dest, sizeof(dest), DEST_DIR "%s", e->name);
+            int drc = download_file(e->url, dest, e->name);
+            char msg[128];
+            if (drc == 0) snprintf(msg, sizeof(msg), "Done: %s", e->name);
+            else          snprintf(msg, sizeof(msg), "Failed (%d): %s", drc, e->name);
+            store_gui_status("PS Linker", msg,
+                             drc == 0 ? "Download complete" : "Download failed");
+            wait_button();
+            scan_downloads();        /* the new file belongs in the tab */
+            if (g_downloads_active) browser_fill(0);
+        } else if (action == COVERFLOW_ACTION_BACK) {
+            if (g_downloads_active) {          /* leave the Downloads view */
+                g_cf.category = COVERFLOW_CAT_ALL;
+                browser_fill(1);
+                continue;
+            }
+            if (g_cwd[0]) {                    /* up one level */
+                draw_splash("Going up...");
+                cwd_up();
+                if (fetch_listing() != 0) {
+                    store_gui_status("PS Linker",
+                                     "Could not reload parent directory.",
+                                     "Press any button to continue");
                     wait_button();
                 }
-                sel = 0; top = 0;
-            } else {
-                char dest[MAX_PATH_LEN + 32];
-                snprintf(dest, sizeof(dest), DEST_DIR "%s", e->name);
-                int rc = download_file(e->url, dest);
-
-                Style res = { COL_BG, rc == 0 ? COL_OK : COL_ERR };
-                char msg[96];
-                if (rc == 0)
-                    snprintf(msg, sizeof(msg), "Done: %s", e->name);
-                else
-                    snprintf(msg, sizeof(msg), "Failed (%d): %s", rc, e->name);
-                field(14, SCREEN_ROWS - 3, SCREEN_COLS - 14, &res, msg);
-                draw_status(rc == 0 ? "Download complete" : "Download failed");
-                wait_button();
+                browser_fill(1);
+                continue;
             }
-        } else if (pressed & PSP_CTRL_CIRCLE) {
-            if (g_cwd[0]) {                  /* up one level */
-                cwd_up();
-                if (fetch_listing() != 0 || g_file_count == 0) {
-                    /* Nothing above: treat as quit */
-                    return 0;
-                }
-                sel = 0; top = 0;
-            } else {
-                return 0;
-            }
+            break;                             /* at root: quit (rc stays 0) */
         }
     }
+
+    coverflow_shutdown(&g_cf);
+    return rc;
 }
 
 /* ------------------------------------------------------------------ */
@@ -750,10 +820,9 @@ static int net_init(void) {
 
     SceNetApctlInfo info;
     if (sceNetApctlGetInfo(1, &info) == 0) {
-        Style ok = { COL_BG, COL_OK };
         char msg[96];
         snprintf(msg, sizeof(msg), "Connected: %s (%s)", info.ssid, info.ip);
-        field(16, 16, 50, &ok, msg);
+        store_gui_status("PS Linker", msg, NULL);
         sceKernelDelayThread(800 * 1000);
     }
     return 0;
@@ -761,20 +830,27 @@ static int net_init(void) {
 
 int main(void) {
     pspDebugScreenInit();
-    set_style(&(Style){ COL_BG, COL_TEXT });
-    pspDebugScreenClear();
-    draw_splash("Starting...");
-
     load_settings();
     sceIoMkdir(DEST_DIR, 0777);   /* also holds settings.txt */
 
+    if (gui_init() != 0) {
+        pspDebugScreenClear();
+        set_style(&(Style){ COL_BG, COL_ERR });
+        field(0, 4, SCREEN_COLS, &(Style){ COL_BG, COL_ERR },
+              "GUI init failed - cannot start the pixel UI.");
+        sceKernelDelayThread(5 * 1000 * 1000);
+        sceKernelExitGame();
+        return 1;
+    }
+    draw_splash("Starting...");
+
     int rc = net_init();
     if (rc != 0) {
-        Style err = { COL_BG, COL_ERR };
         char msg[80];
         snprintf(msg, sizeof(msg), "Network init failed (%d). Check Wi-Fi.", rc);
-        field(16, 17, 50, &err, msg);
+        store_gui_status("PS Linker", msg, "Exiting...");
         sceKernelDelayThread(5 * 1000 * 1000);
+        gui_term();
         sceKernelExitGame();
         return 1;
     }
@@ -786,6 +862,7 @@ int main(void) {
 
     draw_splash("Goodbye!");
     sceKernelDelayThread(2 * 1000 * 1000);
+    gui_term();
     sceKernelExitGame();
     return 0;
 }

@@ -15,9 +15,8 @@
  * /dev_hdd0/exdata as a staging folder. PSP .PBP homebrew stays in the
  * listing but is refused - a PS3 cannot run it.
  *
- * Rendering runs through the same backend switch as the PSP Store:
- * pixel screens (gfx.c + store_gui.c) by default, -DNASDL_TEXT_UI
- * restores an ANSI Cover Flow frame on the TTY.
+ * Rendering is the pixel screens (gfx.c + store_gui.c) — the whole app
+ * is pixel-only since the Cover Flow browser redesign.
  */
 
 #include <stdio.h>
@@ -35,9 +34,6 @@
 #include "../ui/catalog.h"
 #include "../ui/store_logic.h"
 #include "../ui/coverflow.h"
-
-#define SCREEN_ROWS 33
-#define SCREEN_COLS 80
 
 #define STORE_MAX_ITEMS 256
 
@@ -138,30 +134,8 @@ static void store_prepare_destination(const char *path)
 }
 
 /* ------------------------------------------------------------------ */
-/* Render backends: pixel (default) or ANSI Cover Flow on the TTY      */
+/* Render backends: pixel only (gfx.c already initialised by ui_init)  */
 /* ------------------------------------------------------------------ */
-
-#ifdef NASDL_TEXT_UI
-
-static void ui_init_backend(void) { }
-static void ui_exit_backend(void) { }
-
-static void ui_status(const char *head, const char *body, const char *hint)
-{
-    printf("\x1b[2J\x1b[1;1H");
-    printf("\x1b[48;5;25m\x1b[97m %-78s\x1b[0m\n", head);
-    if (body) printf(" %s\n", body);
-    if (hint) printf("\x1b[48;5;237m %-78s\x1b[0m", hint);
-    fflush(stdout);
-}
-
-static void ui_browse(const coverflow_state_t *cf)
-{
-    printf("\x1b[2J\x1b[1;1H");
-    coverflow_render_default(cf);
-}
-
-#else /* pixel backend */
 
 static void ui_init_backend(void) { }        /* gfx already up        */
 static void ui_exit_backend(void) { }        /* browser owns screen   */
@@ -171,12 +145,10 @@ static void ui_status(const char *head, const char *body, const char *hint)
     store_gui_status(head, body, hint);
 }
 
-static void ui_browse(const coverflow_state_t *cf)
+static void store_browse_frame(const coverflow_state_t *cf)
 {
     store_gui_draw(cf, g_ids, g_descs);
 }
-
-#endif /* NASDL_TEXT_UI */
 
 static char g_inst_title[CATALOG_MAX_STR];
 static char g_inst_path[CATALOG_MAX_STR];
@@ -185,29 +157,19 @@ static void ui_install(const char *title, const char *path)
 {
     snprintf(g_inst_title, sizeof(g_inst_title), "%s", title ? title : "");
     snprintf(g_inst_path, sizeof(g_inst_path), "%s", path ? path : "");
-#ifndef NASDL_TEXT_UI
     store_gui_progress(g_inst_title, g_inst_path, -1, 0);
-#endif
 }
 
 static int g_last_pct = -999;
 
 static void ui_progress(int pct, long total)
 {
-#ifdef NASDL_TEXT_UI
-    char msg[40];
-    if (pct >= 0) snprintf(msg, sizeof(msg), "%d%% (%ld KB)", pct, total / 1024);
-    else snprintf(msg, sizeof(msg), "%ld KB", total / 1024);
-    printf("\x1b[48;5;237m\x1b[38;5;243m%-78s\x1b[0m", msg);
-    fflush(stdout);
-#else
     /* A present is a full 720p copy + vsync wait: only worth it when
        the percentage actually moved (or before the first byte). */
     if (pct != g_last_pct) {
         g_last_pct = pct;
         store_gui_progress(g_inst_title, g_inst_path, pct, total);
     }
-#endif
 }
 
 /* ------------------------------------------------------------------ */
@@ -280,12 +242,7 @@ int store_run(const char *nas_base, store_input_cb poll)
     /* screen_w/h only drive the ANSI renderer's tiles and the grid
        column count; the pixel backend draws its own layout. */
     coverflow_state_t cf;
-#ifdef NASDL_TEXT_UI
-    if (coverflow_init(&cf, g_covers, (size_t)g_item_count,
-                       SCREEN_COLS, SCREEN_ROWS, 1) != 0) {
-#else
     if (coverflow_init(&cf, g_covers, (size_t)g_item_count, 120, 27, 1) != 0) {
-#endif
         ui_exit_backend();
         return -3;
     }
@@ -299,7 +256,7 @@ int store_run(const char *nas_base, store_input_cb poll)
 
     unsigned pressed;
     while (1) {
-        ui_browse(&cf);
+        store_browse_frame(&cf);
 
         int prc;
         do { usleep(16000); prc = poll(&pressed); }

@@ -6,6 +6,78 @@ it records *what was actually run and observed*, including bugs found while test
 
 ---
 
+## 2026-10-31 (clients) — the browser *is* the Cover Flow now, on both devices
+
+The user's target picture was the PSP Store's pixel carousel, with one
+instruction: that is what both apps show on load, "remove all the text
+browsing" — and the `Licenses`/`PS3` menus, useless on a PSP, disappear
+there entirely. Both browsers now boot straight into the shared Cover Flow
+state; the row-list screens (and the whole PS3 ANSI backend) are gone.
+
+The bridge is new shared code, `ui/browser_model.c`: the parsed listing
+becomes cover items (folder titles carry the trailing `/`, sizes run through
+`store_format_size`) plus a slot→entry map, and the tab rail is the wildcard
+`All` tab, one tab per share category in first-seen order, then `Downloads`
+last — listing the device's own download folder (dotfiles and `.part`
+resumes hidden). The PSP passes `{Licenses, PS3}` as a case-insensitive skip
+list, so those categories become neither covers nor tabs, browser *and*
+Store; the PS3 passes none. `ui/coverflow.c` grew two things for it: the
+empty-name category that renders `All` and matches everything, and
+`coverflow_set_items()`, which swaps the item storage under a live state
+(the share ⇄ Downloads swap keeps the rail and view). `store_gui_browse()`
+draws the frame on both pixel backends. Settings stays the one
+debug-screen view left on the PSP (behind SELECT, through a `gui_to_debug()`
+that reuses the after-GE VRAM trick the Store's exit already needed); the
+PS3 app deleted `ui_text.c`, the `TEXT_UI` make branch and every ANSI
+`#ifdef`. 208 Cover Flow assertions plus the new `browser_model_test.c` are
+green (`make -C ui test`, also ASan/UBSan), and both device builds come out
+warning-free in their Docker images.
+
+Emulator runs, with keys injected through a uinput device:
+
+- **PPSSPP** — this build's compiled-in defaults (`Core/KeyMapDefaults.cpp`,
+  QWERTY/non-Windows) are Square=`a`, Triangle=`s`, Circle=`x`, Cross=`z`,
+  L1=`q`, R1=`w`, Start=Space, **Select=Enter**; `Tab` is fast-forward and
+  the analog stick is `j/k/l/i`, which is what the earlier key probes kept
+  mistaking for shoulder buttons. Boot lands on the pixel browser with the
+  rail `All | Games | Homebrew | Utilities | Downloads` — no Licenses, no
+  PS3 — R1/L1 switch tabs, Square flips to the card grid, and the Downloads
+  tab lists the real memory-stick files with sizes. Screenshots under
+  `/tmp/opencode/ps3-e2e/shots/` (`new2-load`, `new3-downloads*`).
+- **RPCS3** — keyboard defaults: R1=`E`, L1=`Q`, Square=`Z`, Cross=`X`,
+  Circle=`C`, Triangle=`V`, Start=Enter, Select=Space. Boot reaches the same
+  browser with all seven tabs (`… | Licenses | PS3 | …` — the PS3 keeps what
+  the PSP hides) over the HTTP listing, and tab/grid/Downloads all check out
+  on screen (`ps3-new-load`, `ps3-grid`, `ps3-downloads`).
+
+Three findings worth keeping:
+
+1. **A stale `settings.txt` behind a VFS redirect reads as a frozen
+   emulator.** The first PS3 captures all showed one identical error frame;
+   it was live output, not a stale Vulkan window — the app was dutifully
+   retrying `http://127.0.0.1:180`, a previous session's *truncated* URL
+   read from `~/.config/rpcs3/dev_hdd0/NASDL/settings.txt`'s real target:
+   today's `vfs.yml` remounts `/dev_hdd0/` onto
+   `/run/media/google/Data/PCSX3/dev_hdd0/`. Write the file where the mount
+   actually lands and the frame moves. (The truncated port also meant the
+   old PS3 run never actually reached the share either — it only ever
+   looked like it did.)
+2. **RPCS3's guest network is native passthrough, not user-mode NAT** — the
+   log line is `[Native] Attempting to connect on <host>:<port>` — so the
+   guest dials the LAN address through the host stack and `10.0.0.63:18000`
+   connects fine with *Internet enabled: Connected*. There is no `10.0.2.x`
+   to dial; that detour only produced ECONNREFUSED noise.
+3. **The pixel tab rail rendered the wildcard tab invisible** — the ANSI
+   renderer maps the empty category name to `All`, but `store_gui.c`'s
+   `draw_tabs` measured and drew the raw empty string, leaving an unlabeled
+   40px stub with the underline floating in it. Caught by reading the
+   screenshot rather than the assertions; both twins now apply the same
+   `"" → "All"` convention, rebuilt and re-verified on both devices.
+
+Real PSP/PS3 hardware is still untested.
+
+---
+
 ## 2026-10-31 (server) — the probe's size window, measured against both upstreams
 
 §8's ceiling question — does the 848 MiB edge of the sector probe cost us

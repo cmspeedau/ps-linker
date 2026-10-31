@@ -17,6 +17,11 @@
 void store_gui_draw(const coverflow_state_t *cf,
                     const char *const *ids, const char *const *descs);
 
+/* Browser variant: same frame, browser hint keys, cwd in the header. */
+void store_gui_browse(const coverflow_state_t *cf,
+                      const char *const *ids, const char *const *descs,
+                      const char *path);
+
 /* Status screen: header bar text, one body row, optional hint row. */
 void store_gui_status(const char *header, const char *body, const char *hint);
 

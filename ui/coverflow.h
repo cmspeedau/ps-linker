@@ -78,8 +78,9 @@ typedef struct {
                                                      caller once persisted  */
 
     /* Derived (computed by coverflow_recompute_filter) */
-    size_t *filtered;      /* heap-owned indices into items[]; size=item_count */
+    size_t *filtered;      /* heap-owned indices into items[]; capacity below */
     size_t  filtered_len;
+    size_t  filtered_cap;  /* entries allocated in `filtered` */
 } coverflow_state_t;
 
 /* ---- Keys -------------------------------------------------------------- */
@@ -117,9 +118,21 @@ void coverflow_shutdown(coverflow_state_t *s);
 void coverflow_recompute_filter(coverflow_state_t *s);
 
 /* Replace the menu with catalog categories (up to the fixed PSP-safe limit).
- * Empty/NULL input leaves the normal shared menu in place. */
+ * NULL input leaves the normal shared menu in place.
+ *
+ * A category whose name is the empty string is a wildcard tab: it renders
+ * as "All" and matches every item. The browser uses "" as its first tab so
+ * the full listing is reachable; the Store never passes empty names. */
 void coverflow_set_categories(coverflow_state_t *s,
                               const char *const *categories, size_t count);
+
+/* Swap the item storage behind a live state (the tab list, view and
+ * selection-preserving re-filter are kept). The filtered index buffer grows
+ * as needed. Used by the browser when the tab changes between the share
+ * listing and the local Downloads listing without losing the frame state.
+ * Returns 0 on success, -1 on allocation failure. */
+int coverflow_set_items(coverflow_state_t *s,
+                        coverflow_item_t *items, size_t n);
 
 /* Feed a key. Returns 1 if the key caused a state change that requires a
  * redraw, 0 otherwise. COVERFLOW_KEY_ENTER / COVERFLOW_KEY_BACK are also

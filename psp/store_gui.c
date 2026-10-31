@@ -111,7 +111,10 @@ static void draw_tabs(const coverflow_state_t *cf)
 
     int w[COVERFLOW_MAX_DYNAMIC_CATEGORIES];
     for (int i = 0; i < n; i++)
-        w[i] = gui_text_width(cf->dynamic_categories[i], 1) + 20;
+        /* Empty name = wildcard tab; the browser passes "" and the label
+           convention (ui/coverflow.c) is to render it "All". */
+        w[i] = gui_text_width(cf->dynamic_categories[i][0]
+                                  ? cf->dynamic_categories[i] : "All", 1) + 20;
 
     /* Window the rail around the active tab (same job the ANSI menu_row
        windows at 60 columns). An active tab is never wider than a screen,
@@ -134,7 +137,9 @@ static void draw_tabs(const coverflow_state_t *cf)
             gui_rect(x, 16, w[i], 17, COL_CARD);
             gui_rect(x, 31, w[i], 2, COL_HEADER);
         }
-        gui_text(x + 10, 21, cf->dynamic_categories[i],
+        gui_text(x + 10, 21,
+                 cf->dynamic_categories[i][0] ? cf->dynamic_categories[i]
+                                              : "All",
                  active ? COL_TEXT : COL_DIM, 1);
         x += w[i];
     }
@@ -250,6 +255,31 @@ void store_gui_draw(const coverflow_state_t *cf,
     if (cf->view == COVERFLOW_VIEW_GRID) draw_grid(cf, ids);
     else                                draw_flow(cf, ids, descs);
     draw_hints(cf->view == COVERFLOW_VIEW_GRID);
+    gui_end();
+}
+
+/* The browser's Cover Flow frame (main.c browser()): same layout as the
+ * Store's, browser keys in the hint bar, and the cwd in the header where
+ * the store shows the platform tag. The 480px bar fits 57 glyphs, so the
+ * browser hints are terser than the PS3 twin's. */
+void store_gui_browse(const coverflow_state_t *cf,
+                      const char *const *ids, const char *const *descs,
+                      const char *path)
+{
+    gui_begin(COL_BG);
+    char head[64];
+    snprintf(head, sizeof head, "NAS /%.40s", path ? path : "");
+    draw_header("PS Linker", head);
+    draw_tabs(cf);
+    if (cf->view == COVERFLOW_VIEW_GRID) draw_grid(cf, ids);
+    else                                draw_flow(cf, ids, descs);
+
+    gui_rect(0, 256, SCR_W, 16, COL_LINE);
+    gui_text(6, 260,
+             cf->view == COVERFLOW_VIEW_GRID
+                 ? "Arrows L1R1 tab Sq flow X open O up SEL:set TRI:sto"
+                 : "L/R cover L1R1 tab Sq grid X open O up SEL:set TRI:sto",
+             COL_TEXT, 1);
     gui_end();
 }
 

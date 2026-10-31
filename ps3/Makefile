@@ -8,16 +8,11 @@ APPID		:= PSNK00001
 # Shared, toolchain-neutral sources compile straight from ../ui (the PSP
 # app builds the same files with psp-gcc).
 SRC		:= main.c resume.c http.c store.c \
-		   ../ui/coverflow.c ../ui/catalog.c ../ui/store_logic.c
+		   ../ui/coverflow.c ../ui/browser_model.c \
+		   ../ui/catalog.c ../ui/store_logic.c
 
-# The pixel renderer is the default UI; make TEXT_UI=1 restores the
-# ANSI-TTY-only build (no RSX, no store pixel screens). Exactly one
-# backend is compiled in.
-ifneq ($(TEXT_UI),1)
+# Pixel-only app: every screen draws on the RSX renderer in gfx.c.
 SRC		+= ui_pix.c gfx.c store_gui.c
-else
-SRC		+= ui_text.c
-endif
 
 OBJS		:= $(SRC:.c=.o)
 OFILES		:= $(OBJS)
@@ -38,37 +33,25 @@ include $(PSL1GHT)/ppu_rules
 # seen in RPCS3 (indirect call from CRT init with a garbage r2 / no
 # .TOC. symbol in the linked ELF).
 CFLAGS		:= -O2 -Wall -std=gnu99 -mcpu=cell -mminimal-toc $(MACHDEP) $(LIBPSL1GHT_INC) $(EXTRA_CFLAGS)
-ifneq ($(TEXT_UI),1)
 CFLAGS		+= -I$(PSL1GHT)/ppu/include
-else
-CFLAGS		+= -DNASDL_TEXT_UI
-endif
 LDFLAGS		:= $(MACHDEP) -mminimal-toc -Wl,-Map,$(TARGET).map
 LIBPATHS	:= $(LIBPSL1GHT_LIB)
-LIBS		:= -lnet -lsysmodule -lio -lm
-ifneq ($(TEXT_UI),1)
-LIBS		+= -lgcm_sys -lrsx -lsysutil
-else
-LIBS		+= -lsysutil
-endif
+LIBS		:= -lnet -lsysmodule -lio -lm -lgcm_sys -lrsx -lsysutil
 
 all: $(TARGET).self
 
 # Installable package (PSL1GHT's ppu_rules supplies the %.pkg recipe).
 pkg: $(TARGET).pkg
 
-# The ANSI-only variant, kept buildable so the TTY path cannot rot.
-text-ui:
-	$(MAKE) clean && $(MAKE) TEXT_UI=1
-
 run: $(TARGET).self
 	ps3load $(TARGET).self
 
 clean:
-	rm -f main.o resume.o http.o store.o ui_text.o ui_pix.o gfx.o \
-	      store_gui.o ../ui/coverflow.o ../ui/catalog.o ../ui/store_logic.o \
+	rm -f main.o resume.o http.o store.o ui_pix.o gfx.o \
+	      store_gui.o ../ui/coverflow.o ../ui/browser_model.o \
+	      ../ui/catalog.o ../ui/store_logic.o \
 	      $(TARGET).elf $(TARGET).self $(TARGET).fake.self \
 	      $(TARGET).pkg $(TARGET).gnpdrm.pkg $(TARGET).map
 	rm -rf build
 
-.PHONY: all clean pkg run text-ui
+.PHONY: all clean pkg run
