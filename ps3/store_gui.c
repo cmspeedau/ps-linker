@@ -262,6 +262,56 @@ static void draw_hints(int grid)
              COL_TEXT, 2);
 }
 
+/* Downloads rows: one file per line, name left, progress bar and pct
+ * right (the install screen's orange fill). `progress` is the per-slot
+ * pct the browser passes: 100 for finished files, 0..99 or -1 for an
+ * interrupted .part (unknown total draws a dim "paused" bar). */
+#define DL_ROWS 14
+static void draw_downloads(const coverflow_state_t *cf,
+                           const char *const *ids, const int *progress)
+{
+    if (cf->filtered_len == 0) {
+        gfx_text_center(SCR_W / 2, 360, "(no downloads yet)", COL_DIM, 2);
+        return;
+    }
+
+    /* Window the list so the selected row stays visible. */
+    size_t first = 0;
+    if (cf->index >= (size_t)DL_ROWS) first = cf->index - (size_t)DL_ROWS + 1;
+    size_t last = first + (size_t)DL_ROWS;
+    if (last > cf->filtered_len) last = cf->filtered_len;
+
+    for (size_t i = first; i < last; i++) {
+        const size_t slot = cf->filtered[i];
+        const int sel = (i == cf->index);
+        const int y = 100 + (int)(i - first) * 40;
+
+        if (sel) {
+            gfx_rect(0, y, SCR_W, 40, COL_CARD);
+            gfx_rect(0, y, 6, 40, COL_HEADER);
+        }
+
+        char buf[64];
+        clip(buf, sizeof buf, ids[slot], 780, 2);
+        gfx_text(28, y + 12, buf, sel ? COL_TEXT : COL_DIM, 2);
+
+        const int bx = 840, bw = 280, by = y + 12, bh = 16;
+        const int pct = progress[slot];
+        gfx_rect(bx - 2, by - 2, bw + 4, bh + 4, COL_LINE);
+        gfx_rect(bx, by, bw, bh, 0xFF111111);
+        if (pct > 0) gfx_rect(bx, by, bw * (pct > 100 ? 100 : pct) / 100,
+                              bh, COL_HEADER);
+
+        if (pct >= 0) {
+            snprintf(buf, sizeof buf, "%d%%", pct > 100 ? 100 : pct);
+            gfx_text(SCR_W - 28 - 64, y + 12, buf, sel ? COL_TEXT : COL_FAINT, 2);
+        } else {
+            gfx_text(SCR_W - 28 - 96, y + 12, "paused",
+                     sel ? COL_TEXT : COL_FAINT, 2);
+        }
+    }
+}
+
 void store_gui_draw(const coverflow_state_t *cf,
                     const char *const *ids, const char *const *descs)
 {
@@ -276,22 +326,26 @@ void store_gui_draw(const coverflow_state_t *cf,
 
 /* The browser's Cover Flow frame (main.c browser()): same layout as the
  * Store's, browser keys in the hint bar, and the cwd in the header where
- * the store shows the platform tag. */
+ * the store shows the platform tag. `progress` (per-item-slot pct, see
+ * draw_downloads) selects the Downloads row list instead of the covers:
+ * the browser passes it only while the Downloads tab is open. */
 void store_gui_browse(const coverflow_state_t *cf,
                       const char *const *ids, const char *const *descs,
-                      const char *path)
+                      const char *path, const int *progress)
 {
     gfx_begin(COL_BG);
     char head[300];
     snprintf(head, sizeof head, "NAS /%s", path ? path : "");
     draw_header("PS Linker", head);
     draw_tabs(cf);
-    if (cf->view == COVERFLOW_VIEW_GRID) draw_grid(cf, ids, descs);
-    else                                 draw_flow(cf, ids, descs);
+    if (progress)                             draw_downloads(cf, ids, progress);
+    else if (cf->view == COVERFLOW_VIEW_GRID) draw_grid(cf, ids, descs);
+    else                                      draw_flow(cf, ids, descs);
 
     gfx_rect(0, STATUS_Y, SCR_W, SCR_H - STATUS_Y, COL_LINE);
     gfx_text(18, STATUS_Y + 12,
-             cf->view == COVERFLOW_VIEW_GRID
+             progress ? "L/R row  UpDn jump  L1R1 tab  X info  O leave"
+             : cf->view == COVERFLOW_VIEW_GRID
                  ? "Arrows move  L1R1 tab  Sq flow  X open  O up  Sel settings"
                  : "L/R cover  UpDn jump  L1R1 tab  Sq grid  X open  O up  Sel/Tri",
              COL_TEXT, 2);

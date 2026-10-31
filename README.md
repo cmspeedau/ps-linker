@@ -112,7 +112,8 @@ sudo systemctl enable --now ps-linker
 ## PSP app (NAS Downloader)
 
 The PSP app boots into the pixel Cover Flow browser (sceGu, 480x272): the
-HTTP share is the carousel, the tab rail is `All | categories | Downloads`,
+HTTP share is the carousel, the tab rail is `All | categories | Downloads`
+(the Downloads tab is a row list: name plus progress bar per download),
 and `Licenses`/`PS3` entries are hidden. Cross downloads (with resume
 support) or opens a folder, Triangle opens the Store. Settings — the one
 remaining debug-screen view — sits behind SELECT.
@@ -129,7 +130,8 @@ The PS3 app draws every screen on the RSX pixel display (`ps3/gfx.c`:
 CPU-drawn frames copied into two RSX buffers, flipped on vsync — no shaders,
 so RPCS3 and CFW both scan it out reliably) at a virtual 1280x720 grid. It
 boots straight into the Cover Flow browser (the share listing as covers, the
-tab rail `All | categories | Downloads`); Settings and the Store (Triangle)
+tab rail `All | categories | Downloads`, the Downloads tab a row list of
+name plus progress bar per download); Settings and the Store (Triangle)
 share the same pixel look. Download to the HDD with resume support; Store
 installs derive `/dev_hdd0` destinations (`.pkg` to `packages/`, disc images
 to `PS3ISO`/`PSPISO`, `.rap` to `exdata/`). A game whose catalog entry names
@@ -399,8 +401,8 @@ wrong `X-SHA256` is rejected with `rc=-11`.
       the share listing as its covers, driven by the new
       `ui/browser_model.c` (listing → cover items + tab rail: a wildcard
       `All` tab, one tab per share category in first-seen order, then
-      `Downloads`, which lists the device's own download folder;
-      dotfiles and `.part` resumes stay hidden). L1/R1 move tabs, Square
+      `Downloads`, the row list of the device's own download folder (see
+      the next entry; dotfiles stay hidden). L1/R1 move tabs, Square
       toggles flow ⇄ grid, Cross opens/downloads, Circle leaves the
       Downloads view, up one level, and quits at root. `ui/coverflow.c` grew
       the empty-name wildcard category (renders `All`, matches everything)
@@ -437,6 +439,26 @@ wrong `X-SHA256` is rejected with `rc=-11`.
       `packages/` *and* `Quake_1.08.rap` in `exdata/`, both md5-equal to
       the served files, with the Licenses tab absent from browser and
       Store (`log.md` 2026-10-31, screenshots `rap-*.png`).
+- [x] **Downloads is a row list, not covers** — on both clients the
+      Downloads tab now draws one row per download: file name on the left,
+      an install-screen-styled progress bar and its pct on the right
+      (selected row gets the card highlight + orange edge marker, L/R
+      walks rows inside the same Cover Flow state, tab rail and hints
+      switch to `X info  O leave`). Finished files show a full bar;
+      interrupted `.part` resumes — previously hidden — show as their
+      intended file, a real 0..99% bar when the open share listing knows
+      the total (browser downloads keep the share name) or a dim empty
+      `paused` bar when it does not, and Cross explains that downloading
+      again resumes it. `store_gui_browse()`/`ui_browse()` gained a
+      `progress` parameter (per-slot pct, NULL keeps the covers), each
+      pixel twin draws its own `draw_downloads()` at its scale, and the
+      scan now skips the app's own files in the download folder
+      (case-insensitively — PSP's FAT upper-cases 8.3 names in
+      `sceIoDread`). Warning-free PS3 build, unchanged-warning PSP build,
+      host suites green; in PPSSPP and RPCS3 the list showed 100 % rows,
+      a real 30 % `.part` bar and `paused` rows side by side, with
+      `settings.txt`/`EBOOT.PBP` correctly absent (`log.md` 2026-10-31,
+      screenshots `dl-psp-*.png`, `dl-ps3-*.png`).
 
 ### In progress
 - [ ] Test Store flow end-to-end through the Docker container with a real queue

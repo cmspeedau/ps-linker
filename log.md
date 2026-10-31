@@ -6,6 +6,41 @@ it records *what was actually run and observed*, including bugs found while test
 
 ---
 
+## 2026-10-31 (clients) — the Downloads tab became a download *list*
+
+"for the download menu on both clients it should show as a list with the
+name and a progress bar". Both browsers' Downloads tab swapped from covers
+to rows: file name left, a progress bar (the install screen's orange fill
+in a bordered track) and its pct right, selected row = card background +
+orange edge marker, L/R walking rows through the same Cover Flow state.
+`store_gui_browse()`/`ui_browse()` grew a `progress` parameter — a
+per-item-slot pct array, NULL meaning "draw covers as before" — so the
+Store's frames and the share view never see the list code; each pixel twin
+owns its `draw_downloads()` at its own scale (12 rows at 480x272, 14 at
+720p) with the hint bar switching to `L/R row ... X info O leave`.
+
+The progress values come from the device's own folder scan, now extended
+with the two states the bar wants: finished files are 100 %, and an
+interrupted `<name>.part` — previously hidden — rides the list as its
+intended file: a real 0..99 bar when the open share listing carries that
+name's total (browser downloads keep the share name, so this is the
+normal case), or a dim empty `paused` bar when no total is knowable.
+Cross on a partial row explains: "download it again to resume". One real
+bug surfaced in the screenshots: PPSSPP's FAT upper-cases 8.3-style names
+in `sceIoDread`, so `SETTINGS.TXT` slipped past the exact-match skip of
+the app's own folder files — all three skips (settings, store state, the
+PSP's own `EBOOT.PBP`, since DEST_DIR is the app folder) are case-insensitive now.
+
+Device runs, keys injected: PPSSPP (walk to Downloads → into
+`/Homebrew/` → list again) showed `Clock_Tool.PBP 100`, `mystery.bin
+paused`, `ResumeTest.bin 30` — the partial's bar matching its real 600 KB
+of 2 MB — and `UT2004.ISO 100`, with the settings file and the app's
+EBOOT absent; RPCS3 showed the same three bars at 720p, selection rows
+walking with L/R, `settings.txt`/`store_state.txt` hidden. Covers, tabs
+and the grid are untouched everywhere else. Warning-free PS3 build, PSP
+build unchanged (the pre-existing `store.c` const warning only), host
+suites green. Screenshots `dl-psp-*.png`, `dl-ps3-*.png`.
+
 ## 2026-10-31 (PS3) — the game's `.rap` rides along; the Licenses menu is gone
 
 Next client ask: "when i install game it should install the rap file with it

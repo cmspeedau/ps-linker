@@ -464,8 +464,9 @@ static int settings_view(void)
 /* The browser IS the Cover Flow frame: main.c drives the shared
    ui/coverflow.c state through ui/browser_model.c (listing -> covers +
    tab rail), and ui_browse draws it with the Store's pixel cards.
-   The tab rail is All | <share categories> | Downloads; Downloads lists
-   what already landed in DEST_DIR. Licenses is hidden here (and in the
+   The tab rail is All | <share categories> | Downloads; the Downloads tab
+   is a row list (name + progress bar) of what landed in DEST_DIR, .part
+   resumes included as paused rows. Licenses is hidden here (and in the
    Store): a game's .rap rides along with its install, so the menu has
    nothing left to offer; PS3 categories stay visible on a PS3. */
 
@@ -480,6 +481,7 @@ static const char *const PS3_SKIP_CATEGORIES[] = { "Licenses" };
 typedef struct {
     char name[MAX_PATH_LEN];
     long long size;
+    int is_part;               /* an interrupted <name>.part, shown too */
 } DlEntry;
 
 static DlEntry g_dl[MAX_FILES];
@@ -500,16 +502,22 @@ static void scan_downloads(void)
     if (!d) return;
     struct dirent *de;
     while (g_dl_count < MAX_FILES && (de = readdir(d)) != NULL) {
-        if (de->d_name[0] == '.') continue;         /* hidden / partial   */
+        if (de->d_name[0] == '.') continue;         /* hidden           */
+        /* the app's own files are not downloads (case-insensitive, so a
+           case-preserving FS variant cannot sneak them into the list) */
+        if (strcasecmp(de->d_name, "settings.txt") == 0 ||
+            strcasecmp(de->d_name, "store_state.txt") == 0) continue;
         size_t nl = strlen(de->d_name);
-        if (nl >= 5 && strcmp(de->d_name + nl - 5, ".part") == 0) continue;
+        const int part = (nl >= 5 && strcmp(de->d_name + nl - 5, ".part") == 0);
+        if (part) nl -= 5;                      /* shown as its file, paused */
         char path[MAX_PATH_LEN + 32];
         snprintf(path, sizeof(path), DEST_DIR "%.255s", de->d_name);
         struct stat st;
         if (stat(path, &st) != 0 || !S_ISREG(st.st_mode)) continue;
         snprintf(g_dl[g_dl_count].name, sizeof(g_dl[g_dl_count].name),
-                 "%.255s", de->d_name);
+                 "%.*s", (int)nl, de->d_name);
         g_dl[g_dl_count].size = (long long)st.st_size;
+        g_dl[g_dl_count].is_part = part;
         g_dl_count++;
     }
     closedir(d);
@@ -554,6 +562,22 @@ static void browser_fill(int reset_tab)
     }
 }
 
+/* Row progress for the Downloads list: finished files are full bars; a
+   .part row is 0..99 when the current listing knows the file's total
+   size (browser downloads keep the share name), else -1 for a dim
+   "paused" bar. */
+static int dl_progress(const DlEntry *d)
+{
+    if (!d->is_part) return 100;
+    for (int f = 0; f < g_file_count; f++) {
+        if (g_files[f].is_dir || g_files[f].size <= 0) continue;
+        if (strcmp(g_files[f].name, d->name) != 0) continue;
+        long long pct = d->size * 100 / g_files[f].size;
+        return pct > 99 ? 99 : (int)(pct < 0 ? 0 : pct);
+    }
+    return -1;
+}
+
 static coverflow_key_t browser_key(unsigned pressed)
 {
     if (pressed & PAD_BTN_LEFT)     return COVERFLOW_KEY_LEFT;
@@ -593,12 +617,16 @@ static int browser(void)
     while (1) {
         const char *ids[MAX_FILES];
         const char *descs[MAX_FILES];
+        int pct[MAX_FILES];
         for (size_t i = 0; i < g_cf.item_count; i++) {
             ids[i]   = g_downloads_active ? g_dl[g_cf_map[i]].name
                                           : g_files[g_cf_map[i]].url;
             descs[i] = "";
+            pct[i]   = g_downloads_active ? dl_progress(&g_dl[g_cf_map[i]])
+                                          : -1;
         }
-        ui_browse(&g_cf, ids, descs, g_cwd);
+        ui_browse(&g_cf, ids, descs, g_cwd,
+                  g_downloads_active ? pct : NULL);
 
         unsigned pressed;
         int prc;
@@ -639,8 +667,11 @@ static int browser(void)
 
             if (g_downloads_active) {
                 char msg[256];
-                snprintf(msg, sizeof(msg), "%s is already on this HDD",
-                         g_dl[g_cf_map[slot]].name);
+                const DlEntry *d = &g_dl[g_cf_map[slot]];
+                if (d->is_part)
+                    snprintf(msg, sizeof(msg), "%s stopped early - download it again to resume", d->name);
+                else
+                    snprintf(msg, sizeof(msg), "%s is already on this HDD", d->name);
                 ui_result(1, msg);
                 if (wait_button() < 0) { rc = -2; break; }
                 continue;

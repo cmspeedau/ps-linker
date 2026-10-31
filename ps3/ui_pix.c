@@ -124,9 +124,10 @@ void ui_error(const char *line1, const char *line2)
  * removed with the Cover Flow redesign. */
 
 void ui_browse(const coverflow_state_t *cf, const char *const *ids,
-               const char *const *descs, const char *path)
+               const char *const *descs, const char *path,
+               const int *progress)
 {
-    store_gui_browse(cf, ids, descs, path);
+    store_gui_browse(cf, ids, descs, path, progress);
 }
 
 /* 13 picker columns; DEL/OK are the last two slots. */

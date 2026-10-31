@@ -15,10 +15,13 @@
 void store_gui_draw(const coverflow_state_t *cf,
                     const char *const *ids, const char *const *descs);
 
-/* Browser variant: same frame, browser hint keys, cwd in the header. */
+/* Browser variant: same frame, browser hint keys, cwd in the header.
+   `progress` is a per-item-slot pct array (100 = finished, 0..99 mid
+   transfer, -1 unknown) that draws the Downloads row list - name plus
+   progress bar - instead of the covers; pass NULL for the cover views. */
 void store_gui_browse(const coverflow_state_t *cf,
                       const char *const *ids, const char *const *descs,
-                      const char *path);
+                      const char *path, const int *progress);
 
 /* Status screen: header bar text, one body row, optional hint row. */
 void store_gui_status(const char *header, const char *body, const char *hint);

@@ -246,6 +246,56 @@ static void draw_hints(int grid)
              COL_TEXT, 1);
 }
 
+/* Downloads rows: one file per line, name left, progress bar and pct
+ * right (the install screen's orange fill). `progress` is the per-slot
+ * pct the browser passes: 100 for finished files, 0..99 or -1 for an
+ * interrupted .part (unknown total draws a dim "paused" bar). */
+#define DL_ROWS 12
+static void draw_downloads(const coverflow_state_t *cf,
+                           const char *const *ids, const int *progress)
+{
+    if (cf->filtered_len == 0) {
+        gui_text_center(SCR_W / 2, 140, "(no downloads yet)", COL_DIM, 1);
+        return;
+    }
+
+    /* Window the list so the selected row stays visible (same rule the
+       grid paging applies per page). */
+    size_t first = 0;
+    if (cf->index >= (size_t)DL_ROWS) first = cf->index - (size_t)DL_ROWS + 1;
+    size_t last = first + (size_t)DL_ROWS;
+    if (last > cf->filtered_len) last = cf->filtered_len;
+
+    for (size_t i = first; i < last; i++) {
+        const size_t slot = cf->filtered[i];
+        const int sel = (i == cf->index);
+        const int y = 40 + (int)(i - first) * 18;
+
+        if (sel) {
+            gui_rect(0, y, SCR_W, 18, COL_CARD);
+            gui_rect(0, y, 3, 18, COL_HEADER);
+        }
+
+        char buf[40];
+        clip(buf, sizeof buf, ids[slot], 33);
+        gui_text(10, y + 5, buf, sel ? COL_TEXT : COL_DIM, 1);
+
+        const int bx = 286, bw = 104, by = y + 5, bh = 8;
+        const int pct = progress[slot];
+        gui_rect(bx - 1, by - 1, bw + 2, bh + 2, COL_LINE);
+        gui_rect(bx, by, bw, bh, 0xFF111111);
+        if (pct > 0) gui_rect(bx, by, bw * (pct > 100 ? 100 : pct) / 100,
+                              bh, COL_HEADER);
+
+        if (pct >= 0) {
+            snprintf(buf, sizeof buf, "%d%%", pct > 100 ? 100 : pct);
+            gui_text(SCR_W - 6 - 4 * 8, y + 5, buf, sel ? COL_TEXT : COL_FAINT, 1);
+        } else {
+            gui_text(SCR_W - 6 - 6 * 8, y + 5, "paused", sel ? COL_TEXT : COL_FAINT, 1);
+        }
+    }
+}
+
 void store_gui_draw(const coverflow_state_t *cf,
                     const char *const *ids, const char *const *descs)
 {
@@ -261,24 +311,28 @@ void store_gui_draw(const coverflow_state_t *cf,
 /* The browser's Cover Flow frame (main.c browser()): same layout as the
  * Store's, browser keys in the hint bar, and the cwd in the header where
  * the store shows the platform tag. The 480px bar fits 57 glyphs, so the
- * browser hints are terser than the PS3 twin's. */
+ * browser hints are terser than the PS3 twin's. `progress` (per-item-slot
+ * pct, see draw_downloads) selects the Downloads row list instead of the
+ * covers: the browser passes it only while the Downloads tab is open. */
 void store_gui_browse(const coverflow_state_t *cf,
                       const char *const *ids, const char *const *descs,
-                      const char *path)
+                      const char *path, const int *progress)
 {
     gui_begin(COL_BG);
     char head[64];
     snprintf(head, sizeof head, "NAS /%.40s", path ? path : "");
     draw_header("PS Linker", head);
     draw_tabs(cf);
-    if (cf->view == COVERFLOW_VIEW_GRID) draw_grid(cf, ids);
-    else                                draw_flow(cf, ids, descs);
+    if (progress)                         draw_downloads(cf, ids, progress);
+    else if (cf->view == COVERFLOW_VIEW_GRID) draw_grid(cf, ids);
+    else                                     draw_flow(cf, ids, descs);
 
     gui_rect(0, 256, SCR_W, 16, COL_LINE);
     gui_text(6, 260,
-             cf->view == COVERFLOW_VIEW_GRID
-                 ? "Arrows L1R1 tab Sq flow X open O up SEL:set TRI:sto"
-                 : "L/R cover L1R1 tab Sq grid X open O up SEL:set TRI:sto",
+             progress ? "L/R row  UpDn jump  L1R1 tab  X info  O leave"
+             : cf->view == COVERFLOW_VIEW_GRID
+                  ? "Arrows L1R1 tab Sq flow X open O up SEL:set TRI:sto"
+                  : "L/R cover L1R1 tab Sq grid X open O up SEL:set TRI:sto",
              COL_TEXT, 1);
     gui_end();
 }

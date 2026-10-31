@@ -42,9 +42,11 @@ void ui_error(const char *line1, const char *line2);
 
 /* One browser Cover Flow frame: the state describes selection, tabs and
  * view; ids/descs are per-item-slot arrays (cover tile seed / detail row);
- * path is the cwd shown in the header. */
+ * path is the cwd shown in the header. `progress` (per-slot pct or NULL)
+ * draws the Downloads row list instead of the covers. */
 void ui_browse(const coverflow_state_t *cf, const char *const *ids,
-               const char *const *descs, const char *path);
+               const char *const *descs, const char *path,
+               const int *progress);
 
 /* Settings: URL field plus the whole character-picker grid. Slot order
  * is SETTINGS_CHARS, then <delete>, then save-and-exit. */

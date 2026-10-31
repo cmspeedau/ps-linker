@@ -43,6 +43,7 @@
 #include <psputility_netmodules.h>
 #include <stdint.h>
 #include <string.h>
+#include <strings.h>              /* strcasecmp for the Downloads skips */
 #include <strings.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -393,8 +394,8 @@ static int fetch_listing(void) {
 /* ------------------------------------------------------------------ */
 /* Download with the Store's pixel progress frame                      */
 /* resume.c sends Range headers and continues an interrupted transfer  */
-/* from the partial file on disk (kept as <name>.part, hidden from the */
-/* Downloads view).                                                    */
+/* from the partial file on disk (kept as <name>.part; the Downloads   */
+/* list shows it as a paused row under the file's own name).           */
 /* ------------------------------------------------------------------ */
 
 static char g_dl_name[MAX_PATH_LEN];
@@ -557,8 +558,9 @@ static int settings_view(void) {
 /* The browser IS the Store frame: main.c drives the shared
    ui/coverflow.c state through ui/browser_model.c (listing -> covers +
    tab rail), and store_gui_browse draws it. Tabs: All | share
-   categories | Downloads (what already landed in DEST_DIR). Licenses
-   and PS3 entries never become covers or tabs. */
+   categories | Downloads - the Downloads tab is a row list (name +
+   progress bar) of what landed in DEST_DIR, .part resumes included as
+   paused rows. Licenses and PS3 entries never become covers or tabs. */
 
 #define MAX_TABS COVERFLOW_MAX_DYNAMIC_CATEGORIES
 
@@ -569,6 +571,7 @@ static const char *const PSP_SKIP_CATEGORIES[] = { "Licenses", "PS3" };
 typedef struct {
     char name[MAX_PATH_LEN];
     long long size;
+    int is_part;               /* an interrupted <name>.part, shown too */
 } DlEntry;
 
 static DlEntry g_dl[MAX_FILES];
@@ -591,10 +594,21 @@ static void scan_downloads(void) {
         if (FIO_SO_ISDIR(ent.d_stat.st_attr)) continue;
         const char *n = ent.d_name;
         if (n[0] == '.') continue;                    /* hidden          */
+        /* DEST_DIR is the app's own folder: the app and its config are
+           not downloads (FAT may upper-case the names, so compare
+           case-insensitively). */
+        if (strcasecmp(n, "settings.txt") == 0 ||
+            strcasecmp(n, "EBOOT.PBP") == 0 ||
+            strcasecmp(n, "store_state.txt") == 0)
+            continue;
         size_t nl = strlen(n);
-        if (nl >= 5 && strcmp(n + nl - 5, ".part") == 0) continue;  /* resume partial */
-        snprintf(g_dl[g_dl_count].name, sizeof(g_dl[g_dl_count].name), "%s", n);
+        const int part = (nl >= 5 && strcmp(n + nl - 5, ".part") == 0);
+        /* a resume partial shows as its intended file, paused */
+        if (part) nl -= 5;
+        snprintf(g_dl[g_dl_count].name, sizeof(g_dl[g_dl_count].name),
+                 "%.*s", (int)nl, n);
         g_dl[g_dl_count].size = (long long)(u32)ent.d_stat.st_size;
+        g_dl[g_dl_count].is_part = part;
         g_dl_count++;
     }
     sceIoDclose(dir);
@@ -639,6 +653,21 @@ static void browser_fill(int reset_tab) {
     }
 }
 
+/* Row progress for the Downloads list: finished files are full bars; a
+   .part row is 0..99 when the current listing knows the file's total
+   size (browser downloads keep the share name), else -1 for a dim
+   "paused" bar. */
+static int dl_progress(const DlEntry *d) {
+    if (!d->is_part) return 100;
+    for (int f = 0; f < g_file_count; f++) {
+        if (g_files[f].is_dir || g_files[f].size <= 0) continue;
+        if (strcmp(g_files[f].name, d->name) != 0) continue;
+        long long pct = d->size * 100 / g_files[f].size;
+        return pct > 99 ? 99 : (int)(pct < 0 ? 0 : pct);
+    }
+    return -1;
+}
+
 static coverflow_key_t browser_key(unsigned pressed) {
     if (pressed & PSP_CTRL_LEFT)      return COVERFLOW_KEY_LEFT;
     if (pressed & PSP_CTRL_RIGHT)     return COVERFLOW_KEY_RIGHT;
@@ -676,12 +705,16 @@ static int browser(void) {
     while (1) {
         const char *ids[MAX_FILES];
         const char *descs[MAX_FILES];
+        int pct[MAX_FILES];
         for (size_t i = 0; i < g_cf.item_count; i++) {
             ids[i]   = g_downloads_active ? g_dl[g_cf_map[i]].name
                                           : g_files[g_cf_map[i]].url;
             descs[i] = "";
+            pct[i]   = g_downloads_active ? dl_progress(&g_dl[g_cf_map[i]])
+                                          : -1;
         }
-        store_gui_browse(&g_cf, ids, descs, g_cwd);
+        store_gui_browse(&g_cf, ids, descs, g_cwd,
+                         g_downloads_active ? pct : NULL);
 
         unsigned pressed;
         do { sceKernelDelayThread(16000); }
@@ -728,8 +761,11 @@ static int browser(void) {
 
             if (g_downloads_active) {
                 char msg[96];
-                snprintf(msg, sizeof(msg), "%s is already on this card",
-                         g_dl[g_cf_map[slot]].name);
+                const DlEntry *d = &g_dl[g_cf_map[slot]];
+                if (d->is_part)
+                    snprintf(msg, sizeof(msg), "%s stopped early - download it again to resume", d->name);
+                else
+                    snprintf(msg, sizeof(msg), "%s is already on this card", d->name);
                 store_gui_status("PS Linker", msg, "Press any button to continue");
                 wait_button();
                 continue;
