@@ -1137,3 +1137,45 @@ window; `pkill -x rpcs3` matches neither (the comm is
 :18000 so each "restarted" share silently failed to bind, and a stale
 `slow_cdn.py` on :18001 ate a proxy meant to capture the app's exact
 bytes. `ss -tlnp` before blaming the app, always.
+
+## 2026-10-31 (Server) — Real cover art: ICON0 out of ISO/CSO, onto the tiles
+
+`server/store/cover_art.py` (stdlib only) pulls the ICON0 PNG out of PSP
+files where it has been hiding: a 68-byte PBP header parse (PIC1 as the
+fallback), a minimal ISO9660 reader (volume descriptor + directory
+records, enough to find `EBOOT.PBP`, works for nested homebrew layouts),
+and a CISO reader that deflates one 2048-byte block at a time behind a
+seekable wrapper — so the ISO reader runs over a `.cso` unchanged. Each
+game's cover is cached next to it as a *hidden* `.name.icon0.png`: the
+dot means the listing, the catalog walk, and the GUI's file management
+all keep skipping it, while the share still GETs it for the tiles.
+Re-runs reuse a sidecar newer than the game; `--force` regenerates.
+PS3 game folders need no extraction — their disc-layout `ICON0.PNG` sits
+beside the files and `find_icon` now finds it *and* stops flattening
+sub-folder icon URLs onto the library root (it used to emit
+`/ICON0.PNG` for a game in `PS3/MyGame/...`).
+
+`generate_catalog.py` calls `ensure_cover` when no sibling image exists,
+so covers appear during the entrypoint tick / fetcher run with no new
+moving part. Device Store views are unchanged on purpose: no PNG codec
+on PSP/PS3, they keep drawing initials — the field is consumed by the
+web GUI.
+
+`cover_test.py` (12 tests) builds its own fixtures to the published
+layouts: a PBP with a real PNG, a hand-assembled ISO9660 image (root and
+nested `EBOOT.PBP`), and a CISO of that ISO — writing them caught three
+fixture bugs the first drafts had (records padded on the wrong parity,
+`struct.pack("<I")` assigned into 8-byte PVD slices silently *shrinking*
+the bytearray PVD, and CSO index offsets taken without the index table
+that precedes the block data). `check_share.sh` reaches 121 assertions:
+the unit suite runs inside it, and the live share gets a mini-ISO and a
+mini-CSO fixture to prove extraction, catalog `icon`, hidden-from-
+listing-but-still-served, no sidecar-entries, and cache reuse across a
+second generator pass. A naming bug the suite caught: prepending the dot
+to the whole relative path (`".PSP/Game..."`) instead of just the file
+name — hidden means the *basename*.
+
+Browser proof: a two-ISO library (red/green ICON0s) plus a PS3 disc
+folder, regenerated, opened in the GUI — all four tiles render real
+pictures (extracted sidecars and the folder's own `ICON0.PNG`), none a
+placeholder gradient.

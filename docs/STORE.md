@@ -50,7 +50,10 @@ for content they legally own, and never ships or fetches any.
 ```
 
 - `url` and `install_path` are required; an item missing either is skipped.
-- `icon` is reserved for future cover-art support (currently unused).
+- `icon` (library catalog): the share extracts PSP cover art (ICON0 from
+  ISO/CSO/PBP) into hidden `<name>.icon0.png` sidecars and points the entry
+  at it — the web GUI renders those on its tiles; the device Store views
+  draw initials and ignore the field.
 - The Store URL follows the NAS URL set in the app's Settings view.
 
 ## Adding it to your PSP build

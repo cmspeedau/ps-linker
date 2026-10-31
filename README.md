@@ -375,10 +375,15 @@ wrong `X-SHA256` is rejected with `rc=-11`.
       store-style file rows from them: size, plus the category where the path
       header doesn't already state it. Stock `http.server`/nginx shares need
       no change — no attributes, old plain rows
+- [x] Real cover art: `server/store/cover_art.py` (stdlib only) reads the
+      ICON0 PNG out of PSP ISO/CSO/PBP files (minimal ISO9660 + CISO block
+      readers, PBP header slice — never a whole image) and caches it as a
+      hidden `<name>.icon0.png` sidecar; PS3 game folders keep pointing at
+      their disc-layout `ICON0.PNG`. `generate_catalog.py` publishes the
+      sidecar as the entry's `icon` and the web GUI tiles render it; the
+      device Store views still draw initials (no PNG codec there)
 
 ### In progress
-- [ ] Real cover art: extract ICON0.PNG from PSP ISO/CSO and PS3 game folders
-      into the catalog so tiles show real covers instead of placeholders
 - [ ] Test Store flow end-to-end through the Docker container with a real queue
       file + local HTTP CDN. Share-level resume is automated now
       (`server/store/check_share.sh --with-dl`); what remains is the container
