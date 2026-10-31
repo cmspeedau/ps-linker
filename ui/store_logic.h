@@ -47,6 +47,14 @@ int store_platform_ok(const char *name, const char *platform,
 int store_license_url(const char *item_url, const char *rap,
                       char *out, size_t outlen);
 
+/* Display name for a game-categories-lite (gclite) category folder.
+   The convention on the PSP XMB: a "CAT_" prefix (any case), optionally
+   followed by exactly two digits 00-99 that only order the categories.
+   The category name is the rest, so CAT_05Shooters and CAT_Shooters both
+   read "Shooters". Anything else is returned verbatim, including a bare
+   "CAT_" that would strip to nothing — a raw name beats an empty one. */
+void store_cat_name(const char *folder, char *out, size_t outlen);
+
 /* ---- id-hashed placeholder cover tiles ---------------------------------
  * The web GUI draws an icon-less item's cover as a gradient keyed to a
  * hash of the item id (server/store/ui/state.js `placeholderBG`). The

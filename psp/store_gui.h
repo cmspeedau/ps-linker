@@ -15,13 +15,31 @@
 void store_gui_draw(const coverflow_state_t *cf,
                     const char *const *ids, const char *const *descs);
 
+/* One row of the browser's gclite categories popup: a mock cover tile
+   generated from `id` (store_cover_pixels, like the flow cards), the
+   label and the number of items behind it. */
+typedef struct {
+    char name[32];
+    char id[48];
+    int  count;
+} store_menu_row_t;
+
+typedef struct {
+    const store_menu_row_t *rows;
+    int n;
+    int sel;
+} store_menu_t;
+
 /* Browser variant: same frame, browser hint keys, cwd in the header.
    `progress` is a per-item-slot pct array (100 = finished, 0..99 mid
    transfer, -1 unknown) that draws the Downloads row list - name plus
-   progress bar - instead of the covers; pass NULL for the cover views. */
+   progress bar - instead of the covers; pass NULL for the cover views.
+   `menu` (NULL when closed) dims the frame and draws the categories
+   popup on top; the caller owns its keys. */
 void store_gui_browse(const coverflow_state_t *cf,
                       const char *const *ids, const char *const *descs,
-                      const char *path, const int *progress);
+                      const char *path, const int *progress,
+                      const store_menu_t *menu);
 
 /* Status screen: header bar text, one body row, optional hint row. */
 void store_gui_status(const char *header, const char *body, const char *hint);

@@ -313,10 +313,61 @@ void store_gui_draw(const coverflow_state_t *cf,
  * the store shows the platform tag. The 480px bar fits 57 glyphs, so the
  * browser hints are terser than the PS3 twin's. `progress` (per-item-slot
  * pct, see draw_downloads) selects the Downloads row list instead of the
- * covers: the browser passes it only while the Downloads tab is open. */
+ * covers: the browser passes it only while the Downloads tab is open.
+ * `menu` (the gclite categories popup, NULL when closed) dims the frame,
+ * draws the rows on top and swaps in the popup hint keys. */
+/* The browser's gclite categories popup: dim the frame, then one row per
+ * category mirroring the tab rail - mock cover tile (the same id-hashed
+ * placeholder as a game card), label and item count. The browser owns
+ * the keys; this only draws m->rows with m->sel highlighted. */
+static void draw_menu(const store_menu_t *m)
+{
+    gui_rect(0, 0, SCR_W, SCR_H, 0x99000000);
+
+    int rows = m->n;
+    if (rows > COVERFLOW_MAX_DYNAMIC_CATEGORIES)
+        rows = COVERFLOW_MAX_DYNAMIC_CATEGORIES;
+    const int pw = 300, rowh = 26, hh = 18;
+    const int ph = hh + rows * rowh + 4;
+    const int px = (SCR_W - pw) / 2;
+    const int py = 16 + (240 - ph) / 2;
+
+    gui_rect(px - 1, py - 1, pw + 2, ph + 2, COL_LINE);
+    gui_rect(px, py, pw, ph, COL_FIELD);
+    gui_rect(px, py, pw, hh, COL_HEADER);
+    gui_text(px + 8, py + 5, "CATEGORIES", COL_BLACK, 1);
+
+    for (int i = 0; i < rows; i++) {
+        const store_menu_row_t *r = &m->rows[i];
+        const int sel = (i == m->sel);
+        const int y = py + hh + i * rowh;
+
+        if (sel) {
+            gui_rect(px + 2, y, pw - 4, rowh, COL_CARD);
+            gui_rect(px + 2, y, 3, rowh, COL_HEADER);
+        }
+
+        cover_tile(r->id);
+        gui_tex_rect(px + 8, y + 1, 20, 26, g_cover, COVER_W, COVER_TEX_H,
+                     COVER_W, COVER_H, COL_INK, 1);
+        char ini[3];
+        initials(r->name, ini);
+        if (ini[0]) gui_text_center(px + 18, y + 9, ini, 0xAAFFFFFF, 1);
+
+        char buf[40];
+        clip(buf, sizeof buf, r->name, 26);
+        gui_text(px + 36, y + 9, buf, sel ? COL_TEXT : COL_DIM, 1);
+
+        snprintf(buf, sizeof buf, "%d", r->count);
+        gui_text(px + pw - 8 - gui_text_width(buf, 1), y + 9, buf,
+                 sel ? COL_TEXT : COL_FAINT, 1);
+    }
+}
+
 void store_gui_browse(const coverflow_state_t *cf,
                       const char *const *ids, const char *const *descs,
-                      const char *path, const int *progress)
+                      const char *path, const int *progress,
+                      const store_menu_t *menu)
 {
     gui_begin(COL_BG);
     char head[64];
@@ -327,9 +378,12 @@ void store_gui_browse(const coverflow_state_t *cf,
     else if (cf->view == COVERFLOW_VIEW_GRID) draw_grid(cf, ids);
     else                                     draw_flow(cf, ids, descs);
 
+    if (menu) draw_menu(menu);
+
     gui_rect(0, 256, SCR_W, 16, COL_LINE);
     gui_text(6, 260,
-             progress ? "L/R row  UpDn jump  L1R1 tab  X info  O leave"
+             menu ? "UpDn pick  X jump  O or Start close"
+             : progress ? "L/R row  UpDn jump  L1R1 tab  X info  O leave"
              : cf->view == COVERFLOW_VIEW_GRID
                   ? "Arrows L1R1 tab Sq flow X open O up SEL:set TRI:sto"
                   : "L/R cover L1R1 tab Sq grid X open O up SEL:set TRI:sto",

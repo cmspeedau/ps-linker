@@ -627,12 +627,22 @@ static void scan_downloads(void) {
 static void browser_fill(int reset_tab) {
     static bm_entry_t sh[MAX_FILES];
     static bm_entry_t dl[MAX_FILES];
+    /* gclite display copies: CAT_ folders and CAT_ categories show as
+       plain names (navigation still uses the raw e->name / e->url). */
+    static char sh_name[MAX_FILES][MAX_PATH_LEN];
+    static char sh_cat[MAX_FILES][COVERFLOW_DYNAMIC_CATEGORY_LEN];
 
     if (reset_tab) g_downloads_active = 0;
 
     for (int i = 0; i < g_file_count; i++) {
-        sh[i].name = g_files[i].name;
-        sh[i].category = g_files[i].category;
+        if (g_files[i].is_dir)
+            store_cat_name(g_files[i].name, sh_name[i], sizeof(sh_name[i]));
+        else
+            snprintf(sh_name[i], sizeof(sh_name[i]), "%.*s",
+                     (int)sizeof(sh_name[i]) - 1, g_files[i].name);
+        store_cat_name(g_files[i].category, sh_cat[i], sizeof(sh_cat[i]));
+        sh[i].name = sh_name[i];
+        sh[i].category = sh_cat[i];
         sh[i].platform = g_files[i].platform;
         sh[i].size = g_files[i].size;
         sh[i].is_dir = g_files[i].is_dir;
@@ -678,6 +688,114 @@ static int dl_progress(const DlEntry *d) {
     return -1;
 }
 
+/* ------------------------------------------------------------------ */
+/* gclite categories popup (PSP only)                                  */
+/*                                                                     */
+/* game-categories-lite is a CFW VSH plugin that turns memory-stick    */
+/* folders named CAT_ / CAT_05... into XMB categories; it cannot be    */
+/* linked into a homebrew app, so the integration honors its naming    */
+/* convention (browser_fill strips the prefix for display) and, when   */
+/* vsh.txt registers the plugin, mirrors the XMB category list as a    */
+/* popup the browser opens with START.                                 */
+/* ------------------------------------------------------------------ */
+
+static int g_gclite = 0;                  /* category_lite.prx seen    */
+static int g_menu_open = 0;
+static int g_menu_sel = 0;
+
+/* ms0:/seplugins/vsh.txt lists one plugin path per line; scan it for
+   "category_lite" (case-insensitive, the gclite prx name). The 12-byte
+   carry between read chunks keeps a match that straddles a boundary. */
+static int gclite_installed(void) {
+    static const char pat[] = "category_lite";
+    const size_t plen = sizeof(pat) - 1;
+    SceUID f = sceIoOpen("ms0:/seplugins/vsh.txt", PSP_O_RDONLY, 0777);
+    if (f < 0) return 0;
+    char buf[256];
+    size_t fill = 0;
+    int hit = 0;
+    while (!hit) {
+        int n = (int)sceIoRead(f, buf + fill, sizeof(buf) - fill);
+        if (n <= 0) break;
+        size_t len = fill + (size_t)n;
+        for (size_t i = 0; i + plen <= len; i++)
+            if (strncasecmp(buf + i, pat, plen) == 0) { hit = 1; break; }
+        if ((size_t)n < sizeof(buf) - fill) break;   /* EOF reached */
+        fill = plen - 1;
+        memmove(buf, buf + len - fill, fill);
+    }
+    sceIoClose(f);
+    return hit;
+}
+
+/* Would this share entry appear under a tab at all? Same rules the model
+   applies: never hidden names, never the other console's files, never a
+   skipped category (dirs are covers too, so they count). */
+static int menu_shown(const FileEntry *e) {
+    if (!e->name[0] || e->name[0] == '.') return 0;
+    if (!e->is_dir && !store_platform_ok(e->name, e->platform, "PSP")) return 0;
+    if (e->category[0])
+        for (int s = 0; s < PSP_SKIP_COUNT; s++)
+            if (strcasecmp(e->category, PSP_SKIP_CATEGORIES[s]) == 0) return 0;
+    return 1;
+}
+
+/* Items behind one tab: cat NULL/"" counts the All tab, otherwise the
+   gclite-stripped category must match (as the tab rail shows it). */
+static int menu_share_count(const char *cat) {
+    int c = 0;
+    for (int i = 0; i < g_file_count; i++) {
+        const FileEntry *e = &g_files[i];
+        if (!menu_shown(e)) continue;
+        if (cat && cat[0]) {
+            char nm[COVERFLOW_DYNAMIC_CATEGORY_LEN];
+            store_cat_name(e->category, nm, sizeof(nm));
+            if (!e->category[0] || strcasecmp(nm, cat) != 0) continue;
+        }
+        c++;
+    }
+    return c;
+}
+
+/* Fill the popup from the tab rail (browser_fill built it stripped):
+   row i mirrors tab i, so All first, categories in rail order, and the
+   Downloads row when the rail has one. Mock-tile ids are the labels, so
+   each category keeps its own placeholder hue across frames. */
+static void browser_menu_build(store_menu_t *m, store_menu_row_t *rows,
+                               int cap) {
+    int n = 0;
+    snprintf(rows[n].name, sizeof(rows[n].name), "All");
+    snprintf(rows[n].id, sizeof(rows[n].id), "All");
+    rows[n].count = menu_share_count(NULL);
+    n++;
+    for (int i = 1; i < g_tab_count && n < cap; i++) {
+        const char *t = g_tabs[i];
+        if (!t[0]) continue;                      /* only All carries "" */
+        snprintf(rows[n].name, sizeof(rows[n].name), "%s", t);
+        snprintf(rows[n].id, sizeof(rows[n].id), "%s", t);
+        rows[n].count = (strcmp(t, BM_DOWNLOADS_LABEL) == 0)
+                            ? g_dl_count : menu_share_count(t);
+        n++;
+    }
+    if (g_menu_sel >= n) g_menu_sel = n - 1;
+    if (g_menu_sel < 0) g_menu_sel = 0;
+    m->rows = rows;
+    m->n = n;
+    m->sel = g_menu_sel;
+}
+
+/* Jump the flow to tab `row` (row indexes g_tabs 1:1), swapping the
+   item source the same way the tab rail's Cross/L1/R1 handling does. */
+static void menu_jump(int row) {
+    const int want_dl = (g_downloads_tab >= 0 && row == g_downloads_tab);
+    if (want_dl != g_downloads_active) {
+        g_downloads_active = want_dl;
+        if (want_dl) scan_downloads();
+    }
+    g_cf.category = (coverflow_category_t)row;
+    browser_fill(0);
+}
+
 static coverflow_key_t browser_key(unsigned pressed) {
     if (pressed & PSP_CTRL_LEFT)      return COVERFLOW_KEY_LEFT;
     if (pressed & PSP_CTRL_RIGHT)     return COVERFLOW_KEY_RIGHT;
@@ -709,6 +827,7 @@ static int browser(void) {
     }
     scan_downloads();
     browser_fill(1);
+    g_gclite = gclite_installed();   /* START's popup is an install-gated extra */
 
     int rc = 0;
     unsigned prev = 0;
@@ -723,8 +842,15 @@ static int browser(void) {
             pct[i]   = g_downloads_active ? dl_progress(&g_dl[g_cf_map[i]])
                                           : -1;
         }
+        store_menu_t menu = { 0 };
+        store_menu_row_t menu_rows[MAX_TABS];
+        store_menu_t *pmenu = NULL;
+        if (g_menu_open) {
+            browser_menu_build(&menu, menu_rows, MAX_TABS);
+            pmenu = &menu;
+        }
         store_gui_browse(&g_cf, ids, descs, g_cwd,
-                         g_downloads_active ? pct : NULL);
+                         g_downloads_active ? pct : NULL, pmenu);
 
         unsigned pressed;
         do { sceKernelDelayThread(16000); }
@@ -732,6 +858,7 @@ static int browser(void) {
 
         /* Screens that own the pad (and partly the display) themselves. */
         if (pressed & PSP_CTRL_TRIANGLE) {
+            g_menu_open = 0;
             gui_to_debug();          /* store_run brings the GU back up */
             store_run(g_nas_base);
             gui_init();
@@ -739,11 +866,34 @@ static int browser(void) {
             continue;                /* the listing may predate an install */
         }
         if (pressed & PSP_CTRL_SELECT) {
+            g_menu_open = 0;
             gui_to_debug();
             settings_view();
             gui_init();
             pad_clear(&prev);
             continue;                /* URL may have changed: redraw */
+        }
+
+        /* The gclite popup owns the pad while it is open. */
+        if (g_menu_open && menu.n > 0) {
+            if (pressed & (PSP_CTRL_CIRCLE | PSP_CTRL_START))
+                g_menu_open = 0;
+            else if (pressed & PSP_CTRL_UP)
+                g_menu_sel = (g_menu_sel + menu.n - 1) % menu.n;
+            else if (pressed & PSP_CTRL_DOWN)
+                g_menu_sel = (g_menu_sel + 1) % menu.n;
+            else if (pressed & PSP_CTRL_CROSS) {
+                menu_jump(g_menu_sel);   /* jumps to that tab, like the rail */
+                g_menu_open = 0;
+            }
+            continue;
+        }
+        if (pressed & PSP_CTRL_START) {
+            if (g_gclite) {              /* mirror the XMB's category bar */
+                g_menu_open = 1;
+                g_menu_sel = (int)g_cf.category;   /* light up the current tab */
+            }
+            continue;
         }
 
         coverflow_key_t key = browser_key(pressed);

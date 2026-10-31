@@ -242,6 +242,25 @@ int store_license_url(const char *item_url, const char *rap,
  * Port of the web GUI's placeholderBG(): one item, one hue, on the web
  * page and on the PSP alike. Pure CPU so psp/tests can pin the parity. */
 
+void store_cat_name(const char *folder, char *out, size_t outlen)
+{
+    if (!out || outlen == 0) return;
+    if (!folder) { out[0] = '\0'; return; }
+
+    const char *rest = folder;
+    if (strncasecmp(rest, "CAT_", 4) == 0) {
+        rest += 4;
+        /* Optional two-digit sort key: digits, and not part of a longer
+           digit run (123Games is a name, not "12" + "3Games"). */
+        if (rest[0] >= '0' && rest[0] <= '9' &&
+            rest[1] >= '0' && rest[1] <= '9' &&
+            (rest[2] < '0' || rest[2] > '9'))
+            rest += 2;
+        if (!rest[0]) rest = folder;      /* "CAT_" alone: keep the raw name */
+    }
+    snprintf(out, outlen, "%s", rest);
+}
+
 int store_cover_hue(const char *id)
 {
     uint32_t h = 0;

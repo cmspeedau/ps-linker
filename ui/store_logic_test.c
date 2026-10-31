@@ -176,6 +176,34 @@ int main(void)
     assert(store_platform_ok("Quake.pkg", "PS3", NULL) == 1);
     assert(store_platform_ok("Quake.pkg", "PS3", "") == 1);
 
+    /* gclite category folder names: CAT_ prefix and the optional two-digit
+       sort key drop out; everything else survives verbatim. */
+    char cat[32];
+    store_cat_name("CAT_05Shooters", cat, sizeof cat);
+    assert(strcmp(cat, "Shooters") == 0);
+    store_cat_name("CAT_Shooters", cat, sizeof cat);
+    assert(strcmp(cat, "Shooters") == 0);
+    store_cat_name("cat_10Arcade", cat, sizeof cat);            /* any case */
+    assert(strcmp(cat, "Arcade") == 0);
+    store_cat_name("CAT_00Games", cat, sizeof cat);
+    assert(strcmp(cat, "Games") == 0);
+    store_cat_name("CAT_99Games", cat, sizeof cat);
+    assert(strcmp(cat, "Games") == 0);
+    store_cat_name("Shooters", cat, sizeof cat);                /* no prefix */
+    assert(strcmp(cat, "Shooters") == 0);
+    store_cat_name("CAT_", cat, sizeof cat);          /* nothing to show: raw */
+    assert(strcmp(cat, "CAT_") == 0);
+    store_cat_name("CAT_05", cat, sizeof cat);         /* digits only: raw    */
+    assert(strcmp(cat, "CAT_05") == 0);
+    store_cat_name("CAT_123Games", cat, sizeof cat);   /* 3 digits: no sort key */
+    assert(strcmp(cat, "123Games") == 0);
+    store_cat_name("CATALOG", cat, sizeof cat);        /* CAT without "_"     */
+    assert(strcmp(cat, "CATALOG") == 0);
+    store_cat_name("CAT_05Shooters", cat, 4);          /* clamped to the out  */
+    assert(strcmp(cat, "Sho") == 0);
+    store_cat_name("", cat, sizeof cat);
+    assert(cat[0] == '\0');
+
     /* Tile fill: opaque everywhere, top row at hsl(hue,42,26), bottom at
        hsl(hue+40,52,12), and deterministic across calls. */
     static uint32_t tile[3 * 4];

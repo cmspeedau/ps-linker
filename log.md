@@ -1537,3 +1537,42 @@ uses — `d.get('items') or d.get('entries') or []` — or they KeyError
 into an empty string that *looks* like a server failure. And hidden
 files are invisible to plain `ls`, so `find -name '.x.icon0.*'` is the
 only honest way to assert "exactly one cover".
+
+## 2026-10-31 (PSP) — gclite categories: CAT_ names and the START popup
+
+game-categories-lite is a VSH plugin — a fork of ticky's Game Categories
+Lite — that turns memory-stick folders named `CAT_05Shooters`/`CAT_Shooters`
+into XMB categories on 6.60 CFW. It cannot be linked into a homebrew app,
+so the integration is behavioural and PSP-only: the client speaks the same
+naming dialect and, when the plugin is *installed*, adds the XMB's
+category-list affordance to the browser.
+
+The strip rule lives in shared code (`store_cat_name()`,
+`ui/store_logic.{c,h}`): a case-insensitive `CAT_` prefix, then an
+optional *exactly-two-digit* 00–99 sort key that must not be followed by
+another digit (`CAT_123Games` is a name, not key "12" + "3Games"); a
+prefix that would strip to nothing keeps the raw name. The browser applies
+it to folder titles and categories, the PSP Store rail to catalog
+categories; navigation, URLs and the PS3 client never see the stripped
+copy. Detection reads `ms0:/seplugins/vsh.txt` for `category_lite` with a
+12-byte carry between read chunks so a match can straddle the buffer
+boundary.
+
+The popup (`store_gui_browse` gained a `store_menu_t` parameter, the
+`progress` precedent again): dim the frame, draw rows mirroring the tab
+rail — mock tile via the same `store_cover_pixels` id-hash as the game
+cards, so each category keeps its own hue — label and item count. The
+browser owns the keys (menu open = popup block, START gated on detection),
+row index maps 1:1 onto the tab index, and the Cross jump reuses the
+rail's Downloads-swap verbatim.
+
+E2E lesson worth keeping: with the OpenChamber session running *inside its
+own cgroup scope*, uinput nodes created from it are tagged without
+`uaccess`/`seat`, so KWin/libinput can never open them and every injected
+key silently dies — the earlier same-day E2Es ran where the device was
+seat-owning. The path that does work against an SDL window: `XSendEvent`
+of a KeyPress *held for real time* before its KeyRelease (press+release
+queued in one flush is a coin-flip miss for the app's 16 ms pad poll),
+with X keycodes — which are evdev+8, a mix-up that faked a broken keymap
+(103 is not Up; 111 is). Screenshots via the window-id grab need no focus
+at all.

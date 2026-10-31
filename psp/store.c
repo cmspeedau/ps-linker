@@ -398,15 +398,22 @@ int store_run(const char *nas_base) {
     }
 
     /* The rail follows what survived: categories in first-appearance
-       order of the remaining items (store_category_add drops ""). */
+       order of the remaining items (store_category_add drops ""). The
+       PSP is the only console with the gclite convention, so CAT_ names
+       are shown here as the XMB would show them; labels and item
+       categories are stripped alike so the coverflow filter matches. */
     g_category_count = 0;
-    for (int i = 0; i < g_item_count; i++)
-        store_category_add(g_categories, &g_category_count, g_items[i].category);
+    for (int i = 0; i < g_item_count; i++) {
+        char cat[STORE_CATEGORY_LEN];
+        store_cat_name(g_items[i].category, cat, sizeof cat);
+        store_category_add(g_categories, &g_category_count, cat);
+    }
 
     memset(g_covers, 0, sizeof(g_covers));
     for (int i = 0; i < g_item_count; i++) {
         snprintf(g_covers[i].title, sizeof(g_covers[i].title), "%s", g_items[i].title);
-        snprintf(g_covers[i].category, sizeof(g_covers[i].category), "%s", g_items[i].category);
+        store_cat_name(g_items[i].category, g_covers[i].category,
+                       sizeof(g_covers[i].category));
         snprintf(g_covers[i].version, sizeof(g_covers[i].version), "%s", g_items[i].version);
         snprintf(g_covers[i].size_human, sizeof(g_covers[i].size_human), "%s", g_items[i].size_hint);
         g_covers[i].is_favorite = state_has(g_favorites, g_favorite_count, g_items[i].id);

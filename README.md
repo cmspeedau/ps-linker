@@ -121,6 +121,17 @@ Store. Cross downloads (with resume
 support) or opens a folder, Triangle opens the Store. Settings — the one
 remaining debug-screen view — sits behind SELECT.
 
+The browser follows the [game-categories-lite][gclite] naming convention
+(PSP only): share folders named `CAT_05Shooters` / `CAT_Shooters` show as
+`Shooters` everywhere (tab rail, covers, Store). When the app finds a
+`category_lite` plugin registered in `ms0:/seplugins/vsh.txt` — so gclite
+is installed — **START** additionally opens a CATEGORIES popup over the
+flow: one row per category with a mock cover tile, label and item count
+(plus All and Downloads); D-pad walks the rows, Cross jumps to that tab,
+Circle or START closes. Without gclite installed START does nothing.
+
+[gclite]: https://github.com/ticky/game-categories-lite
+
 ```bash
 cd psp
 make
@@ -523,6 +534,18 @@ wrong `X-SHA256` is rejected with `rc=-11`.
       `PS3` folder filtered, a `Clock_Tool.PBP` download landing intact,
       and the Store reduced to exactly the container's two PSP titles
       (`log.md` 2026-10-31, screenshots `ctn2-*.png`).
+- [x] **gclite categories on the PSP** — the PSP browser honours the
+      game-categories-lite convention: `CAT_05Shooters`/`CAT_Shooters`
+      share folders read as `Shooters` in the rail, on the covers and in the
+      Store (`store_cat_name()`, host-tested); when a `category_lite` plugin
+      is registered in `ms0:/seplugins/vsh.txt`, START opens a CATEGORIES
+      popup — mock cover tile, label and item count per category plus All
+      and Downloads — with D-pad to walk, Cross to jump to that tab (the
+      Downloads row swaps the source like the rail's) and Circle/START to
+      close. Proven in PPSSPP against a fixture share with `CAT_05Shooters`
+      and `CAT_10Arcade` folders: popup open, row select, tab jump, reopen
+      on the current tab, Downloads swap, and START inert without the
+      vsh.txt (`log.md` 2026-10-31, screenshots `gcl-5*.png`, `gcl-6*.png`).
 
 ### In progress
 
