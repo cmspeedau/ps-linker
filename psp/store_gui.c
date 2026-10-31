@@ -385,33 +385,54 @@ void store_gui_browse(const coverflow_state_t *cf,
              menu ? "UpDn pick  X jump  O or Start close"
              : progress ? "L/R row  UpDn jump  L1R1 tab  X info  O leave"
              : cf->view == COVERFLOW_VIEW_GRID
-                  ? "Arrows L1R1 tab Sq flow X open O up SEL:set TRI:sto"
-                  : "L/R cover L1R1 tab Sq grid X open O up SEL:set TRI:sto",
+                  ? "Arrows L1R1 tab Sq flow X open O up SEL:util TRI:sto"
+                  : "L/R cover L1R1 tab Sq grid X open O up SEL:util TRI:sto",
              COL_TEXT, 1);
     gui_end();
 }
 
-/* The Utilities page: a labelled pill switch per option, browser-style
- * frame. One switch today - the gclite feature. The selected control
- * gets the Downloads list's highlight (card row + orange bar); the pill
- * shows OFF/ON, knob left/right, dim orange when ON. `installed` is the
+/* The Utilities page: SELECT's home, browser-style frame. Two focusable
+ * rows - the NAS server URL and one labelled pill switch per option (one
+ * switch today, the gclite feature). The focused row gets the Downloads
+ * list's highlight (card row + orange bar); the pill shows OFF/ON, knob
+ * left/right, dim orange when ON. `installed` is the
  * ms0:/seplugins/vsh.txt detection, so the page also answers "is the
  * plugin even there". */
-void store_gui_utilities(int enabled, int installed)
+void store_gui_utilities(int enabled, int installed,
+                         const char *url, int focus)
 {
     gui_begin(COL_BG);
     draw_header("PS Linker", "utilities");
 
     gui_rect(0, 16, SCR_W, 1, COL_LINE);
-    gui_text(20, 40, "GAME CATEGORIES", COL_HEADER, 2);
-    gui_text(20, 62, "game-categories-lite folder naming and the", COL_DIM, 1);
-    gui_text(20, 76, "START category popup (CAT_05Shooters = Shooters).",
+
+    /* the NAS server URL row (focus 0) */
+    gui_text(20, 24, "NAS SERVER URL", COL_HEADER, 2);
+    const int uy = 48;
+    gui_rect(0, uy, SCR_W, 26, focus == 0 ? COL_CARD : COL_FIELD);
+    gui_rect(0, uy, SCR_W, 1, COL_LINE);
+    gui_rect(0, uy + 25, SCR_W, 1, COL_LINE);
+    if (focus == 0) {
+        gui_rect(0, uy, 3, 26, COL_HEADER);
+        const char *e = "X edit";
+        gui_text(SCR_W - 6 - gui_text_width(e, 1), uy + 8, e, COL_FAINT, 1);
+    }
+    char shown[64];
+    clip(shown, sizeof shown, url, 50);
+    if (shown[0]) gui_text(20, uy + 8, shown, COL_TEXT, 1);
+    else          gui_text(20, uy + 8, "(not set - X to type one)",
+                           COL_FAINT, 1);
+
+    /* the gclite switch row (focus 1) */
+    gui_text(20, 88, "GAME CATEGORIES", COL_HEADER, 2);
+    gui_text(20, 112, "game-categories-lite: CAT_05Shooters shows as Shooters.",
              COL_DIM, 1);
 
-    /* the switch row */
-    const int ry = 108;
-    gui_rect(0, ry, SCR_W, 34, COL_CARD);
-    gui_rect(0, ry, 3, 34, COL_HEADER);
+    const int ry = 132;
+    if (focus == 1) {
+        gui_rect(0, ry, SCR_W, 34, COL_CARD);
+        gui_rect(0, ry, 3, 34, COL_HEADER);
+    }
     gui_text(20, ry + 13, "GCLITE CATEGORIES", COL_TEXT, 1);
 
     const int tx = SCR_W - 6 - 68, ty = ry + 8;      /* pill track */
@@ -441,7 +462,76 @@ void store_gui_utilities(int enabled, int installed)
                  COL_FAINT, 1);
 
     gui_rect(0, 256, SCR_W, 16, COL_LINE);
-    gui_text(6, 260, "X toggle  O or Start back  Select settings",
+    gui_text(6, 260, "UpDn pick  X edit or toggle  O or Start save",
+             COL_TEXT, 1);
+    gui_end();
+}
+
+/* The URL editor's key slots, in strip order: a-z on the top row, then
+ * digits and URL punctuation, then <del and OK. Each returns the glyph
+ * cell's top-left (x,y) and label width; pitch is one 8px glyph plus a
+ * 2px gap, and the two rows are centred (row 2 is narrower). */
+#define URLK_PITCH  10
+#define URLK_ROW0_N 26                          /* a-z */
+static void urlk_slot(int slot, int *x, int *y, int *w)
+{
+    if (slot < URLK_ROW0_N) {                   /* a-z row */
+        *x = (SCR_W - URLK_ROW0_N * URLK_PITCH) / 2
+             + slot * URLK_PITCH + 1;
+        *y = 118;
+        *w = 8;
+    } else {
+        /* the remaining chars (digits, - . : / _) + < + OK (2 cells) */
+        const int nchars = (int)strlen(STORE_URL_CHARS);
+        const int row1_cells = (nchars - URLK_ROW0_N) + 1 + 2;
+        const int x0 = (SCR_W - row1_cells * URLK_PITCH) / 2;
+        const int col = slot - URLK_ROW0_N;     /* 0..(row1_cells-1) */
+        *x = x0 + col * URLK_PITCH + 1;
+        *y = 146;
+        *w = (slot == nchars + 1) ? 16 : 8;     /* OK is two cells */
+    }
+}
+
+void store_gui_url_edit(const char *url, int pick)
+{
+    gui_begin(COL_BG);
+    draw_header("PS Linker", "edit url");
+    gui_rect(0, 16, SCR_W, 1, COL_LINE);
+
+    gui_text(20, 26, "NAS SERVER URL", COL_HEADER, 2);
+
+    /* the value: tail-anchored so a long URL always shows its end, and
+     * a caret marks where X and O act */
+    gui_rect(0, 54, SCR_W, 26, COL_FIELD);
+    gui_rect(0, 54, SCR_W, 1, COL_LINE);
+    gui_rect(0, 79, SCR_W, 1, COL_LINE);
+    const int len = (int)strlen(url);
+    const int vis = (SCR_W - 24) / 8;
+    const char *tail = len > vis ? url + len - vis : url;
+    if (len) gui_text(8, 62, tail, COL_TEXT, 1);
+    else     gui_text(8, 62, "(type one)", COL_FAINT, 1);
+    gui_rect(10 + (len > vis ? vis : len) * 8, 60, 2, 14, COL_HEADER);
+
+    /* the key strip */
+    const char *chars = STORE_URL_CHARS;
+    const int nchars = (int)strlen(chars);
+    const int nslots = nchars + 2;              /* + < + OK */
+    for (int slot = 0; slot < nslots; slot++) {
+        int x, y, w;
+        urlk_slot(slot, &x, &y, &w);
+        const int sel = (slot == pick);
+        const char *lab = NULL;
+        char chbuf[2] = { 0, 0 };
+        if (slot < nchars)      { chbuf[0] = chars[slot]; lab = chbuf; }
+        else if (slot == nchars)     lab = "<";              /* delete */
+        else                        lab = "OK";
+        if (sel) gui_rect(x - 2, y - 3, w + 4, 17, COL_HEADER);
+        gui_text(x, y, lab, sel ? COL_BLACK
+                                : (slot < nchars ? COL_TEXT : COL_DIM), 1);
+    }
+
+    gui_rect(0, 256, SCR_W, 16, COL_LINE);
+    gui_text(6, 260, "LR key  X insert  O delete  Start ok  Sel cancel",
              COL_TEXT, 1);
     gui_end();
 }

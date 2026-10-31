@@ -16,11 +16,11 @@
  *       store_run(g_nas_base);   // returns when the user exits the store
  *   }
  *   // Triangle opens the Store from the file browser; Select still opens
- *   // the Settings view.
+ *   // the Utilities page.
  *
  * Build: add store.c to PSP OBJS in the Makefile.
  * The catalog URL is derived from the runtime NAS base URL, so a URL
- * changed in Settings is honored here too.
+ * changed on the Utilities page is honored here too.
  */
 
 #ifndef STORE_H

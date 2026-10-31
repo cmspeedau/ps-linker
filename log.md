@@ -6,6 +6,57 @@ it records *what was actually run and observed*, including bugs found while test
 
 ---
 
+## 2026-10-31 (psp) — SELECT goes straight to a pixel Utilities page; the Settings dialog is deleted
+
+The app's last debug-screen UI is gone. SELECT now opens the pixel
+Utilities page directly, and the NAS server URL moved onto that page as a
+second focusable row (`store_gui_utilities(enabled, installed, url,
+focus)`): Up/Down move focus, X on the URL row opens a full-screen pixel
+on-screen keyboard (`store_gui_url_edit()` — a-z row, digits + `- . : / _`
+row, then `<` and a double-width OK; X inserts, O deletes, START commits,
+SELECT discards; cursor starts on `h`), X on the switch row toggles the
+gclite pill, and O/START/Select leave with whatever changed saved to
+`settings.txt`. A committed URL change saves and refetches the share from
+root — the old Settings dialog only redrew over a stale listing.
+`settings_view()`, its character picker and the Settings ⇄ Utilities
+ping-pong in the browser's SELECT handler are deleted, along with the
+debug style helpers only they used (boot errors keep `Style`/`field()`);
+the browser hint bar now reads `SEL:util`. New `wait_button_key()`
+reports which button ended a wait: when boot cannot reach the saved
+server, the retry screen's SELECT opens the Utilities page too, so a wrong
+URL is fixable without reinstalling — the case the E2E drove into by
+leaving `http://127.0.0.1:18000h` in settings.txt (PSP's HTTP parser
+tolerates the garbage port suffix, so the genuine-failure version stopped
+the fixture server instead).
+
+PPSSPP E2E (fixtures as before: `CAT_05Shooters`/`CAT_10Arcade` +
+`category_lite` vsh.txt + server :18000; keys via
+`/tmp/opencode/ps3-e2e/sdl_drive.py`): SELECT lands on the page with the
+URL row, keyboard, pill and detection line (`3*-*.png`); picker insert /
+O-delete / SELECT-discard verified, START-commit of a changed URL
+refetches root (`36`, `50-53`); OFF leaves raw `CAT_05…` names and an
+inert START across a cold boot from `gclite=0` (`37`, `38`, `45`); ON
+restores stripped names + the START popup (`39`, `40`, `46`); the
+unreachable-server retry screen with its SELECT hint and the fix through
+the same page round trip (`56`–`60`); a final clean cold boot re-confirmed
+page + popup (`61`, `62`). Entry-key seeding (fresh `sceCtrlReadBufferPositive`
+sample per nested screen) kept from the previous fix and reused for the
+picker both ways (X that opened it, START/X that closed it never leak).
+
+Harness notes: the zsync-updated PPSSPP AppImage now picks SDL's Wayland
+backend (no X window at all), so launches must force
+`SDL_VIDEODRIVER=x11` with `WAYLAND_DISPLAY=`; `pkill -f ppsspp` patterns
+match the harness's own shell command line (bracket-classes mandatory),
+and `pkill` + a short sleep let an old instance's dying window answer the
+driver's title regex — one run typed into the PPSSPP menu instead of the
+app (screenshots `54`–`55` of that run stayed in `shots/` for honesty;
+the reruns are the clean ones). Long synthetic key bursts also lose ~1/3
+of the events through XSendEvent, so the keyboard was driven with
+single-key steps where it counts. Device build warning-clean (only the
+known `store.c` const one), `make -C ui test` green, PS3 untouched.
+Fixtures, vsh.txt and the test server removed after; `settings.txt`
+restored to the URL-only form (which means gclite ON).
+
 ## 2026-10-31 (server) — the Store chain proven end-to-end inside the Docker image
 
 Finished the last open "In progress" roadmap item: container path —

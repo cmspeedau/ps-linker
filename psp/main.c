@@ -12,8 +12,10 @@
  * covers or tabs - see ui/browser_model.c's skip list.
  *
  * UI: everything the user browses draws through gui.c/store_gui.c at
- * 480x272. The pspDebugScreen character grid survives only behind
- * SELECT (Settings), per the design note in store.c's ui_exit.
+ * 480x272 - SELECT opens the pixel Utilities page (NAS server URL plus
+ * the feature switches). The pspDebugScreen character grid survives only
+ * for boot errors and behind the Store tab, per the design note in
+ * store.c's ui_exit.
  *
  * Build with pspdev toolchain: make
  * Requires CFW (ARK-4 / PRO) to run.
@@ -23,10 +25,11 @@
  *                       X = open / download,
  *                       O = parent directory (Downloads view off,
  *                           quit at root),
- *                       Select = Settings, Triangle = Store
- * Controls in settings: Left/Right = pick char, X = insert/OK,
- *                       O = delete char, Start = save & back,
- *                       Select = back without saving
+ *                       Select = Utilities, Triangle = Store
+ * Controls in utilities: Up/Down = pick row, X = edit URL / toggle
+ *                       switch, O or Start = save and back
+ * In the URL editor:    Left/Right = key, X = insert, O = delete,
+ *                       Start = ok, Select = cancel
  */
 
 #include <pspsdk.h>
@@ -67,8 +70,8 @@ PSP_MAIN_THREAD_ATTR(THREAD_ATTR_USER | THREAD_ATTR_VFPU);
 /* Config                                                              */
 /* ------------------------------------------------------------------ */
 
-/* Default base URL of the NAS share; editable at runtime via Settings
-   and persisted to SETTINGS_PATH. */
+/* Default base URL of the NAS share; editable at runtime via the
+   Utilities page and persisted to SETTINGS_PATH. */
 #define DEFAULT_NAS_URL "http://192.168.1.50:8000"
 
 /* Destination directory on the Memory Stick (also the Downloads view) */
@@ -82,25 +85,15 @@ PSP_MAIN_THREAD_ATTR(THREAD_ATTR_USER | THREAD_ATTR_VFPU);
 #define MAX_URL_LEN   128
 
 /* ------------------------------------------------------------------ */
-/* Debug-screen style helpers (Settings screen only)                   */
+/* Debug-screen style helpers (boot errors only - see main())          */
 /* ------------------------------------------------------------------ */
 
 #define COL_BG        0xFF1D1D1D   /* charcoal background            */
-#define COL_HEADER    0xFFCC7A00   /* accent bar                     */
-#define COL_TEXT      0xFFCCCCCC   /* normal text                    */
-#define COL_TEXT_DIM  0xFF808080   /* muted text                     */
-#define COL_TEXT_SEL  0xFFFFFFFF   /* text on selection              */
-#define COL_SELECT    0xFF714706   /* selection highlight            */
-#define COL_OK        0xFF3EC13E   /* success green                  */
 #define COL_ERR       0xFF3D3DD5   /* error red                      */
 
 typedef struct {
     u32 bg, fg;
 } Style;
-
-static const Style STYLE_HEADER = { COL_HEADER,   0xFF000000 };
-static const Style STYLE_ROW    = { COL_BG,       COL_TEXT };
-static const Style STYLE_SEL    = { COL_SELECT,   COL_TEXT_SEL };
 
 static void set_style(const Style *s) {
     pspDebugScreenSetBackColor(s->bg);
@@ -121,13 +114,6 @@ static void field(int col, int row, int width, const Style *s, const char *text)
     if (len < width) pad(width - len);
 }
 
-/* Full-width header bar, like Media Go's title strip. */
-static void draw_header(const char *title, const char *subtitle) {
-    char buf[SCREEN_COLS + 1];
-    snprintf(buf, sizeof(buf), "  %s  %s", title, subtitle);
-    field(0, 0, SCREEN_COLS, &STYLE_HEADER, buf);
-}
-
 /* Hand the display back from the GU to the debug screen at a VRAM
    offset the GE never rendered to (same trick and reasoning as
    store.c's ui_exit: buffered-rendering emulators keep a GPU-side copy
@@ -142,15 +128,15 @@ static void gui_to_debug(void) {
 }
 
 /* ------------------------------------------------------------------ */
-/* Settings: runtime NAS URL, persisted to the Memory Stick            */
+/* Runtime settings: NAS URL and switches, saved to the Memory Stick   */
 /* ------------------------------------------------------------------ */
 
 /* Base URL of the NAS share, e.g. "http://192.168.1.50:8000".
-   Editable in the Settings view; lives in RAM after load. */
+   Editable on the pixel Utilities page; lives in RAM after load. */
 static char g_nas_base[MAX_URL_LEN] = DEFAULT_NAS_URL;
 
-/* The gclite feature switch, owned by the pixel Utilities page
-   (Settings -> Triangle). ON (the default) is the whole game-categories
+/* The gclite feature switch, owned by the pixel Utilities page (SELECT).
+   ON (the default) is the whole game-categories
    integration: CAT_ folder names display stripped and START opens the
    categories popup (the popup still requires the plugin registration in
    ms0:/seplugins/vsh.txt). OFF, folders keep their raw names and START
@@ -466,7 +452,18 @@ static int get_pressed(unsigned *pressed, unsigned *prev_out) {
     return (*pressed != 0) ? 0 : -1;
 }
 
-/* After a nested screen (Settings, Store) returns: wait until the pad
+/* Like wait_button, but returns the button mask of the press that ended
+   the wait, so a caller can single SELECT out (the Utilities escape on
+   an unreachable server depends on this). */
+static unsigned wait_button_key(void) {
+    unsigned prev = 0, pressed;
+    { SceCtrlData p0; sceCtrlReadBufferPositive(&p0, 1); prev = p0.Buttons; }
+    do { sceKernelDelayThread(16000); }
+    while (get_pressed(&pressed, &prev) != 0);
+    return pressed;
+}
+
+/* After a nested screen (Utilities, Store) returns: wait until the pad
    is clear, so the button that closed it is not seen as a fresh press
    here (it would hit the "up one level" branch and quit at root). */
 static void pad_clear(unsigned *prev_out) {
@@ -481,106 +478,6 @@ static void pad_clear(unsigned *prev_out) {
 /* Splash screen shown while connecting/fetching, pixel chrome. */
 static void draw_splash(const char *msg) {
     store_gui_status("PS Linker", msg, "Starting...");
-}
-
-/* ------------------------------------------------------------------ */
-/* Settings view: edit the NAS URL with an on-screen character picker  */
-/* (the one remaining debug-screen UI - see the header comment)        */
-/* ------------------------------------------------------------------ */
-
-/* Single-row character strip, Media Go style. */
-static const char SETTINGS_CHARS[] =
-    "abcdefghijklmnopqrstuvwxyz0123456789-.:/_";
-#define SETTINGS_NCHARS ((int)(sizeof(SETTINGS_CHARS) - 1))
-/* Special slots after the chars: 0=delete, 1=save & exit */
-#define SP_DEL  SETTINGS_NCHARS
-#define SP_OK   (SETTINGS_NCHARS + 1)
-#define SETTINGS_NSLOTS (SETTINGS_NCHARS + 2)
-
-static int settings_view(void) {
-    char url[MAX_URL_LEN];
-    int pick = 0, view = 0;
-    unsigned prev = 0;
-
-    /* Consume the entry key: seed `prev` with the buttons still held so
-       the SELECT that opened this view cannot re-fire as a cancel. */
-    { SceCtrlData p0; sceCtrlReadBufferPositive(&p0, 1); prev = p0.Buttons; }
-
-    /* Visible window of the strip: pick stays inside [view, view+W) */
-    const int strip_w = SCREEN_COLS - 16;      /* list panel width */
-    const int picker_row = SCREEN_ROWS - 4;
-
-    while (1) {
-        pspDebugScreenClear();
-        draw_header("PS Linker", "Settings");
-
-        snprintf(url, sizeof(url), "%s", g_nas_base);
-        Style lbl = { COL_BG, COL_TEXT_DIM };
-        field(14, 4, strip_w, &lbl, " NAS SERVER URL");
-        Style val = { COL_BG, COL_TEXT };
-        /* truncate URL to fit the panel */
-        char shown[MAX_URL_LEN];
-        snprintf(shown, sizeof(shown), "%s", url);
-        if ((int)strlen(shown) > strip_w - 2) shown[strip_w - 2] = '\0';
-        field(15, 6, strip_w, &val, shown);
-
-        Style hint = { COL_BG, COL_TEXT_DIM };
-        field(14, 8, strip_w, &hint,
-              " <>:pick  X:insert  O:delete  Start:save  Sel:cancel"
-              "  Tri:util");
-
-        /* Character picker strip */
-        for (int i = 0; i < strip_w / 2 && view + i < SETTINGS_NSLOTS; i++) {
-            int slot = view + i;
-            char ch[2];
-            const Style *st = (slot == pick) ? &STYLE_SEL : &STYLE_ROW;
-            if (slot < SETTINGS_NCHARS) {
-                ch[0] = SETTINGS_CHARS[slot];
-                ch[1] = '\0';
-            } else if (slot == SP_DEL) {
-                ch[0] = '<'; ch[1] = '\0';
-            } else {
-                field(14 + i * 2, picker_row, 2, st, "OK");
-                continue;
-            }
-            field(14 + i * 2, picker_row, 2, st, ch);
-        }
-
-        unsigned pressed;
-        do { sceKernelDelayThread(16000); }
-        while (get_pressed(&pressed, &prev) != 0);
-
-        if (pressed & PSP_CTRL_RIGHT) {
-            if (pick < SETTINGS_NSLOTS - 1) pick++;
-            if (pick >= view + strip_w / 2) view = pick - strip_w / 2 + 1;
-        } else if (pressed & PSP_CTRL_LEFT) {
-            if (pick > 0) pick--;
-            if (pick < view) view = pick;
-        } else if (pressed & PSP_CTRL_CROSS) {
-            if (pick < SETTINGS_NCHARS) {
-                size_t l = strlen(g_nas_base);
-                if (l + 1 < MAX_URL_LEN) {
-                    g_nas_base[l] = SETTINGS_CHARS[pick];
-                    g_nas_base[l + 1] = '\0';
-                }
-            } else if (pick == SP_DEL) {
-                size_t l = strlen(g_nas_base);
-                if (l > 0) g_nas_base[l - 1] = '\0';
-            } else {                          /* SP_OK: save & exit */
-                if (save_settings() == 0) return 1;
-            }
-        } else if (pressed & PSP_CTRL_CIRCLE) {
-            size_t l = strlen(g_nas_base);    /* delete last char */
-            if (l > 0) g_nas_base[l - 1] = '\0';
-        } else if (pressed & PSP_CTRL_START) {
-            save_settings();
-            return 1;
-        } else if (pressed & PSP_CTRL_SELECT) {
-            return 0;                         /* cancel */
-        } else if (pressed & PSP_CTRL_TRIANGLE) {
-            return 2;                         /* open the Utilities page */
-        }
-    }
 }
 
 /* ------------------------------------------------------------------ */
@@ -762,35 +659,102 @@ static int gclite_installed(void) {
     return hit;
 }
 
-/* The pixel Utilities page (Settings -> Triangle): the switch home for
-   options that do not fit the debug-screen Settings editor. Currently one
-   switch - the whole gclite feature (CAT_ name stripping + START
-   categories popup). Detection runs on entry, so installing the plugin
-   and reopening the page picks it up. Returns 2 to fall back into the
-   debug Settings screen, or 0/1 (changed?) to leave for the browser. */
-static int utilities_view(void) {
-    unsigned prev = 0;
-    int changed = 0;
-    const int installed = gclite_installed();
+/* ------------------------------------------------------------------ */
+/* Pixel Utilities page (SELECT): URL editor + feature switches        */
+/* ------------------------------------------------------------------ */
 
-    /* Same entry-key consumption as settings_view: the Triangle that
-       walked in must not read as "back to Settings". */
+/* The URL editor's key slots, same numbering store_gui_url_edit draws:
+   0..URL_NCHARS-1 are URL_CHARS, then delete, then OK. */
+static const char URL_CHARS[] = STORE_URL_CHARS;
+#define URL_NCHARS ((int)(sizeof(URL_CHARS) - 1))
+#define UP_DEL     URL_NCHARS
+#define UP_NSLOTS  (URL_NCHARS + 2)
+
+/* Full-screen pixel keyboard over a working copy of the URL. Returns 1
+   to apply `work`, 0 (Select) to discard it. */
+static int url_picker_view(char *work, size_t cap) {
+    unsigned prev = 0;
+    int pick = 7;      /* start on 'h': an empty URL starts "http://" */
+
+    /* Consume the X that opened the editor so it cannot also insert. */
     { SceCtrlData p0; sceCtrlReadBufferPositive(&p0, 1); prev = p0.Buttons; }
+
     for (;;) {
-        store_gui_utilities(g_gclite_on, installed);
+        store_gui_url_edit(work, pick);
 
         unsigned pressed;
         do { sceKernelDelayThread(16000); }
         while (get_pressed(&pressed, &prev) != 0);
 
-        if (pressed & PSP_CTRL_CROSS) {
-            g_gclite_on = !g_gclite_on;
-            changed = 1;
+        if (pressed & PSP_CTRL_RIGHT) {
+            if (pick < UP_NSLOTS - 1) pick++;
+        } else if (pressed & PSP_CTRL_LEFT) {
+            if (pick > 0) pick--;
+        } else if (pressed & PSP_CTRL_CROSS) {
+            size_t l = strlen(work);
+            if (pick < URL_NCHARS && l + 1 < cap) {
+                work[l] = URL_CHARS[pick];
+                work[l + 1] = '\0';
+            } else if (pick == UP_DEL && l > 0) {
+                work[l - 1] = '\0';
+            } else if (pick == URL_NCHARS + 1) {
+                return 1;                      /* the OK key */
+            }
+        } else if (pressed & PSP_CTRL_CIRCLE) {
+            size_t l = strlen(work);           /* O deletes too */
+            if (l > 0) work[l - 1] = '\0';
+        } else if (pressed & PSP_CTRL_START) {
+            return 1;
         } else if (pressed & PSP_CTRL_SELECT) {
-            return 2;                          /* back to Settings */
-        } else if (pressed & (PSP_CTRL_CIRCLE | PSP_CTRL_START)) {
-            if (changed) save_settings();      /* O and START both apply */
-            return changed;                    /* and leave for the flow */
+            return 0;                          /* discard the edit */
+        }
+    }
+}
+
+/* SELECT's home: two focusable rows - the NAS server URL and the gclite
+   pill switch (the whole CAT_ stripping + START popup feature).
+   Detection runs on entry, so installing the plugin and reopening the
+   page picks it up. Leaving saves whatever changed; returns a bitmask:
+   bit0 = gclite switched, bit1 = the server URL changed. */
+static int utilities_view(void) {
+    unsigned prev = 0;
+    int mask = 0;
+    int focus = 1;                       /* land on the switch: the touch */
+    const int installed = gclite_installed();
+
+    /* Entry-key consumption: seed `prev` with the buttons still held so
+       the SELECT that opened this page cannot re-fire as a control. */
+    { SceCtrlData p0; sceCtrlReadBufferPositive(&p0, 1); prev = p0.Buttons; }
+    for (;;) {
+        store_gui_utilities(g_gclite_on, installed, g_nas_base, focus);
+
+        unsigned pressed;
+        do { sceKernelDelayThread(16000); }
+        while (get_pressed(&pressed, &prev) != 0);
+
+        if (pressed & (PSP_CTRL_UP | PSP_CTRL_DOWN)) {
+            focus = !focus;
+        } else if (pressed & PSP_CTRL_CROSS) {
+            if (focus == 0) {
+                char work[MAX_URL_LEN];
+                snprintf(work, sizeof(work), "%s", g_nas_base);
+                if (url_picker_view(work, sizeof(work)) &&
+                    strcmp(work, g_nas_base) != 0) {
+                    snprintf(g_nas_base, sizeof(g_nas_base), "%s", work);
+                    mask |= 2;
+                }
+                /* the editor's last key is still held; don't re-read it */
+                SceCtrlData p0;
+                sceCtrlReadBufferPositive(&p0, 1);
+                prev = p0.Buttons;
+            } else {
+                g_gclite_on = !g_gclite_on;
+                mask |= 1;
+            }
+        } else if (pressed & (PSP_CTRL_CIRCLE | PSP_CTRL_START |
+                              PSP_CTRL_SELECT)) {
+            if (mask) save_settings();   /* O, START and Select all apply */
+            return mask;
         }
     }
 }
@@ -881,9 +845,16 @@ static int browser(void) {
 
     if (fetch_listing() != 0 || g_file_count == 0) {
         char msg[96];
-        snprintf(msg, sizeof(msg), "Could not reach %s", g_nas_base);
-        store_gui_status("PS Linker", msg, "Press any button to retry");
-        wait_button();
+        snprintf(msg, sizeof(msg), "Could not reach %.70s", g_nas_base);
+        store_gui_status("PS Linker", msg,
+                         "SELECT edits the URL, any other button retries");
+        if (wait_button_key() & PSP_CTRL_SELECT) {
+            /* The one retry that can change what the next retry means:
+               a saved, different URL. (utilities_view saved already.) */
+            if (utilities_view() & 2) g_cwd[0] = '\0';
+            unsigned pad_prev = 0;
+            pad_clear(&pad_prev);
+        }
         return -1;
     }
 
@@ -934,22 +905,22 @@ static int browser(void) {
         }
         if (pressed & PSP_CTRL_SELECT) {
             g_menu_open = 0;
-            int go = 1;                      /* 1 Settings, 2 Utilities, 0 out */
-            int u_changed = 0;
-            while (go) {
-                if (go == 1) {               /* debug-screen URL editor */
-                    gui_to_debug();
-                    go = settings_view();
-                    gui_init();              /* GU back up for pixel views */
-                } else {
-                    const int ur = utilities_view();  /* pixel switch page */
-                    if (ur == 2) go = 1;              /* fall back to Settings */
-                    else { if (ur) u_changed = 1; go = 0; }
-                }
-            }
+            const int ur = utilities_view();   /* pixel page, owns the pad */
             pad_clear(&prev);
-            if (u_changed) browser_fill(1);  /* folder names just changed */
-            continue;                /* URL may have changed: redraw */
+            if (ur & 2) {                      /* new server: refetch root */
+                g_cwd[0] = '\0';
+                draw_splash("Loading share...");
+                if (fetch_listing() != 0) {
+                    store_gui_status("PS Linker",
+                                     "Could not reach the new server.",
+                                     "Press any button to continue");
+                    wait_button();
+                }
+                browser_fill(1);
+            } else if (ur & 1) {
+                browser_fill(1);               /* folder names just changed */
+            }
+            continue;
         }
 
         /* The gclite popup owns the pad while it is open. */

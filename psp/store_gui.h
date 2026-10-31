@@ -44,10 +44,20 @@ void store_gui_browse(const coverflow_state_t *cf,
 /* Status screen: header bar text, one body row, optional hint row. */
 void store_gui_status(const char *header, const char *body, const char *hint);
 
-/* Utilities page: the switch home. One labelled toggle - the gclite
-   feature (CAT_ name stripping + START categories popup) - plus whether
-   the plugin was found in ms0:/seplugins/vsh.txt. The caller owns keys. */
-void store_gui_utilities(int enabled, int installed);
+/* Characters of the URL editor's key strip. Slot indexes are
+   0..(chars-1), then delete, then OK (same numbering in main.c). */
+#define STORE_URL_CHARS "abcdefghijklmnopqrstuvwxyz0123456789-.:/_"
+
+/* Utilities page (the browser's SELECT screen): two focusable rows -
+   the NAS server URL (focus 0, shows `url`) and the gclite pill switch
+   (focus 1; `installed` is the ms0:/seplugins/vsh.txt detection). The
+   caller owns keys. */
+void store_gui_utilities(int enabled, int installed,
+                         const char *url, int focus);
+
+/* URL editor: full-screen pixel on-screen keyboard showing `url` with
+   the cursor on key slot `pick`. The caller owns keys. */
+void store_gui_url_edit(const char *url, int pick);
 
 /* Install screen with a progress bar; pct < 0 before the first byte. */
 void store_gui_progress(const char *title, const char *path, int pct, long total);
