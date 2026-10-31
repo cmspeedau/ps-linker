@@ -6,7 +6,7 @@ Two components:
 |---|---|---|
 | `server/` | Docker / Linux / NAS (host) | Streams games to PS3 via the ps3netsrv protocol, serves files over HTTP for PSP/PS3 download (with Range/resume), and runs the server-side Store (downloads queued CDN titles into the same unified library) |
 | `psp/` | PSP (homebrew) | `NAS Downloader` app: connects to Wi-Fi, browses/downloads files from the PS Linker server to the Memory Stick (resumable downloads); the Store view is a pixel (sceGu) GUI |
-| `ps3/` | PS3 (homebrew, PSL1GHT) | `nasdl` app: browses/downloads files from the PS Linker server to the HDD (resumable downloads) |
+| `ps3/` | PS3 (homebrew, PSL1GHT) | `nasdl` app: RSX pixel browser + Store (Cover Flow over catalog.json), downloads files from the PS Linker server to the HDD (resumable downloads) |
 | `ui/` | shared source | Cover Flow renderer + key state machine both device apps can build against (ANSI only, no GPU); see `ui/INTEGRATION.md` |
 
 > Intended for homebrew and legally-owned content. This project does not provide or encourage piracy.
@@ -121,7 +121,15 @@ make
 
 ## PS3 app (nasdl)
 
-The PS3 app browses the HTTP share and downloads to the HDD with resume support. It can be run in RPCS3 or installed on a jailbroken PS3.
+The PS3 app draws every screen on the RSX pixel display (`ps3/gfx.c`:
+CPU-drawn frames copied into two RSX buffers, flipped on vsync — no shaders,
+so RPCS3 and CFW both scan it out reliably) at a virtual 1280x720 grid: the
+Media Go-style browser, Settings picker, and the Store (Triangle) with its
+Cover Flow / grid views. Browse the HTTP share and download to the HDD with
+resume support; Store installs derive `/dev_hdd0` destinations (`.pkg` to
+`packages/`, disc images to `PS3ISO`/`PSPISO`, `.rap` to `exdata/`). If the
+display cannot be initialised — or the build passes `-DNASDL_TEXT_UI` —
+everything falls back to the ANSI-colored netdebug console instead.
 
 ```bash
 cd ps3
@@ -321,11 +329,29 @@ wrong `X-SHA256` is rejected with `rc=-11`.
       way (sprite attribute packing, and GPU-side framebuffers outliving
       `sceGuTerm`), documented in `log.md` (2026-10-31). Real PSP hardware is
       still untested.
+- [x] **PS3 pixel UI + Store view on the RSX** — the whole PS3 app moved from
+      ANSI TTY output to a pixel display: `ps3/gfx.{c,h}` draws frames on the
+      CPU into a main-RAM back buffer, copies each into one of two RSX display
+      buffers and flips on vsync (no shaders or RSX draws), mapping a virtual
+      1280x720 grid onto whatever mode the XMB reports; `ps3/ui.h` fronts two
+      interchangeable app backends — `ui_pix.c` (default) and `ui_text.c`
+      (`-DNASDL_TEXT_UI`, also the fallback when `gfx_init()` fails). The
+      catalog parser and install-path logic moved out of `psp/` into
+      `ui/catalog.{c,h}` + `store_derive_path_ps3()` (host-tested), so the PS3
+      `ps3/store.c` + `ps3/store_gui.c` browse the same `catalog.json` as the
+      PSP Store: Triangle opens Cover Flow (tabs, favourites, grid, install
+      progress), landing `.pkg` in `/dev_hdd0/packages`, disc images in
+      `PS3ISO`/`PSPISO` and `.rap` files in `exdata/`, with favourites/recents
+      persisted like the PSP's. Built warning-free with `ppu-gcc` (both
+      backends) and driven end-to-end in RPCS3 through injected keys: browser
+      download and Store install each landing with a sha256 equal to the
+      served file, tab/favourite/grid toggles on screen, and the run pinned
+      three real bugs (result panels dismissed by the button *release* that
+      triggered them, `//` in entered directory names, hint/status bar
+      overlap) — evidence in `log.md` (2026-10-31). Real PS3 hardware is
+      still untested.
 
 ### In progress
-- [ ] Cover Flow on the PS3 app — `ps3/main.c` writes ANSI to the TTY so
-      `has_colors=1` applies directly, but its browser has no size/category to
-      show until the share reports per-entry metadata (listed under Later)
 - [ ] Real cover art: extract ICON0.PNG from PSP ISO/CSO and PS3 game folders
       into the catalog so tiles show real covers instead of placeholders
 - [ ] Test Store flow end-to-end through the Docker container with a real queue
@@ -348,7 +374,6 @@ wrong `X-SHA256` is rejected with `rc=-11`.
 - [ ] Store queue interface: simple web UI endpoint to queue CDN downloads
       (watched `.store-queue.json` works today)
 - [ ] GTK/Qt GUI front-end for Linux (manage games + edit catalog metadata)
-- [ ] PS3: RSX pixel-graphics renderer (currently ANSI console output)
 - [ ] PS4 support: platform-aware share (ps4 alongside psp/ps3 in upload tags,
       metadata, and GUI sections) organizing PKG titles and the user's own
       .rap licenses like everything else, plus docs/PS4.md for the real

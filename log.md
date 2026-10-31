@@ -923,3 +923,72 @@ vs the PS3 ctrl.h order, and the initial "RIGHT does nothing" mystery was
 exactly that), keys only land while the SDL window owns focus, and the
 fixture server must run under `python3 -u` or its access log sits
 block-buffered.
+
+---
+
+## 2026-10-31 (PS3) — pixel UI + Store on the RSX, run end-to-end in RPCS3
+
+The PS3 app left the TTY. `ps3/gfx.{c,h}` is the renderer core: `rsxInit`,
+the XMB's current video mode, two `rsxMemalign` display buffers registered
+with `gcmSetDisplayBuffer`, `GCM_FLIP_VSYNC`. Every frame is CPU-drawn into
+a cached main-RAM back buffer (`gfx_begin`/`gfx_end`; rects blend, an 8x8
+`font8x8.h` font, nearest-neighbour tinted cover blits), handed to the RSX
+with one sequential volatile copy, and flipped - no shaders, no RSX draws,
+the arrangement RPCS3's emulated GPU and CFW hardware both agree on. A
+virtual 1280x720 grid maps through the panel mode (1:1 at 720p, 1.5x at
+1080i), so the layouts are written once. `ps3/ui.h` fronts the app screens
+as two interchangeable backends - `ui_pix.c` (default) and `ui_text.c`
+(`make TEXT_UI=1`, and the automatic fallback when `gfx_init()` fails) -
+with exactly one compiled per binary; the Store's screens pair
+`store_gui.c`/`store.c` the same way. `ps3/http.{c,h}` lifts main.c's
+socket GETs out (plus status code and a capped body read for the catalog),
+and `sysUtilRegisterCallback` turns the XMB's quit request into a poll
+result that unwinds both the browser and the Store.
+
+Shared-code move first (commit `642acad`): `store_logic.{c,h}` + `font8x8.h`
++ the host test went `psp/ -> ui/`, `psp/store.c`'s tolerant parser became
+`ui/catalog.{c,h}` (now also reading the `platform` sidecar, bounded to its
+own JSON object - the object-end test pins that no later item's value can
+leak into an earlier one), and `store_derive_path_ps3()` maps `.pkg ->
+/dev_hdd0/packages/`, `.iso -> PS3ISO` (`PSPISO` when `platform` says psp),
+`.cso -> PSPISO`, `.rap -> exdata/`, refusing `.pbp`. `make -C ui test` runs
+all three host suites now: 208 coverflow + store + catalog assertions pass.
+
+Checked (builds): `ppu-gcc` in `ps3dev/ps3dev:submodules` compiles both the
+pixel and the TEXT_UI variant warning-free; `nasdl.self`
+`ffad5278765d...` and `nasdl.pkg` `cdb381522525...` ship. (Docker-as-root
+artifacts keep needing a `chown -R 1000:1000 /w/...` inside the container.)
+
+Checked (PS3 run): RPCS3 booted the `.self` against a fixture share on
+127.0.0.1:18000 (`server/store/http_server.py`, catalog from
+`generate_catalog.py`); keys injected through `/dev/uinput`, evidence
+screenshots in the scratch dir's `shots/`. Browser: enter `Homebrew/`,
+download `ResumeTest.bin` -> `/dev_hdd0/NASDL/ResumeTest.bin` sha256 equal
+to the served bytes. Triangle opened the Store from the live listing:
+header, catalog tab rail (Games/Homebrew/Licenses/PS3/Utilities with the
+orange active underline), Cover Flow card with id-hashed gradient + initials
++ dimmed neighbour, `* fav` after Square (which wrote `F:` to
+`/dev_hdd0/NASDL/store_state.txt`), R1 to the PS3 tab, Cross installed
+`Quake_1.08.pkg` -> `/dev_hdd0/packages/Quake_1.08.pkg` sha256 equal to the
+served bytes and an `R:` recents line, Select toggled the 4x2 grid, O
+returned to a live browser. The access log shows the catalog GET and both
+file GETs, all 200.
+
+The run found three real bugs, all fixed on the spot:
+
+- `get_pressed()` reported *any* pad change - so the release of the very
+  button that started a download read as "a press" and dismissed the result
+  panel ~100 ms after it appeared. It now only returns 0 on a press edge.
+- directory entries kept the `href`'s trailing `/`, so entering one showed
+  `NAS LIBRARY: /Homebrew//`; names are trimmed in `add_file` now.
+- the pixel browser's left hint bar and right-aligned status text
+  overlapped; the hint is clipped to the space the status leaves.
+
+Harness notes for next time: this kernel's `struct uinput_user_dev` is
+`name[80] + id(8) + ff_effects_max(4) + 4 x s32[ABS_CNT]` = **1116 bytes**
+(`write()` of the packed-`absinfo` 1628-byte form fails `EINVAL`); RPCS3's
+default keyboard mapping is arrows=D-pad, `X`=Cross, `C`=Circle, `Z`=Square,
+`V`=Triangle, `Q`=L1, `E`=R1, `Space`=Select, `Return`=Start, and keys only
+land while the game window is focused; the first Vulkan launch pays a
+one-time ~4-minute shader-variant precompile before boot. RPCS3's
+`Internet enabled` was flipped to `Enabled` for the run and restored.

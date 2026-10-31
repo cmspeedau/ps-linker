@@ -37,8 +37,10 @@ renderer and `Triangle` opens it from the browser. Dynamic Store categories
 and their host assertions were added on 2026-10-30 and verified the same day:
 208 host assertions pass, the `pspdev` container build links, and a PPSSPPSDL
 run showed the catalog's own folder tabs with a working install from the
-second tab (`log.md`). The PSP build now includes
-the shared object. The PS3 app remains unintegrated.
+second tab (`log.md`). Both device apps now compile the shared object:
+since 2026-10-31 the PS3 app runs the same Store (`ps3/store.c`, fed by
+the shared `ui/catalog.c` parser) through pixel screens on the RSX
+renderer `ps3/gfx.c`, verified end-to-end in RPCS3 (`log.md`).
 
 ## API in one paragraph
 
@@ -143,9 +145,10 @@ coverflow_init(&cf, g_covers, n, SCREEN_COLS, SCREEN_ROWS,
                1 /* PS3 TTY does ANSI; 0 on the PSP debug screen */);
 
 /* 2. Map pad bits to abstract keys, then feed them.
-   ps3/main.c's pad_buttons() currently reports only LEFT/DOWN/RIGHT/UP/START/
-   SELECT/CROSS/CIRCLE, so L1/R1/TRIANGLE have to be added there before the
-   category and favourite keys can be reached. */
+   ps3/main.c's pad_buttons() reports all twelve face/shoulder bits
+   (including L1/R1/TRIANGLE/SQUARE), and ps3/store.c keeps the mapping
+   below behind store_key(pressed); the PSP twin maps sceCtrl bits the
+   same way. */
 coverflow_action_t action;
 coverflow_key_t key = COVERFLOW_KEY_NONE;
 unsigned b = pad_buttons(&pd);
