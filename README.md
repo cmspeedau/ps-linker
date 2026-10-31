@@ -397,10 +397,18 @@ wrong `X-SHA256` is rejected with `rc=-11`.
       port 8000 in the built image
 
 ### Planned
-- [ ] Validate the netiso server on a real PS3 with webMAN MOD: the open questions
-      at the end of `docs/PS3NETSRV-PROTOCOL.md` §8 (which opcodes a real client
-      sends, whether it holds one connection or several, what it makes of the
-      sector probe's 848 MiB ceiling)
+- [x] Validate the netiso server's sector-probe ceiling: the 848 MiB question
+      of `docs/PS3NETSRV-PROTOCOL.md` §8 is measured — synthetic window fixtures
+      (`server/netsrv/netsrv_synth.py`) show no server can differ above the
+      ceiling and webMAN's probe never leaves its default even inside it; a real
+      CD rip cannot reach the window edge, so what the PS3 session now has to
+      confirm is behaviour, not answers (2026-10-31, log)
+- [ ] Confirm on a real PS3 with webMAN MOD, on the wire: which opcodes a client
+      sends (incl. the `0x24xx` range), whether it holds one connection or
+      several, and whether `ctime` displays as a creation time — instrumented by
+      the §5 window harness and `--wire-log` (planned), fixtures chosen:
+      `Driver (Europe).bin` 713 MB 2352, a 1 GiB synthetic, an 8.5 GB PS2 DVD
+      ISO, a remote PKG install
 
 ### Later
 - [ ] PS4 support: platform-aware share (ps4 alongside psp/ps3 in upload tags,
