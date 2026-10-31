@@ -29,6 +29,7 @@ int main(void)
         "  {\"id\":\"PS3_Quake\",\"title\":\"Quake\",\"category\":\"PS3 Games\","
         "   \"url\":\"/PS3 Games/quake.pkg\",\"size\":39845888,"
         "   \"platform\":\"PS3\",\"version\":\"0.9\","
+        "   \"rap\":\"quake.rap\","
         "   \"description\":\"port\\nsecond line\"}"
         " ]}";
     assert(catalog_parse(&cat, gen) == 2);
@@ -39,6 +40,8 @@ int main(void)
     assert(strcmp(cat.items[1].description, "port\nsecond line") == 0);
     assert(strcmp(cat.items[1].platform, "PS3") == 0);
     assert(cat.items[0].platform[0] == '\0');   /* no leak from item 2 */
+    assert(strcmp(cat.items[1].rap, "quake.rap") == 0);
+    assert(cat.items[0].rap[0] == '\0');         /* no leak from item 2  */
     /* tabs are first-seen item categories, in document order */
     assert(cat.category_count == 2 &&
            strcmp(cat.categories[0], "Games") == 0 &&
@@ -70,11 +73,13 @@ int main(void)
         "{\"entries\":["
         " {\"id\":\"a\",\"title\":\"A\",\"url\":\"/a\",\"category\":\"X\"},"
         " {\"id\":\"b\",\"title\":\"B\",\"url\":\"/b\",\"category\":\"X\","
-        "  \"platform\":\"PSP\"}"
+        "  \"platform\":\"PSP\",\"rap\":\"B.rap\"}"
         "]}";
     assert(catalog_parse(&cat, adj) == 2);
     assert(cat.items[0].platform[0] == '\0');
     assert(strcmp(cat.items[1].platform, "PSP") == 0);
+    assert(cat.items[0].rap[0] == '\0');
+    assert(strcmp(cat.items[1].rap, "B.rap") == 0);
 
     puts("catalog: all assertions passed");
     return 0;

@@ -29,6 +29,15 @@ int store_derive_path(const char *url, const char *title,
 int store_derive_path_ps3(const char *url, const char *title,
                           const char *platform, char *out, size_t outlen);
 
+/* Companion URL for an attached license: the catalog's "rap" field is the
+   file name of a .rap stored in the game's own folder (the web GUI records
+   it there), so the download URL is the entry URL's parent folder plus that
+   name. A folder-style entry URL (trailing slash) takes the folder itself,
+   a file URL its parent. Returns 0 on success, -1 for an empty rap name or
+   a result that does not fit in `out`. */
+int store_license_url(const char *item_url, const char *rap,
+                      char *out, size_t outlen);
+
 /* ---- id-hashed placeholder cover tiles ---------------------------------
  * The web GUI draws an icon-less item's cover as a gradient keyed to a
  * hash of the item id (server/store/ui/state.js `placeholderBG`). The

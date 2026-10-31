@@ -12,8 +12,11 @@
  * Install destinations are derived by store_derive_path_ps3(): pkgs to
  * /dev_hdd0/packages (Package Manager picks them up from the XMB), disc
  * images to PS3ISO/PSPISO for the game manager, licenses to
- * /dev_hdd0/exdata as a staging folder. PSP .PBP homebrew stays in the
- * listing but is refused - a PS3 cannot run it.
+ * /dev_hdd0/exdata as a staging folder. A game whose catalog entry names
+ * an attached "rap" downloads that license into exdata in the same action,
+ * so the Licenses category has no menu any more (browser and Store hide
+ * it). PSP .PBP homebrew stays in the listing but is refused - a PS3
+ * cannot run it.
  *
  * Rendering is the pixel screens (gfx.c + store_gui.c) — the whole app
  * is pixel-only since the Cover Flow browser redesign.
@@ -22,6 +25,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 #include <sys/stat.h>
 #include <unistd.h>
 
@@ -131,6 +135,21 @@ static void store_prepare_destination(const char *path)
     if (!slash || slash == dir) return;
     *slash = '\0';
     mkdir(dir, 0777);
+}
+
+/* Catalog URLs are server-root-relative ("/Games/x.pkg") or absolute
+   http URLs; join the former onto the base the browser uses. */
+static void store_absolute_url(const char *nas_base, const char *url,
+                               char *out, size_t outlen)
+{
+    if (url[0] == '/') snprintf(out, outlen, "%s%s", nas_base, url);
+    else               snprintf(out, outlen, "%s", url);
+}
+
+static int url_is_rap(const char *url)
+{
+    size_t l = strlen(url);
+    return l >= 4 && strcasecmp(url + l - 4, ".rap") == 0;
 }
 
 /* ------------------------------------------------------------------ */
@@ -247,11 +266,17 @@ int store_run(const char *nas_base, store_input_cb poll)
         return -3;
     }
     if (g_catalog.category_count > 0) {
+        /* The Licenses menu is gone on the PS3: a game's .rap rides along
+           with its install (see below), so standalone license entries get
+           no tab — and no covers to reach one — any more. */
         const char *categories[STORE_CATEGORY_LIMIT];
-        for (int i = 0; i < g_catalog.category_count; i++)
-            categories[i] = g_catalog.categories[i];
-        coverflow_set_categories(&cf, categories,
-                                 (size_t)g_catalog.category_count);
+        int n = 0;
+        for (int i = 0; i < g_catalog.category_count &&
+                        n < STORE_CATEGORY_LIMIT; i++) {
+            if (strcasecmp(g_catalog.categories[i], "Licenses") == 0) continue;
+            categories[n++] = g_catalog.categories[i];
+        }
+        if (n > 0) coverflow_set_categories(&cf, categories, (size_t)n);
     }
 
     unsigned pressed;
@@ -284,11 +309,8 @@ int store_run(const char *nas_base, store_input_cb poll)
             store_prepare_destination(dest);
             ui_install(g_items[idx].title, dest);
             char download_url[CATALOG_MAX_STR + 32];
-            const char *item_url = g_items[idx].url;
-            if (item_url[0] == '/')
-                snprintf(download_url, sizeof(download_url), "%s%s", nas_base, item_url);
-            else
-                snprintf(download_url, sizeof(download_url), "%s", item_url);
+            store_absolute_url(nas_base, g_items[idx].url,
+                               download_url, sizeof(download_url));
             g_last_pct = -999;
             int rc = ps3_resume_download(download_url, dest, ui_progress);
             if (rc == 0) {
@@ -297,9 +319,37 @@ int store_run(const char *nas_base, store_input_cb poll)
                 save_store_state();
                 coverflow_recompute_filter(&cf);  /* refresh a live Recent view */
             }
+
+            /* The game carries its license: the sidecar "rap" file (a .rap
+               in the game's own folder, recorded by the web GUI) rides
+               along into /dev_hdd0/exdata — where a loose license entry
+               would have installed. A failed license never undoes the
+               game install; the result panel says which is which. */
+            char lic_note[32] = "";
+            if (rc == 0 && g_items[idx].rap[0] &&
+                !url_is_rap(g_items[idx].url)) {
+                int lic_rc = -1;
+                char lic_src[2 * CATALOG_MAX_STR];
+                char lic_dest[CATALOG_MAX_STR];
+                if (store_license_url(g_items[idx].url, g_items[idx].rap,
+                                      lic_src, sizeof lic_src) == 0 &&
+                    store_derive_path_ps3(lic_src, "", "",
+                                          lic_dest, sizeof lic_dest) == 0) {
+                    char lic_url[CATALOG_MAX_STR + 32];
+                    store_absolute_url(nas_base, lic_src,
+                                       lic_url, sizeof lic_url);
+                    store_prepare_destination(lic_dest);
+                    ui_install(g_items[idx].title, lic_dest);
+                    g_last_pct = -999;
+                    lic_rc = ps3_resume_download(lic_url, lic_dest, ui_progress);
+                }
+                snprintf(lic_note, sizeof lic_note, "%s",
+                         lic_rc == 0 ? "  (+ license)" : "  (license failed)");
+            }
+
             char msg[300];
-            snprintf(msg, sizeof(msg), "%.*s (%d)", 120,
-                     g_items[idx].title, rc);
+            snprintf(msg, sizeof(msg), "%.*s (%d)%s", 100,
+                     g_items[idx].title, rc, lic_note);
             ui_status(rc == 0 ? "Installed" : "Install failed", msg,
                       "Press any button to continue");
             wait_any(poll);

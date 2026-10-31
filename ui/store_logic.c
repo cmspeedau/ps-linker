@@ -187,6 +187,28 @@ int store_derive_path_ps3(const char *url, const char *title,
     return n >= 0 && (size_t)n < outlen ? 0 : -2;
 }
 
+int store_license_url(const char *item_url, const char *rap,
+                      char *out, size_t outlen)
+{
+    if (!item_url || !item_url[0] || !rap || !rap[0] ||
+        !out || outlen == 0) return -1;
+
+    char dir[512];
+    int n = snprintf(dir, sizeof dir, "%s", item_url);
+    if (n < 0 || (size_t)n >= sizeof dir) return -1;
+
+    size_t l = strlen(dir);
+    if (l && dir[l - 1] == '/') {
+        /* folder-style URL: the license rides inside the folder */
+    } else {
+        char *slash = strrchr(dir, '/');
+        if (slash) slash[1] = '\0';         /* parent folder, slash kept   */
+        else dir[0] = '\0';                 /* bare name: share root       */
+    }
+    int m = snprintf(out, outlen, "%s%s", dir, rap);
+    return (m >= 0 && (size_t)m < outlen) ? 0 : -1;
+}
+
 /* ---- id-hashed placeholder cover tiles ---------------------------------
  * Port of the web GUI's placeholderBG(): one item, one hue, on the web
  * page and on the PSP alike. Pure CPU so psp/tests can pin the parity. */

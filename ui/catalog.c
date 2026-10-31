@@ -78,12 +78,16 @@ static int parse_item(const char *json, size_t *pos, catalog_item_t *it)
     local = 0; json_find_string(p, "url",          &local, it->url,          sizeof(it->url));
     local = 0; json_find_string(p, "install_path", &local, it->install_path, sizeof(it->install_path));
     local = 0; json_find_string(p, "size_hint",    &local, it->size_hint,    sizeof(it->size_hint));
-    /* "platform" only counts inside this object: a later item's value
+    /* "platform"/"rap" only count inside this object: a later item's value
        must not leak into one that has none. */
     local = 0;
     if (json_find_string(p, "platform", &local, it->platform, sizeof(it->platform)) &&
         p + local + 1 > end)   /* +1: pos rests on the value's closing quote */
         it->platform[0] = '\0';
+    local = 0;
+    if (json_find_string(p, "rap", &local, it->rap, sizeof(it->rap)) &&
+        p + local + 1 > end)
+        it->rap[0] = '\0';
     it->size = json_find_uint(p, "size");
     if (!it->size_hint[0] && it->size)
         store_format_size(it->size, it->size_hint, sizeof(it->size_hint));

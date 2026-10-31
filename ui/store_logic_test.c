@@ -104,6 +104,26 @@ int main(void)
                                  path, sizeof path) == 0);
     assert(strcmp(path, "/dev_hdd0/packages/Quake.pkg") == 0);
 
+    /* ---- attached license URL (catalog "rap" rides along) --------------*/
+    char rap_out[64];
+    assert(store_license_url("/Games/quake3.pkg", "quake3.rap",
+                             rap_out, sizeof rap_out) == 0);
+    assert(strcmp(rap_out, "/Games/quake3.rap") == 0);
+    assert(store_license_url("/PS3/Games/game.iso", "game.rap",
+                             rap_out, sizeof rap_out) == 0);
+    assert(strcmp(rap_out, "/PS3/Games/game.rap") == 0);
+    /* folder-style URL: the license sits inside the folder */
+    assert(store_license_url("/PS3/Game/", "Game.rap",
+                             rap_out, sizeof rap_out) == 0);
+    assert(strcmp(rap_out, "/PS3/Game/Game.rap") == 0);
+    /* absolute entry URLs keep their host */
+    assert(store_license_url("http://h:8000/ps3/Game.iso", "Game.rap",
+                             rap_out, sizeof rap_out) == 0);
+    assert(strcmp(rap_out, "http://h:8000/ps3/Game.rap") == 0);
+    assert(store_license_url("/g/x.iso", "", rap_out, sizeof rap_out) == -1);
+    assert(store_license_url("", "x.rap", rap_out, sizeof rap_out) == -1);
+    assert(store_license_url("/g/x.iso", "x.rap", rap_out, 4) == -1);
+
     /* ---- placeholder cover tiles: web GUI parity -----------------------
      * server/store/ui/state.js: h=0; per byte h=(h*31+byte)&0x3fffffff;
      * hue=h%360. Expected hues below were computed from that expression

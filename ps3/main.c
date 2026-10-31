@@ -465,12 +465,17 @@ static int settings_view(void)
    ui/coverflow.c state through ui/browser_model.c (listing -> covers +
    tab rail), and ui_browse draws it with the Store's pixel cards.
    The tab rail is All | <share categories> | Downloads; Downloads lists
-   what already landed in DEST_DIR. Licenses/PS3 filtering is a PSP
-   concern (the PSP passes a skip list); the PS3 shows every category. */
+   what already landed in DEST_DIR. Licenses is hidden here (and in the
+   Store): a game's .rap rides along with its install, so the menu has
+   nothing left to offer; PS3 categories stay visible on a PS3. */
 
 #include <dirent.h>
 
 #define MAX_TABS COVERFLOW_MAX_DYNAMIC_CATEGORIES
+
+/* Useless as a menu on this device: .raps install with their game. */
+static const char *const PS3_SKIP_CATEGORIES[] = { "Licenses" };
+#define PS3_SKIP_COUNT 1
 
 typedef struct {
     char name[MAX_PATH_LEN];
@@ -534,8 +539,8 @@ static void browser_fill(int reset_tab)
     }
 
     int n = bm_build(g_cf_items, MAX_FILES, sh, g_file_count,
-                     dl, g_dl_count, NULL, 0, g_downloads_active,
-                     g_tabs, &g_tab_count, g_cf_map);
+                     dl, g_dl_count, PS3_SKIP_CATEGORIES, PS3_SKIP_COUNT,
+                     g_downloads_active, g_tabs, &g_tab_count, g_cf_map);
 
     g_downloads_tab = (g_tab_count > 0 &&
                        strcmp(g_tabs[g_tab_count - 1], BM_DOWNLOADS_LABEL) == 0)

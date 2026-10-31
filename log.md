@@ -6,6 +6,43 @@ it records *what was actually run and observed*, including bugs found while test
 
 ---
 
+## 2026-10-31 (PS3) — the game's `.rap` rides along; the Licenses menu is gone
+
+Next client ask: "when i install game it should install the rap file with it
+(if it has one), and remove the license menu". The web GUI already records
+the pairing — the sidecar's `rap` field names a `.rap` in the game's own
+folder, and `generate_catalog.py` passes it through — so the PS3 client only
+had to consume it. `catalog_item_t` grew a `rap` field, parsed with the same
+per-object `}` bound that keeps `platform` from leaking between entries
+(`ui/catalog_test.c` pins both leak bounds). The URL rule went into shared
+code, `store_license_url()`: folder-style entry URL (trailing `/`) takes the
+folder itself, a file URL takes its parent — matching where the GUI put the
+file. Destination needed no new rule: `store_derive_path_ps3()` already maps
+`.rap` to `/dev_hdd0/exdata/`, exactly where a standalone license entry
+landed.
+
+`ps3/store.c` installs the game first, and only on success derives the
+license URL and downloads it through the same resumable downloader; a
+failed license never undoes the game, and the result panel carries
+`(+ license)` / `(license failed)`. Then the menu itself: the browser passes
+`{Licenses}` as its skip list and the Store's tab filter drops it too (the
+`PS3` category stays visible on a PS3 — unlike on the PSP).
+
+Host: store-logic and catalog suites grew the license-URL and `rap`-parse
+assertions; all four `make -C ui test` suites green (208 coverflow +
+browser_model + catalog + store_logic), ASan/UBSan clean. PS3 build
+warning-free with ppu-gcc.
+
+RPCS3 end-to-end: fixture `Quake_1.08.pkg` gained a 16-byte `Quake_1.08.rap`
+beside it and the catalog entry a `"rap"` field. Boot showed the browser
+tabs `All | Games | Homebrew | PS3 | Utilities | Downloads` — Licenses gone;
+Triangle → Store showed `Games | Homebrew | PS3 | Utilities`, also without
+it. R1 to the PS3 tab, Cross on Quake: the result panel read
+`Quake 1.08 (0)  (+ license)` and the guest HDD held both files —
+`packages/Quake_1.08.pkg` and `exdata/Quake_1.08.rap`, each md5-equal to
+the served bytes. Screenshots: `rap-load.png`, `rap-store-tabs.png`,
+`rap-store-ps3.png`, `rap-installed.png`.
+
 ## 2026-10-31 (clients) — the browser *is* the Cover Flow now, on both devices
 
 The user's target picture was the PSP Store's pixel carousel, with one

@@ -132,7 +132,10 @@ boots straight into the Cover Flow browser (the share listing as covers, the
 tab rail `All | categories | Downloads`); Settings and the Store (Triangle)
 share the same pixel look. Download to the HDD with resume support; Store
 installs derive `/dev_hdd0` destinations (`.pkg` to `packages/`, disc images
-to `PS3ISO`/`PSPISO`, `.rap` to `exdata/`).
+to `PS3ISO`/`PSPISO`, `.rap` to `exdata/`). A game whose catalog entry names
+an attached `rap` downloads that license into `exdata/` in the same action,
+so the `Licenses` category has no menu on this device (hidden in both the
+browser and the Store).
 
 ```bash
 cd ps3
@@ -406,7 +409,9 @@ wrong `X-SHA256` is rejected with `rc=-11`.
       the frame on both pixel backends with the browser's own hints and the
       cwd in the header. On the PSP, `Licenses` and `PS3` are filtered out
       of covers *and* tabs — in the browser and in the Store — because a PSP
-      cannot act on them; the PS3 keeps them. The debug-screen Settings
+      cannot act on them; the PS3 hides only `Licenses` (a game's `.rap`
+      installs with the game, see below — its `PS3` category stays). The
+      debug-screen Settings
       picker survives behind SELECT only (`gui_to_debug()` reusing the
       after-GE VRAM trick); the PS3 app deleted `ui_text.c`, the
       `TEXT_UI` build and every ANSI branch. 208 Cover Flow assertions plus
@@ -415,6 +420,23 @@ wrong `X-SHA256` is rejected with `rc=-11`.
       injected keys — boot, tab switch, grid toggle and a populated
       Downloads view screenshotted in PPSSPP and RPCS3 (`log.md`
       2026-10-31). Real hardware is still untested.
+- [x] **PS3 installs carry their license** — the catalog parser keeps the
+      sidecar's `rap` field per item (`ui/catalog.{c,h}`, bounded to its own
+      object like `platform`), and the new shared `store_license_url()`
+      (`ui/store_logic.{c,h}`) resolves it next to the entry URL (folder
+      entry → inside the folder, file entry → its parent). `ps3/store.c`
+      installs the game first, then fetches the `.rap` into
+      `/dev_hdd0/exdata/` through the same resumable downloader; a failed
+      license never undoes the game install and the result panel says
+      `(+ license)` / `(license failed)`. With the ride-along in place the
+      `Licenses` menu is gone on the PS3: the browser skip list and the
+      Store's tab filter both drop it (the `PS3` category stays visible on
+      a PS3). New host assertions for the license URLs and the scoped `rap`
+      parse (`make -C ui test`, ASan clean); warning-free PS3 build;
+      end-to-end in RPCS3 — installing `Quake_1.08.pkg` landed the pkg in
+      `packages/` *and* `Quake_1.08.rap` in `exdata/`, both md5-equal to
+      the served files, with the Licenses tab absent from browser and
+      Store (`log.md` 2026-10-31, screenshots `rap-*.png`).
 
 ### In progress
 - [ ] Test Store flow end-to-end through the Docker container with a real queue

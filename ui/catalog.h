@@ -27,6 +27,8 @@ typedef struct {
     char description[CATALOG_MAX_STR];
     char version[32];
     char platform[16];            /* sidecar "platform" ("PSP", "PS3"), or "" */
+    char rap[CATALOG_MAX_STR];    /* sidecar "rap": file name of the game's
+                                   * attached .rap license, or ""          */
     char url[CATALOG_MAX_STR];
     char install_path[CATALOG_MAX_STR];
     char size_hint[16];
