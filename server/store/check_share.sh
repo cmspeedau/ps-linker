@@ -395,6 +395,14 @@ chk "downloaded bytes match the share" \
 chk "history records the success" '"status": "ok"' \
     "$(curl -s "$BASE/api/store/status" | tr -d '\n' \
         | grep -o '"status": "ok"' | head -1)"
+# The drain regenerates catalog.json; the GUI's completion refresh reads
+# /api/catalog, so the new entry must reach it without the 5-min loop tick.
+catok=no
+for _ in $(seq 20); do
+    curl -s "$BASE/api/catalog" | grep -q 'Store Test' && catok=yes && break
+    sleep 0.25
+done
+chk "the run also regenerated the catalog" yes "$catok"
 chk "the queue is drained" '"queue": []' \
     "$(curl -s "$Q" | tr -d '\n' | grep -o '"queue": \[\]')"
 chk "DELETE an unknown url is 404" 404 \

@@ -2,8 +2,9 @@
 """PS Linker Store fetcher (server-side only).
 
 Reads a queue file of CDN items, downloads each into its category folder
-under the games library, then removes the queue. The catalog generator
-picks the new files up on its next pass — clients see one unified library.
+under the games library, then removes the queue and regenerates
+catalog.json, so a client that reloads right after a run already sees the
+new titles (the entrypoint's periodic pass repeats both harmlessly).
 
 Zip archives are extracted in place (the archive is removed after a
 successful extraction), so clients download ready-to-run files and never
@@ -34,6 +35,7 @@ Usage: store_fetch.py <games_dir> <queue_path>
 """
 import json
 import os
+import subprocess
 import sys
 import tempfile
 import time
@@ -243,6 +245,28 @@ def process_once(queue_path: str, games_dir: str, status: Status) -> int:
     return len(queue)
 
 
+def regenerate_catalog(games_dir: str) -> None:
+    """Regenerate catalog.json after a drain so the new files are in the
+    share listing right away, not at the entrypoint loop's next tick (a
+    GUI "Download now" answers in seconds; the client then refreshes its
+    catalog and must find the card). Same command entrypoint.sh runs, and
+    the generator writes atomically, so an overlapping tick is harmless;
+    failure is only a delay, since that loop reruns it."""
+    gen = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                       "generate_catalog.py")
+    if not os.path.exists(gen):     # fetcher copied somewhere alone
+        return
+    try:
+        r = subprocess.run([sys.executable, gen, games_dir,
+                            os.path.join(games_dir, "catalog.json")],
+                           capture_output=True, text=True, timeout=300)
+        note = (r.stdout or r.stderr).strip()
+        if note:
+            print(f"[store] catalog: {note}")
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        print(f"[store] catalog regen failed: {exc}", file=sys.stderr)
+
+
 def main() -> int:
     if len(sys.argv) != 3:
         print(__doc__, file=sys.stderr)
@@ -256,6 +280,7 @@ def main() -> int:
             break
         total_items += n
     if total_items:
+        regenerate_catalog(games_dir)
         status.publish("idle")
         print(f"[store] processed {total_items} queued item(s)")
     return 0
