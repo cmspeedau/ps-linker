@@ -4,9 +4,11 @@
 One port serves three things, in this routing order:
 
 1. ``/api/*`` — the web GUI's JSON endpoints (``GET /api/catalog``,
-   ``POST /api/upload``, ``POST /api/upload/file``, and the library
+   ``POST /api/upload``, ``POST /api/upload/file``, the library
    management trio ``DELETE /api/item``, ``POST /api/item/rename``,
-   ``PUT /api/item/meta``). Both uploads record the
+   ``PUT /api/item/meta``, and the Store endpoints
+   ``GET/POST/DELETE /api/store/queue``, ``GET /api/store/status``,
+   ``POST /api/store/run``). Both uploads record the
    entry in the catalog and leave a ``<name>.meta.json`` sidecar, so the
    platform and prettified title survive the Store's catalog regenerations.
 2. ``/gui/`` — the web GUI, with its assets at ``/gui/<asset>`` (``/ui/*`` is
@@ -35,7 +37,10 @@ import json
 import mimetypes
 import os
 import re
+import subprocess
 import sys
+import threading
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import unquote, urlparse
 
@@ -271,10 +276,58 @@ def sidecar_sha256(fs_path: str) -> str:
     return token if len(token) == 64 else ""
 
 
+# ---- Store queue helpers (endpoints below; the fetcher claims the file) --
+
+def store_category_ok(cat) -> bool:
+    """A queue category is exactly one visible path component — the same
+    rule store_fetch.py enforces before it mkdir's the destination."""
+    return (isinstance(cat, str) and 0 < len(cat) <= 64
+            and cat == os.path.basename(cat)
+            and not cat.startswith(".") and cat not in (".", "..")
+            and not BAD_NAME_RE.search(cat))
+
+
+def store_url_ok(url) -> bool:
+    # BAD_NAME_RE is the *filename* guard (slashes legal here); a URL only
+    # needs the scheme, a sane length, and no control characters.
+    return (isinstance(url, str) and len(url) <= 2000
+            and url.startswith(("http://", "https://"))
+            and not re.search(r"[\x00-\x1f\x7f]", url))
+
+
+def store_queue_read(path: str) -> list:
+    """The pending queue as a list; anything unreadable reads as empty
+    (while a claim lives, the pending file legitimately may not exist)."""
+    try:
+        with open(path, encoding="utf8") as fh:
+            data = json.load(fh)
+        return data if isinstance(data, list) else []
+    except (OSError, ValueError):
+        return []
+
+
+def store_queue_write(path: str, items: list) -> None:
+    """Atomic rewrite; the fetcher claims the queue with its own atomic
+    rename, so a half-written queue can never be claimed."""
+    tmp = path + ".part"
+    with open(tmp, "w", encoding="utf8") as fh:
+        json.dump(items, fh, indent=2)
+    os.replace(tmp, path)
+
+
 def make_handler(games_dir: str):
     games_dir = os.path.realpath(games_dir)
     catalog_path = os.path.join(games_dir, "catalog.json")
     ui_dir = os.path.realpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "ui"))
+    # Store queue trio: the GUI reads/writes the pending file under this
+    # lock (ThreadingHTTPServer), while the fetcher claims it with an
+    # atomic rename that no in-process lock could match anyway.
+    queue_path = os.path.join(games_dir, ".store-queue.json")
+    claim_path = queue_path + ".processing"
+    status_path = os.path.join(games_dir, ".store-status.json")
+    fetcher_py = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                              "store_fetch.py")
+    queue_lock = threading.Lock()
 
     class PSLinkerHandler(BaseHTTPRequestHandler):
         server_version = "PSLinker/1.2"
@@ -396,6 +449,12 @@ def make_handler(games_dir: str):
                     payload["categories"] = raw["categories"]
                 self.send_json(200, payload)
                 return
+            if path == "/api/store/status":
+                self.handle_store_status()
+                return
+            if path == "/api/store/queue":
+                self.handle_store_queue_get()
+                return
             # The web GUI lives under /gui/ so that "/" stays the library
             # listing: that is what the PSP/PS3 apps request first, and what
             # the README tells people to open for downloads.
@@ -415,6 +474,12 @@ def make_handler(games_dir: str):
 
         def do_POST(self) -> None:
             path = urlparse(self.path).path
+            if path == "/api/store/queue":
+                self.handle_store_queue_add()
+                return
+            if path == "/api/store/run":
+                self.handle_store_run()
+                return
             if path == "/api/upload/file":
                 self.handle_raw_upload()
                 return
@@ -537,6 +602,123 @@ def make_handler(games_dir: str):
                 return
             self.send_json(201, {"uploaded": entry, "items": items})
 
+        # ---- Store queue (web GUI) ---------------------------------------
+        #
+        # The queue file itself is the contract with store_fetch.py: this
+        # process only ever reads or atomically rewrites the *pending* file;
+        # a running fetcher holds the claim (``.processing``), so an item
+        # added mid-run waits for the next pass, and deleting a claimed URL
+        # is refused rather than raced.
+
+        def _claim_has(self, url) -> bool:
+            return (os.path.exists(claim_path)
+                    and any(isinstance(it, dict) and it.get("url") == url
+                            for it in store_queue_read(claim_path)))
+
+        def handle_store_status(self) -> None:
+            try:
+                with open(status_path, encoding="utf8") as fh:
+                    status = json.load(fh)
+                if not isinstance(status, dict):
+                    status = {}
+            except (OSError, ValueError):
+                status = {}
+            hist = status.get("history")
+            status["history"] = hist if isinstance(hist, list) else []
+            processing = os.path.exists(claim_path)
+            # A crashed run leaves "downloading" behind with no claim; the
+            # claim file is the only proof a download is really live.
+            if not processing and status.get("phase") != "idle":
+                status["phase"], status["current"] = "idle", None
+            status.setdefault("phase", "idle")
+            status["processing"] = processing
+            status["pending"] = len(store_queue_read(queue_path))
+            self.send_json(200, status)
+
+        def handle_store_queue_get(self) -> None:
+            running = (store_queue_read(claim_path)
+                       if os.path.exists(claim_path) else None)
+            self.send_json(200, {"queue": store_queue_read(queue_path),
+                                 "running": running})
+
+        def handle_store_queue_add(self) -> None:
+            data, err = self.read_json()
+            if err:
+                self.send_json(err[0], {"error": err[1]})
+                return
+            url = str(data.get("url", "")).strip()
+            if not store_url_ok(url):
+                self.send_json(400, {"error": "url must be http(s)"})
+                return
+            title = str(data.get("title") or "").strip()[:200]
+            if not title:
+                base = os.path.basename(url.split("?")[0])
+                title = os.path.splitext(base)[0] or base or url[:80]
+            category = str(data.get("category") or "Homebrew").strip()
+            if not store_category_ok(category):
+                self.send_json(400, {"error": "category must be one visible"
+                                              " folder name, no path"})
+                return
+            with queue_lock:
+                if self._claim_has(url):
+                    self.send_json(409, {"error": "that URL is downloading"
+                                                  " right now"})
+                    return
+                q = store_queue_read(queue_path)
+                if any(isinstance(it, dict) and it.get("url") == url
+                       for it in q):
+                    self.send_json(409, {"error": "already queued"})
+                    return
+                q.append({"title": title, "category": category, "url": url,
+                          "added": time.strftime("%Y-%m-%dT%H:%M:%SZ",
+                                                 time.gmtime())})
+                try:
+                    store_queue_write(queue_path, q)
+                except OSError as exc:
+                    self.send_json(500, {"error": str(exc)})
+                    return
+            self.send_json(201, {"queue": q})
+
+        def handle_store_queue_del(self, url) -> None:
+            with queue_lock:
+                if self._claim_has(url):
+                    self.send_json(409, {"error": "that URL is downloading"
+                                                  " right now"})
+                    return
+                q = store_queue_read(queue_path)
+                rest = [it for it in q
+                        if not (isinstance(it, dict) and it.get("url") == url)]
+                if len(rest) == len(q):
+                    self.send_json(404, {"error": "not in the queue"})
+                    return
+                try:
+                    store_queue_write(queue_path, rest)
+                except OSError as exc:
+                    self.send_json(500, {"error": str(exc)})
+                    return
+            self.send_json(200, {"queue": rest})
+
+        def handle_store_run(self) -> None:
+            """Spawn the fetcher detached, so Download now does not wait on
+            the entrypoint's STORE_INTERVAL. Its stdout/stderr stay attached
+            to the server's, i.e. the container log. Two overlapping runs
+            are harmless: only one rename can claim the queue."""
+            if os.path.exists(claim_path):
+                self.send_json(409, {"error": "a download is already running"})
+                return
+            with queue_lock:
+                if not store_queue_read(queue_path):
+                    self.send_json(400, {"error": "queue is empty"})
+                    return
+                try:
+                    subprocess.Popen([sys.executable, fetcher_py,
+                                      games_dir, queue_path],
+                                     start_new_session=True)
+                except OSError as exc:
+                    self.send_json(500, {"error": str(exc)})
+                    return
+            self.send_json(202, {"started": True})
+
         # ---- library management (web GUI) ---------------------------------
 
         def read_json(self):
@@ -574,7 +756,12 @@ def make_handler(games_dir: str):
             return fs_path
 
         def do_DELETE(self) -> None:
-            if urlparse(self.path).path != "/api/item":
+            path = urlparse(self.path).path
+            if path == "/api/store/queue":
+                url = parse_query(urlparse(self.path).query).get("url", "")
+                self.handle_store_queue_del(url)
+                return
+            if path != "/api/item":
                 self.send_error(404)
                 return
             url = parse_query(urlparse(self.path).query).get("url", "")

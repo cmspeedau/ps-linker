@@ -328,6 +328,78 @@ chk "regeneration passes the pairing through" BLES00002.rap "$(
     python3 -c "import json;d=json.load(open('$W/gen2.json'));
 e=next(e for e in d['entries'] if e.get('url')=='/PSP/test2.iso');print(e.get('rap',''))")"
 
+# ------------------------------------------------- store queue + activity ----
+echo "store queue, status file, and the fetcher run endpoint"
+Q="$BASE/api/store/queue"
+jpost() { curl -s -o "$W/last.json" -w '%{http_code}' -X POST \
+          -H 'Content-Type: application/json' -d "$2" "$BASE$1"; }
+chk "GET /api/store/queue answers" 200 "$(code /api/store/queue)"
+chk "initially empty" '"queue": []' \
+    "$(curl -s "$Q" | tr -d '\n' | grep -o '"queue": \[\]')"
+chk "GET /api/store/status answers" 200 "$(code /api/store/status)"
+chk "initially idle" '"phase": "idle"' \
+    "$(curl -s "$BASE/api/store/status" | grep -o '"phase": "idle"')"
+chk "POST run with an empty queue is refused" 400 \
+    "$(curl -s -o /dev/null -w '%{http_code}' -X POST "$BASE/api/store/run")"
+chk "POST a queue item" 201 \
+    "$(jpost /api/store/queue \
+       '{"title":"Test2 Iso","category":"Store Test","url":"'$BASE'/PSP/test2.iso"}')"
+chk "POST with a path category is refused" 400 \
+    "$(jpost /api/store/queue \
+       '{"url":"'$BASE'/PSP/test2.iso","category":"../Run"}')"
+chk "POST with a bad scheme is refused" 400 \
+    "$(jpost /api/store/queue '{"url":"ftp://x/y"}')"
+chk "POST a duplicate url is refused" 409 \
+    "$(jpost /api/store/queue '{"url":"'$BASE'/PSP/test2.iso"}')"
+chk "the queue file is hidden from the listing" yes \
+    "$(case "$(curl -s "$BASE/")" in *store-queue*) echo no;; *) echo yes;; esac)"
+# A live claim: deletes of claimed urls must be refused, adds must not.
+head -c 900 /dev/urandom > "$W/games/PSP/second.bin"
+cat > "$W/games/.store-queue.json.processing" <<EOF
+[{"title":"Claimed","category":"Store Test","url":"$BASE/PSP/test2.iso"}]
+EOF
+chk "DELETE of a claimed url is refused" 409 \
+    "$(jdel "/api/store/queue?url=$BASE/PSP/test2.iso")"
+chk "POST while another item is claimed is allowed" 201 \
+    "$(jpost /api/store/queue \
+       '{"url":"'$BASE'/PSP/second.bin","category":"Store Test"}')"
+rm -f "$W/games/.store-queue.json.processing"
+# A stale status from a crashed run must not claim a download is live.
+printf '{"phase":"downloading","current":{"title":"ghost"},"history":[]}' \
+    > "$W/games/.store-status.json"
+chk "a stale 'downloading' without a claim reads as idle" '"phase": "idle"' \
+    "$(curl -s "$BASE/api/store/status" | grep -o '"phase": "idle"')"
+chk "POST /api/store/run starts the fetcher" 202 \
+    "$(curl -s -o /dev/null -w '%{http_code}' -X POST "$BASE/api/store/run")"
+ok=no
+for _ in $(seq 40); do
+    [ -f "$W/games/Store Test/test2.iso" ] && ok=yes && break
+    sleep 0.25
+done
+if [ "$ok" != yes ]; then   # leave the scene of the crime, not just a FAIL line
+    echo "  --- diagnostics: status file"
+    cat "$W/games/.store-status.json" 2>&1 | sed 's/^/    /'
+    echo "  --- diagnostics: library"
+    find "$W/games" -maxdepth 2 | sed 's/^/    /'
+    echo "  --- diagnostics: server log"
+    tail -20 "$W/server.log" | sed 's/^/    /'
+fi
+chk "the queue item was downloaded into its category" yes "$ok"
+for _ in $(seq 20); do
+    [ -f "$W/games/.store-queue.json.processing" ] || break
+    sleep 0.25
+done
+chk "downloaded bytes match the share" \
+    "$(sha256sum "$W/games/PSP/test2.iso" | cut -d' ' -f1)" \
+    "$(sha256sum "$W/games/Store Test/test2.iso" | cut -d' ' -f1)"
+chk "history records the success" '"status": "ok"' \
+    "$(curl -s "$BASE/api/store/status" | tr -d '\n' \
+        | grep -o '"status": "ok"' | head -1)"
+chk "the queue is drained" '"queue": []' \
+    "$(curl -s "$Q" | tr -d '\n' | grep -o '"queue": \[\]')"
+chk "DELETE an unknown url is 404" 404 \
+    "$(jdel "/api/store/queue?url=$BASE/nope")"
+
 # --------------------------------------- the console's own downloader (opt-in) -
 if [ "${1:-}" = "--with-dl" ]; then
     echo "ps3/resume.c (host-compiled) against this server"
