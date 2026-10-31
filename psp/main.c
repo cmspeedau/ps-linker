@@ -36,6 +36,7 @@
 
 #include "resume.h"
 #include "store.h"
+#include "../ui/store_logic.h"
 
 #define printf pspDebugScreenPrintf
 #define SCREEN_ROWS 33
@@ -182,6 +183,8 @@ static int save_settings(void) {
 typedef struct {
     char name[MAX_PATH_LEN];   /* display name (decoded)            */
     char url[MAX_PATH_LEN];    /* absolute URL for fetch/download   */
+    long long size;            /* bytes from data-size, -1 unknown  */
+    char category[64];         /* data-cat (catalog category), "" if none */
     int  is_dir;               /* entry is a subdirectory (trailing /) */
 } FileEntry;
 
@@ -264,7 +267,7 @@ static int build_url(const char *name, char *out, size_t outlen) {
     return 0;
 }
 
-static int add_file(const char *href) {
+static int add_file(const char *href, long long size, const char *category) {
     /* Skip parent links and server-absolute links */
     if (href[0] == '\0') return 0;
     if (strstr(href, "../") == href) return 0;
@@ -289,8 +292,31 @@ static int add_file(const char *href) {
     if (build_url(href, e->url, MAX_PATH_LEN) != 0) return 0;
     snprintf(e->name, MAX_PATH_LEN, is_dir ? "[%s]" : "%s", display);
     e->is_dir = is_dir;
+    e->size = size;
+    snprintf(e->category, sizeof(e->category), "%s", category ? category : "");
     g_file_count++;
     return 1;
+}
+
+/* Read key="value" from a directory-listing anchor's tail (the text after
+   href's closing quote, within that tag only). Returns 1 when found. */
+static int attr_at(const char *start, const char *end, const char *key,
+                   char *out, size_t cap) {
+    size_t kl = strlen(key);
+    for (const char *p = start; p + kl + 3 <= end; p++) {
+        if (p[0] != ' ' || memcmp(p + 1, key, kl) != 0) continue;
+        const char *v = p + 1 + kl;
+        if (v[0] != '=' || v[1] != '"') continue;
+        v += 2;
+        const char *q = (const char *)memchr(v, '"', (size_t)(end - v));
+        if (!q) return 0;
+        size_t n = (size_t)(q - v);
+        if (n >= cap) n = cap - 1;
+        memcpy(out, v, n);
+        out[n] = '\0';
+        return 1;
+    }
+    return 0;
 }
 
 static int parse_listing(const char *html) {
@@ -305,7 +331,18 @@ static int parse_listing(const char *html) {
             char href[MAX_PATH_LEN];
             memcpy(href, p, len);
             href[len] = '\0';
-            add_file(href);
+            /* The rest of this anchor may carry data-size / data-cat; the
+               search stops at the next tag so no neighbouring entry leaks
+               in, and a share without the attributes parses as before. */
+            const char *tag_end = strchr(end, '<');
+            if (!tag_end) tag_end = end;
+            char sizebuf[24], cat[64];
+            long long size = -1;
+            cat[0] = '\0';
+            if (attr_at(end + 1, tag_end, "data-size", sizebuf, sizeof sizebuf))
+                size = strtoll(sizebuf, NULL, 10);
+            attr_at(end + 1, tag_end, "data-cat", cat, sizeof cat);
+            add_file(href, size, cat);
         }
         p = end + 1;
     }
@@ -563,11 +600,39 @@ static int browser(void) {
         field(14, 1, hw, &head, headtxt);
 
         for (int i = top; i < g_file_count && i < top + list_rows; i++) {
+            int w = SCREEN_COLS - 16;
+            /* Same store-card meta the PS3 backends render: the size, plus
+               the category where the path header does not already state it.
+               Shares without data-* attributes give size -1/category "", so
+               these rows render exactly as they used to. */
+            char meta[96];
+            meta[0] = '\0';
+            if (g_files[i].size >= 0) {
+                char sz[24];
+                store_format_size((uint64_t)g_files[i].size, sz, sizeof sz);
+                snprintf(meta, sizeof meta, "%s", sz);
+            }
+            if (!g_files[i].is_dir && g_files[i].category[0]) {
+                const char *cwd = g_cwd;
+                size_t cl = strlen(g_files[i].category);
+                if (!(strncmp(cwd, g_files[i].category, cl) == 0 &&
+                      (cwd[cl] == '\0' || cwd[cl] == '/'))) {
+                    strncat(meta, meta[0] ? "  " : "", sizeof meta - strlen(meta) - 1);
+                    strncat(meta, g_files[i].category, sizeof meta - strlen(meta) - 1);
+                }
+            }
+            int ml = (int)strlen(meta);
+
             char line[MAX_PATH_LEN];
             snprintf(line, sizeof(line), "%s", g_files[i].name);
-            /* Truncate to the list panel width */
-            int w = SCREEN_COLS - 16;
-            if ((int)strlen(line) > w) line[w] = '\0';
+            if (ml && (int)strlen(line) + ml <= w - 1) {
+                char padded[MAX_PATH_LEN + 96];
+                snprintf(padded, sizeof padded, "%-*s%s", w - ml, line, meta);
+                snprintf(line, sizeof line, "%.*s",
+                         (int)sizeof(line) - 1, padded);   /* w-bounded fit */
+            } else if ((int)strlen(line) > w) {
+                line[w] = '\0';
+            }
             field(15, list_top + (i - top), w,
                   i == sel ? &STYLE_SEL : &STYLE_ROW, line);
         }

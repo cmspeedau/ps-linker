@@ -164,7 +164,29 @@ static void url_decode(char *dst, const char *src, size_t dstlen)
     dst[o] = '\0';
 }
 
-static int add_file(const char *href)
+/* Read key="value" from a directory-listing anchor's tail (the text after
+   href's closing quote, within that tag only). Returns 1 when found. */
+static int attr_at(const char *start, const char *end, const char *key,
+                   char *out, size_t cap)
+{
+    size_t kl = strlen(key);
+    for (const char *p = start; p + kl + 3 <= end; p++) {
+        if (p[0] != ' ' || memcmp(p + 1, key, kl) != 0) continue;
+        const char *v = p + 1 + kl;
+        if (v[0] != '=' || v[1] != '"') continue;
+        v += 2;
+        const char *q = (const char *)memchr(v, '"', (size_t)(end - v));
+        if (!q) return 0;
+        size_t n = (size_t)(q - v);
+        if (n >= cap) n = cap - 1;
+        memcpy(out, v, n);
+        out[n] = '\0';
+        return 1;
+    }
+    return 0;
+}
+
+static int add_file(const char *href, long long size, const char *category)
 {
     if (href[0] == '\0') return 0;
     if (strncmp(href, "../", 3) == 0) return 0;   /* parent link      */
@@ -193,6 +215,8 @@ static int add_file(const char *href)
         strncat(full, "/", sizeof(full) - strlen(full) - 1);
     snprintf(e->url, sizeof(e->url), "%s", full);
     e->is_dir = is_dir;
+    e->size = size;
+    snprintf(e->category, sizeof(e->category), "%s", category ? category : "");
 
     g_file_count++;
     return 1;
@@ -211,7 +235,19 @@ static int parse_listing(const char *html)
             char href[512];
             memcpy(href, p, len);
             href[len] = '\0';
-            add_file(href);
+            /* The rest of this anchor may carry data-size / data-cat; the
+               search stops at the next tag so no neighbouring entry leaks
+               in, and a share without the attributes just parses as before. */
+            const char *tag_end = strchr(end, '<');
+            if (!tag_end) tag_end = end;
+            char sizebuf[24], cat[64];
+            long long size = -1;
+            cat[0] = '\0';
+            if (attr_at(end + 1, tag_end, "data-size", sizebuf,
+                        sizeof sizebuf))
+                size = strtoll(sizebuf, NULL, 10);
+            attr_at(end + 1, tag_end, "data-cat", cat, sizeof cat);
+            add_file(href, size, cat);
         }
         p = end + 1;
     }
@@ -349,17 +385,19 @@ static int cwd_enter(const char *name)
     return 0;
 }
 
-/* Remove the last path component from g_cwd ("" if already at root). */
+/* Remove the last path component from g_cwd ("" if already at root).
+   g_cwd always keeps a trailing slash when non-empty, so drop that one
+   first, then cut at the parent's slash: "a/b/" -> "a/", "a/" -> "". */
 static void cwd_up(void)
 {
+    size_t l = strlen(g_cwd);
+    if (l == 0) return;
+    if (g_cwd[l - 1] == '/') g_cwd[--l] = '\0';
     char *slash = strrchr(g_cwd, '/');
-    if (slash && slash >= g_cwd) {
-        /* keep the trailing slash of the parent, if any */
-        if (slash == g_cwd)
-            g_cwd[0] = '\0';
-        else
-            *slash = '\0';
-    }
+    if (slash)
+        slash[1] = '\0';              /* keep the parent's slash */
+    else
+        g_cwd[0] = '\0';              /* one component -> root */
 }
 
 /* ------------------------------------------------------------------ */

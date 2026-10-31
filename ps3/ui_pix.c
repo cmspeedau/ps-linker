@@ -12,6 +12,7 @@
 
 #include "gfx.h"
 #include "ui.h"
+#include "../ui/store_logic.h"
 
 /* Shared palette (see psp/store_gui.c for the PSP twin). */
 #define COL_BG      0xFF1D1D1D
@@ -157,10 +158,37 @@ void ui_browser(const char *path, const FileEntry *files, int count,
         if (i == sel) gfx_rect(PANEL_X - 8, y - 4, PANEL_R - PANEL_X + 16, ROW_PITCH - 4, COL_SEL);
         if (files[i].is_dir)
             gfx_text(PANEL_X + 10, y + 10, "[DIR]", i == sel ? COL_SELTX : COL_DIM, 2);
+
+        /* Store-card chrome: the size, plus the category where the path
+           header does not already state it (the path only shows its own
+           top folder, and a folder row's category is its own name).
+           Shares without the attributes report size -1/category "", so
+           these rows come out exactly as they used to. */
+        char meta[96];
+        meta[0] = '\0';
+        if (files[i].size >= 0) {
+            char sz[24];
+            store_format_size((uint64_t)files[i].size, sz, sizeof sz);
+            snprintf(meta, sizeof meta, "%s", sz);
+        }
+        if (!files[i].is_dir && files[i].category[0]) {
+            size_t cl = strlen(files[i].category);
+            if (!(strncmp(path, files[i].category, cl) == 0 &&
+                  (path[cl] == '\0' || path[cl] == '/'))) {
+                strncat(meta, meta[0] ? "  " : "", sizeof meta - strlen(meta) - 1);
+                strncat(meta, files[i].category, sizeof meta - strlen(meta) - 1);
+            }
+        }
+        const int mw = meta[0] ? gfx_text_width(meta, 2) : 0;
+
         char name[300];
-        clip(name, sizeof name, files[i].name, PANEL_R - ROW_TEXT_X - 30, 2);
+        clip(name, sizeof name, files[i].name,
+             PANEL_R - ROW_TEXT_X - 30 - (mw ? mw + 12 : 0), 2);
         gfx_text(ROW_TEXT_X, y + 10, name,
                  i == sel ? COL_SELTX : COL_TEXT, 2);
+        if (mw)
+            gfx_text(PANEL_R - 14 - mw, y + 10, meta,
+                     i == sel ? COL_SELTX : COL_DIM, 2);
     }
 
     hint_status_bar("Up/Down move   X open   O up   SELECT settings   Triangle store",

@@ -18,7 +18,11 @@ One port serves three things, in this routing order:
    directory listings in the same simple HTML the stock ``http.server`` emits
    (both apps parse ``href`` entries, trailing ``/`` meaning a directory), and
    files with ``Range``/``206`` support so an interrupted download resumes from
-   its partial file instead of restarting.
+   its partial file instead of restarting. Anchors additionally carry the
+   entry's ``data-size`` (files) and ``data-cat`` (catalog category: top-level
+   folder, root files ``Uncategorized``) *after* the quoted href — invisible
+   to the apps' ``href="`` scan and to foreign parsers, and the apps render
+   the old plain rows whenever a share omits them.
 
 Everything in group 3 resolves *inside the games directory* and nothing else
 (no traversal). An earlier rewrite resolved every path against the GUI folder
@@ -414,6 +418,16 @@ def make_handler(games_dir: str):
             entries = sorted(os.listdir(dir_path))
             rel = os.path.relpath(dir_path, base).replace(os.sep, "/")
             display = "Library root" if rel == "." else rel
+            # Catalog model, same as generate_catalog.py: an entry's category
+            # is the top-level folder it lives under (a root folder is its own
+            # category; a root file is "Uncategorized"). Anchors carry it, and
+            # a file's exact size, as data-* attributes so the device
+            # browsers can draw the store's row chrome. Compatibility is by
+            # layout: the parsers scan href="..." and stop at the quote, so
+            # attributes after it change nothing for them, and foreign shares
+            # (python -m http.server, nginx autoindex) simply never send the
+            # attributes — the apps then render exactly the old rows.
+            top = "" if rel == "." else rel.split("/")[0]
             rows = []
             if rel != ".":
                 rows.append('<li><a href="../">../</a></li>')
@@ -422,9 +436,23 @@ def make_handler(games_dir: str):
                     continue
                 if name == "catalog.json":
                     continue          # metadata, not a library entry
-                suffix = "/" if os.path.isdir(os.path.join(dir_path, name)) else ""
-                rows.append(f'<li><a href="{html.escape(name)}{suffix}">'
-                            f'{html.escape(name)}{suffix}</a></li>')
+                full = os.path.join(dir_path, name)
+                is_dir = os.path.isdir(full)
+                attrs = ""
+                if is_dir:
+                    cat = name if rel == "." else top
+                else:
+                    try:
+                        attrs += (f' data-size='
+                                  f'"{os.path.getsize(full)}"')
+                    except OSError:
+                        pass          # vanished mid-listing: name only
+                    cat = top or "Uncategorized"
+                if cat:
+                    attrs += f' data-cat="{html.escape(cat, quote=True)}"'
+                suffix = "/" if is_dir else ""
+                rows.append(f'<li><a href="{html.escape(name)}{suffix}"'
+                            f'{attrs}>{html.escape(name)}{suffix}</a></li>')
             body = (f'<!DOCTYPE html><html><head><meta charset="utf-8">'
                     f'<title>{html.escape(display)}</title></head><body>'
                     f'<h1>PS Linker &mdash; {html.escape(display)}</h1><hr><ul>'

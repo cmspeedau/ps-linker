@@ -15,10 +15,15 @@
 #ifndef PS3_UI_H
 #define PS3_UI_H
 
-/* One directory-listing entry, as parsed by main.c. */
+/* One directory-listing entry, as parsed by main.c. size/category come from
+ * the share's anchor data-size/data-cat attributes; -1/"" when the share
+ * does not report them (plain python or nginx shares render the same rows
+ * as before, minus the store chrome). */
 typedef struct {
     char name[256];
     char url[256];
+    long long size;
+    char category[64];
     int  is_dir;
 } FileEntry;
 

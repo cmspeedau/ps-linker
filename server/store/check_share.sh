@@ -74,6 +74,27 @@ chk "listing hides catalog.json" yes \
     "$(case "$listing" in *catalog.json*) echo no;; *) echo yes;; esac)"
 chk "listing hides .part files" yes \
     "$(case "$listing" in *partial.bin*) echo no;; *) echo yes;; esac)"
+# Browser metadata: anchors carry the file's size and the catalog category
+# (top-level folder), so the device browsers draw store-style row chrome.
+# Old parsers scan href="..." and stop at the quote, so this changes
+# nothing for them; a foreign share just never sends the attributes.
+chk "a file's size rides its anchor" yes \
+    "$(case "$(curl -s "$BASE/PSP/")" in \
+        *'href="test.iso" data-size="'"$SIZE"'"'*) echo yes;; *) echo no;; esac)"
+chk "a file's category is its top folder" yes \
+    "$(case "$(curl -s "$BASE/PSP/")" in \
+        *'data-cat="PSP"'*) echo yes;; *) echo no;; esac)"
+chk "a top-level dir is its own category" yes \
+    "$(case "$listing" in *'href="PSP/" data-cat="PSP"'*) echo yes;; *) echo no;; esac)"
+mkdir -p "$W/games/PSP/Mini" && printf x > "$W/games/PSP/Mini/tiny.bin"
+chk "a nested file keeps the top folder as category" yes \
+    "$(case "$(curl -s "$BASE/PSP/Mini/")" in \
+        *'href="tiny.bin" data-size="1" data-cat="PSP"'*) echo yes;; *) echo no;; esac)"
+printf x > "$W/games/rootfile.bin"
+chk "a root file is Uncategorized" yes \
+    "$(case "$(curl -s "$BASE/")" in \
+        *'href="rootfile.bin" data-size="1" data-cat="Uncategorized"'*) echo yes;; *) echo no;; esac)"
+rm -rf "$W/games/PSP/Mini" "$W/games/rootfile.bin"
 chk "GET /PSP/ listing" 200 "$(code /PSP/)"
 chk "GET a game file" 200 "$(code /PSP/test.iso)"
 chk "full body length" "$SIZE" "$(curl -s "$BASE/PSP/test.iso" | wc -c)"

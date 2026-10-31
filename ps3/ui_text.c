@@ -12,6 +12,7 @@
 #include <string.h>
 
 #include "ui.h"
+#include "../ui/store_logic.h"
 
 #define SCREEN_ROWS 33
 #define SCREEN_COLS 80
@@ -153,7 +154,31 @@ void ui_browser(const char *path, const FileEntry *files, int count,
         snprintf(line, sizeof(line), "%s%s",
                  files[i].is_dir ? "[DIR]  " : "       ",
                  files[i].name);
-        if ((int)strlen(line) > w) line[w] = '\0';
+        /* Same store-card meta as the pixel backend: size, plus category
+           where the path header does not already state it. */
+        char meta[96];
+        meta[0] = '\0';
+        if (files[i].size >= 0) {
+            char sz[24];
+            store_format_size((uint64_t)files[i].size, sz, sizeof sz);
+            snprintf(meta, sizeof meta, "%s", sz);
+        }
+        if (!files[i].is_dir && files[i].category[0]) {
+            size_t cl = strlen(files[i].category);
+            if (!(strncmp(path, files[i].category, cl) == 0 &&
+                  (path[cl] == '\0' || path[cl] == '/'))) {
+                strncat(meta, meta[0] ? "  " : "", sizeof meta - strlen(meta) - 1);
+                strncat(meta, files[i].category, sizeof meta - strlen(meta) - 1);
+            }
+        }
+        int ml = (int)strlen(meta);
+        if (ml && (int)strlen(line) + ml <= w - 1) {
+            char padded[160];
+            snprintf(padded, sizeof padded, "%-*s%s", w - ml, line, meta);
+            snprintf(line, sizeof line, "%s", padded);
+        } else if ((int)strlen(line) > w) {
+            line[w] = '\0';
+        }
         printf("%s%s\x1b[%d;15H %-*s %s",
                i == sel ? STYLE_SEL.bg : STYLE_ROW.bg,
                i == sel ? STYLE_SEL.fg : STYLE_ROW.fg,
