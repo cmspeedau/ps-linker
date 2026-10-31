@@ -149,16 +149,34 @@ static void gui_to_debug(void) {
    Editable in the Settings view; lives in RAM after load. */
 static char g_nas_base[MAX_URL_LEN] = DEFAULT_NAS_URL;
 
-/* Load the saved URL. Silently keeps the default if absent/invalid. */
+/* The gclite feature switch, owned by the pixel Utilities page
+   (Settings -> Triangle). ON (the default) is the whole game-categories
+   integration: CAT_ folder names display stripped and START opens the
+   categories popup (the popup still requires the plugin registration in
+   ms0:/seplugins/vsh.txt). OFF, folders keep their raw names and START
+   does nothing. Persisted as line 2 of settings.txt; files without the
+   line — every file written before this switch existed — mean ON. */
+int g_gclite_on = 1;
+
+/* Load the saved URL and feature switch. Silently keeps defaults for
+   absent/invalid fields, including the second line missing. */
 static void load_settings(void) {
     SceUID fd = sceIoOpen(SETTINGS_PATH, PSP_O_RDONLY, 0777);
     if (fd < 0) return;
-    char buf[MAX_URL_LEN];
+    char buf[MAX_URL_LEN + 32];
     int n = sceIoRead(fd, buf, sizeof(buf) - 1);
     sceIoClose(fd);
     if (n <= 0) return;
     buf[n] = '\0';
-    /* trim trailing whitespace/newlines */
+
+    char *line2 = strchr(buf, '\n');            /* split off line 2 */
+    if (line2) {
+        *line2++ = '\0';
+        if (strncmp(line2, "gclite=0", 8) == 0) g_gclite_on = 0;
+    }
+
+    /* trim trailing whitespace/newlines from the URL line */
+    n = (int)strlen(buf);
     while (n > 0 && (buf[n-1] == '\n' || buf[n-1] == '\r' || buf[n-1] == ' '))
         buf[--n] = '\0';
     if (n > 7 && strncmp(buf, "http://", 7) == 0)
@@ -169,8 +187,10 @@ static int save_settings(void) {
     SceUID fd = sceIoOpen(SETTINGS_PATH,
                           PSP_O_WRONLY | PSP_O_CREAT | PSP_O_TRUNC, 0777);
     if (fd < 0) return -1;
-    int len = (int)strlen(g_nas_base);
-    int w = sceIoWrite(fd, g_nas_base, len);
+    char buf[MAX_URL_LEN + 32];
+    int len = snprintf(buf, sizeof(buf), "%s\ngclite=%d\n",
+                       g_nas_base, g_gclite_on ? 1 : 0);
+    int w = sceIoWrite(fd, buf, len);
     sceIoClose(fd);
     return (w == len) ? 0 : -2;
 }
@@ -482,6 +502,10 @@ static int settings_view(void) {
     int pick = 0, view = 0;
     unsigned prev = 0;
 
+    /* Consume the entry key: seed `prev` with the buttons still held so
+       the SELECT that opened this view cannot re-fire as a cancel. */
+    { SceCtrlData p0; sceCtrlReadBufferPositive(&p0, 1); prev = p0.Buttons; }
+
     /* Visible window of the strip: pick stays inside [view, view+W) */
     const int strip_w = SCREEN_COLS - 16;      /* list panel width */
     const int picker_row = SCREEN_ROWS - 4;
@@ -502,7 +526,8 @@ static int settings_view(void) {
 
         Style hint = { COL_BG, COL_TEXT_DIM };
         field(14, 8, strip_w, &hint,
-              " <>:pick  X:insert  O:delete  Start:save  Select:cancel");
+              " <>:pick  X:insert  O:delete  Start:save  Sel:cancel"
+              "  Tri:util");
 
         /* Character picker strip */
         for (int i = 0; i < strip_w / 2 && view + i < SETTINGS_NSLOTS; i++) {
@@ -552,6 +577,8 @@ static int settings_view(void) {
             return 1;
         } else if (pressed & PSP_CTRL_SELECT) {
             return 0;                         /* cancel */
+        } else if (pressed & PSP_CTRL_TRIANGLE) {
+            return 2;                         /* open the Utilities page */
         }
     }
 }
@@ -635,12 +662,19 @@ static void browser_fill(int reset_tab) {
     if (reset_tab) g_downloads_active = 0;
 
     for (int i = 0; i < g_file_count; i++) {
-        if (g_files[i].is_dir)
+        /* gclite display copies (Utilities switch ON): CAT_ folders and
+           CAT_ categories show as plain names; OFF, everything stays raw.
+           Navigation always uses the raw e->name / e->url. */
+        if (g_gclite_on && g_files[i].is_dir)
             store_cat_name(g_files[i].name, sh_name[i], sizeof(sh_name[i]));
         else
             snprintf(sh_name[i], sizeof(sh_name[i]), "%.*s",
                      (int)sizeof(sh_name[i]) - 1, g_files[i].name);
-        store_cat_name(g_files[i].category, sh_cat[i], sizeof(sh_cat[i]));
+        if (g_gclite_on)
+            store_cat_name(g_files[i].category, sh_cat[i], sizeof(sh_cat[i]));
+        else
+            snprintf(sh_cat[i], sizeof(sh_cat[i]), "%.*s",
+                     (int)sizeof(sh_cat[i]) - 1, g_files[i].category);
         sh[i].name = sh_name[i];
         sh[i].category = sh_cat[i];
         sh[i].platform = g_files[i].platform;
@@ -726,6 +760,39 @@ static int gclite_installed(void) {
     }
     sceIoClose(f);
     return hit;
+}
+
+/* The pixel Utilities page (Settings -> Triangle): the switch home for
+   options that do not fit the debug-screen Settings editor. Currently one
+   switch - the whole gclite feature (CAT_ name stripping + START
+   categories popup). Detection runs on entry, so installing the plugin
+   and reopening the page picks it up. Returns 2 to fall back into the
+   debug Settings screen, or 0/1 (changed?) to leave for the browser. */
+static int utilities_view(void) {
+    unsigned prev = 0;
+    int changed = 0;
+    const int installed = gclite_installed();
+
+    /* Same entry-key consumption as settings_view: the Triangle that
+       walked in must not read as "back to Settings". */
+    { SceCtrlData p0; sceCtrlReadBufferPositive(&p0, 1); prev = p0.Buttons; }
+    for (;;) {
+        store_gui_utilities(g_gclite_on, installed);
+
+        unsigned pressed;
+        do { sceKernelDelayThread(16000); }
+        while (get_pressed(&pressed, &prev) != 0);
+
+        if (pressed & PSP_CTRL_CROSS) {
+            g_gclite_on = !g_gclite_on;
+            changed = 1;
+        } else if (pressed & PSP_CTRL_SELECT) {
+            return 2;                          /* back to Settings */
+        } else if (pressed & (PSP_CTRL_CIRCLE | PSP_CTRL_START)) {
+            if (changed) save_settings();      /* O and START both apply */
+            return changed;                    /* and leave for the flow */
+        }
+    }
 }
 
 /* Would this share entry appear under a tab at all? Same rules the model
@@ -867,10 +934,21 @@ static int browser(void) {
         }
         if (pressed & PSP_CTRL_SELECT) {
             g_menu_open = 0;
-            gui_to_debug();
-            settings_view();
-            gui_init();
+            int go = 1;                      /* 1 Settings, 2 Utilities, 0 out */
+            int u_changed = 0;
+            while (go) {
+                if (go == 1) {               /* debug-screen URL editor */
+                    gui_to_debug();
+                    go = settings_view();
+                    gui_init();              /* GU back up for pixel views */
+                } else {
+                    const int ur = utilities_view();  /* pixel switch page */
+                    if (ur == 2) go = 1;              /* fall back to Settings */
+                    else { if (ur) u_changed = 1; go = 0; }
+                }
+            }
             pad_clear(&prev);
+            if (u_changed) browser_fill(1);  /* folder names just changed */
             continue;                /* URL may have changed: redraw */
         }
 
@@ -889,7 +967,7 @@ static int browser(void) {
             continue;
         }
         if (pressed & PSP_CTRL_START) {
-            if (g_gclite) {              /* mirror the XMB's category bar */
+            if (g_gclite && g_gclite_on) {     /* mirror the XMB's category bar */
                 g_menu_open = 1;
                 g_menu_sel = (int)g_cf.category;   /* light up the current tab */
             }

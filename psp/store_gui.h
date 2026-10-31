@@ -44,6 +44,11 @@ void store_gui_browse(const coverflow_state_t *cf,
 /* Status screen: header bar text, one body row, optional hint row. */
 void store_gui_status(const char *header, const char *body, const char *hint);
 
+/* Utilities page: the switch home. One labelled toggle - the gclite
+   feature (CAT_ name stripping + START categories popup) - plus whether
+   the plugin was found in ms0:/seplugins/vsh.txt. The caller owns keys. */
+void store_gui_utilities(int enabled, int installed);
+
 /* Install screen with a progress bar; pct < 0 before the first byte. */
 void store_gui_progress(const char *title, const char *path, int pct, long total);
 

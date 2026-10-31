@@ -1576,3 +1576,23 @@ queued in one flush is a coin-flip miss for the app's 16 ms pad poll),
 with X keycodes — which are evdev+8, a mix-up that faked a broken keymap
 (103 is not Up; 111 is). Screenshots via the window-id grab need no focus
 at all.
+
+## 2026-10-31 (PSP) — A Utilities page, and the entry key that cancels itself
+
+The gclite feature moved behind a pill switch on a new pixel Utilities
+page (SELECT → Settings → Triangle): the page draws the switch with the
+detection result ("plugin: installed — START opens the menu"), the choice
+lands in `settings.txt` as `gclite=0/1` (line 2; absent = ON, so old
+files keep working), and OFF leaves raw `CAT_` names and an inert START
+everywhere — browser and Store alike (`cat_display()` wraps the strip in
+`psp/store.c`). Selecting the switch is enough; O/START save and leave,
+SELECT falls back to the debug Settings screen.
+
+The E2E caught a bug that predates this page: every nested screen used to
+start its pad loop with `prev = 0`, so the button *still held* from the
+transition re-fired instantly inside the new screen — the SELECT that
+opened Settings could cancel it in its first frame (and a held Triangle
+would ping-pong Utilities ↔ Settings). Both entry points now seed `prev`
+with one fresh pad sample. Verified in PPSSPP end to end: toggle OFF →
+raw names + inert START, cold boot still OFF, re-enable → names stripped
+and popup live again without a restart.

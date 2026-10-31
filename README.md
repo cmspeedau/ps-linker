@@ -128,7 +128,10 @@ The browser follows the [game-categories-lite][gclite] naming convention
 is installed — **START** additionally opens a CATEGORIES popup over the
 flow: one row per category with a mock cover tile, label and item count
 (plus All and Downloads); D-pad walks the rows, Cross jumps to that tab,
-Circle or START closes. Without gclite installed START does nothing.
+Circle or START closes. The whole feature sits behind a pill switch on
+the pixel **Utilities page** (SELECT → Settings → Triangle): OFF keeps
+raw folder names and an inert START, ON restores the stripped names and
+the popup; the choice lives in `settings.txt` and defaults to ON.
 
 [gclite]: https://github.com/ticky/game-categories-lite
 
@@ -542,10 +545,13 @@ wrong `X-SHA256` is rejected with `rc=-11`.
       popup — mock cover tile, label and item count per category plus All
       and Downloads — with D-pad to walk, Cross to jump to that tab (the
       Downloads row swaps the source like the rail's) and Circle/START to
-      close. Proven in PPSSPP against a fixture share with `CAT_05Shooters`
-      and `CAT_10Arcade` folders: popup open, row select, tab jump, reopen
-      on the current tab, Downloads swap, and START inert without the
-      vsh.txt (`log.md` 2026-10-31, screenshots `gcl-5*.png`, `gcl-6*.png`).
+      close. The whole feature toggles on a pixel Utilities page (SELECT →
+      Settings → Triangle), the choice persists in `settings.txt` and ON is
+      the default. Proven in PPSSPP against a fixture share with
+      `CAT_05Shooters` and `CAT_10Arcade` folders: popup open, row select,
+      tab jump, reopen on the current tab, Downloads swap, OFF → raw names
+      + inert START (also across a cold boot), and START inert without the
+      vsh.txt (`log.md` 2026-10-31, screenshots `gcl-5*.png`, `util-*.png`).
 
 ### In progress
 

@@ -391,6 +391,61 @@ void store_gui_browse(const coverflow_state_t *cf,
     gui_end();
 }
 
+/* The Utilities page: a labelled pill switch per option, browser-style
+ * frame. One switch today - the gclite feature. The selected control
+ * gets the Downloads list's highlight (card row + orange bar); the pill
+ * shows OFF/ON, knob left/right, dim orange when ON. `installed` is the
+ * ms0:/seplugins/vsh.txt detection, so the page also answers "is the
+ * plugin even there". */
+void store_gui_utilities(int enabled, int installed)
+{
+    gui_begin(COL_BG);
+    draw_header("PS Linker", "utilities");
+
+    gui_rect(0, 16, SCR_W, 1, COL_LINE);
+    gui_text(20, 40, "GAME CATEGORIES", COL_HEADER, 2);
+    gui_text(20, 62, "game-categories-lite folder naming and the", COL_DIM, 1);
+    gui_text(20, 76, "START category popup (CAT_05Shooters = Shooters).",
+             COL_DIM, 1);
+
+    /* the switch row */
+    const int ry = 108;
+    gui_rect(0, ry, SCR_W, 34, COL_CARD);
+    gui_rect(0, ry, 3, 34, COL_HEADER);
+    gui_text(20, ry + 13, "GCLITE CATEGORIES", COL_TEXT, 1);
+
+    const int tx = SCR_W - 6 - 68, ty = ry + 8;      /* pill track */
+    gui_rect(tx - 1, ty - 1, 70, 20, COL_LINE);
+    gui_rect(tx, ty, 68, 18, COL_FIELD);
+    const int knob_x = enabled ? tx + 68 - 32 : tx;
+    gui_rect(knob_x, ty, 32, 18, enabled ? COL_HEADER : 0xFF5A5A5A);
+    gui_text(knob_x + (enabled ? 8 : 4), ty + 5,
+             enabled ? "ON" : "OFF", COL_BLACK, 1);
+    /* the inactive side's label stays visible behind the track */
+    gui_text(tx + (enabled ? 6 : 40), ty + 5, enabled ? "OFF" : "ON",
+             COL_FAINT, 1);
+
+    /* detection line: does this PSP have the plugin? */
+    gui_rect(0, ry + 42, SCR_W, 1, COL_LINE);
+    if (installed) {
+        gui_text(20, ry + 52, "plugin: installed - START opens the menu",
+                 COL_TEXT, 1);
+    } else {
+        gui_text(20, ry + 52,
+                 "plugin: not found in ms0:/seplugins -", COL_DIM, 1);
+        gui_text(20, ry + 66, "START stays inert whatever this switch says",
+                 COL_DIM, 1);
+    }
+    if (!enabled)
+        gui_text(20, ry + 84, "off: folders keep their CAT_ names",
+                 COL_FAINT, 1);
+
+    gui_rect(0, 256, SCR_W, 16, COL_LINE);
+    gui_text(6, 260, "X toggle  O or Start back  Select settings",
+             COL_TEXT, 1);
+    gui_end();
+}
+
 void store_gui_status(const char *header, const char *body, const char *hint)
 {
     gui_begin(COL_BG);
