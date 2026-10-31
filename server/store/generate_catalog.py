@@ -7,9 +7,11 @@ so SMB uploads and Store downloads appear in one unified listing.
 
 Per-entry fields:
   id, title, category, url, size  (always present)
-  icon                            (optional: URL of a cover/icon image
-                                   found next to the game file — e.g.
-                                   Game/ICON0.PNG, cover.png, boxart.jpg)
+  icon                            (optional: URL of a cover/icon image — a
+                                   sibling image named icon0/cover/boxart/
+                                   thumb, or one extracted from the game
+                                   itself by cover_art.py into a hidden
+                                   <stem>.icon0.png sidecar)
   version, description            (optional: from a sidecar metadata file
                                    <name>.meta.json next to the game file,
                                    e.g. {"version": "1.2", "description": "..."})
@@ -31,6 +33,12 @@ import os
 import socket
 import sys
 
+try:                              # works as a script and as an import
+    import cover_art
+except ImportError:               # same folder not on sys.path
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    import cover_art
+
 SKIP = {"catalog.json", ".store-queue.json"}
 
 # Hidden files, in-flight downloads, and per-file sidecars are not games.
@@ -41,13 +49,37 @@ ICON_NAMES = {"icon0", "cover", "boxart", "thumb"}
 ICON_EXTS = {".png", ".jpg", ".jpeg", ".bmp"}
 
 
-def find_icon(folder: str, name: str):
-    """Return the relative URL of a cover image sitting next to `name`."""
-    for fname in os.listdir(folder):
+def find_icon(folder: str, name: str, rel_dir: str = ""):
+    """Return the relative URL of a cover image for `name`.
+
+    A hidden ``<stem>.icon0.png`` sidecar (extracted from the game by
+    ``cover_art.py``) wins over generic neighbours named icon0/cover/
+    boxart/thumb — those mark a whole folder, the sidecar marks this one
+    game, and PS3 disc folders keep their ICON0.PNG right beside the files
+    anyway. The URL carries *rel_dir*: an icon in a sub-folder has to be
+    addressable, not flattened onto the library root."""
+    stem = os.path.splitext(name)[0]
+    try:
+        names = os.listdir(folder)
+    except OSError:
+        return None
+    picked = None
+    for fname in names:
         base, ext = os.path.splitext(fname)
-        if ext.lower() in ICON_EXTS and base.lower() in ICON_NAMES:
-            return "/" + fname
-    return None
+        if ext.lower() in ICON_EXTS and base == "." + stem + ".icon0":
+            picked = fname
+            break
+    if picked is None:
+        for fname in names:
+            base, ext = os.path.splitext(fname)
+            if (ext.lower() in ICON_EXTS and not fname.startswith(".")
+                    and base.lower() in ICON_NAMES):
+                picked = fname
+                break
+    if picked is None:
+        return None
+    rel = os.path.normpath(os.path.join(rel_dir, picked))
+    return "/" + rel.replace(os.sep, "/")
 
 
 def load_meta(folder: str, name: str) -> dict:
@@ -87,7 +119,10 @@ def main() -> int:
                 "url": "/" + rel_path,
                 "size": os.path.getsize(os.path.join(root, name)),
             }
-            icon = find_icon(root, name)
+            icon = find_icon(root, name, "" if rel == "." else rel)
+            if icon is None:
+                # PSP ISO/CSO/PBP: pull ICON0 out of the game itself.
+                icon = cover_art.ensure_cover(games_dir, rel_path)
             if icon:
                 entry["icon"] = icon
             meta = load_meta(root, name)

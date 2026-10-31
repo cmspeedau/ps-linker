@@ -349,6 +349,57 @@ chk "regeneration passes the pairing through" BLES00002.rap "$(
     python3 -c "import json;d=json.load(open('$W/gen2.json'));
 e=next(e for e in d['entries'] if e.get('url')=='/PSP/test2.iso');print(e.get('rap',''))")"
 
+# --------------------------------------------------------- cover art --------
+echo "cover art extraction (ICON0 from ISO/CSO into hidden sidecars)"
+chk "cover readers pass their unit suite" 0 "$(
+    python3 "$HERE/cover_test.py" >"$W/cover.log" 2>&1; echo $?)"
+grep -q '^OK$' "$W/cover.log" || tail -30 "$W/cover.log" >&2
+# A homebrew ISO and its CSO twin, each wrapping a PBP whose ICON0 is a PNG.
+python3 - "$HERE" "$W/games/PSP" <<'PY'
+import sys, os
+sys.path.insert(0, sys.argv[1])
+import cover_test as ct
+png = ct.make_png(16, 16, (12, 200, 40))
+pbp = ct.make_pbp(icon=png)
+open(os.path.join(sys.argv[2], "Shown.iso"), "wb").write(ct.make_iso(pbp))
+open(os.path.join(sys.argv[2], "Twin.cso"), "wb").write(ct.make_cso(ct.make_iso(pbp)))
+PY
+python3 "$HERE/generate_catalog.py" "$W/games" "$W/games/catalog.json" \
+    >"$W/covers-gen.log" 2>&1
+chk "ISO cover extracted to a hidden sidecar" yes "$(
+    python3 -c "b=open('$W/games/PSP/.Shown.icon0.png','rb').read()
+print('yes' if b[:8]==b'\x89PNG\r\n\x1a\n' else 'no')" \
+        2>/dev/null || echo missing)"
+chk "CSO cover extracted too" yes "$(
+    python3 -c "b=open('$W/games/PSP/.Twin.icon0.png','rb').read()
+print('yes' if b[:8]==b'\x89PNG\r\n\x1a\n' else 'no')" \
+        2>/dev/null || echo missing)"
+chk "catalog entry carries the icon URL" "/PSP/.Shown.icon0.png" "$(
+    python3 -c "import json;d=json.load(open('$W/games/catalog.json'));
+print(next(e for e in d['entries'] if e['url']=='/PSP/Shown.iso').get('icon'))")"
+chk "/api/catalog passes the icon through to the GUI" "/PSP/.Shown.icon0.png" "$(
+    curl -s "$BASE/api/catalog" | python3 -c "import json,sys;
+print(next(e for e in json.load(sys.stdin)['items'] if e['url']=='/PSP/Shown.iso').get('icon'))")"
+chk "listing hides the sidecars" yes "$(
+    case "$(curl -s "$BASE/PSP/")" in *icon0*) echo no;; *) echo yes;; esac)"
+chk "listing still shows the games themselves" yes "$(
+    case "$(curl -s "$BASE/PSP/")" in *'href="Shown.iso"'*) echo yes;; *) echo no;; esac)"
+chk "sidecar is served with PNG bytes" yes "$(
+    curl -s "$BASE/PSP/.Shown.icon0.png" | python3 -c \
+        "import sys;print('yes' if sys.stdin.buffer.read(8)==b'\x89PNG\r\n\x1a\n' else 'no')")"
+chk "sidecar is not its own catalog entry" none "$(
+    python3 -c "import json;d=json.load(open('$W/games/catalog.json'));
+print('none' if not any('icon0' in e['url'] for e in d['entries']) else 'leak')")"
+chk "re-running the generator keeps the icon and reuses the cache" yes "$(
+    before=$(stat -c %Y "$W/games/PSP/.Shown.icon0.png"); sleep 1.1
+    python3 "$HERE/generate_catalog.py" "$W/games" "$W/games/catalog.json" \
+        >"$W/covers-gen2.log" 2>&1
+    after=$(stat -c %Y "$W/games/PSP/.Shown.icon0.png")
+    icon=$(python3 -c "import json;d=json.load(open('$W/games/catalog.json'));
+print(next(e for e in d['entries'] if e['url']=='/PSP/Shown.iso').get('icon'))")
+    [ "$before" = "$after" ] && [ "$icon" = "/PSP/.Shown.icon0.png" ] \
+        && echo yes || echo no)"
+
 # ------------------------------------------------- store queue + activity ----
 echo "store queue, status file, and the fetcher run endpoint"
 Q="$BASE/api/store/queue"
