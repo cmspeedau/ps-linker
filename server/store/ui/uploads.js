@@ -1,9 +1,11 @@
-/* Add Games: modal + queue, a corner dock for the transfer itself, and a
- * whole-window drop overlay. Rows live in module state so closing the modal
- * never loses an in-flight upload — the dock keeps showing its progress. */
+/* Add Games: modal + queue, a section of the shared transfer dock for the
+ * transfer itself, and a whole-window drop overlay. Rows live in module
+ * state so closing the modal never loses an in-flight upload — the dock
+ * keeps showing its progress. */
 
 import { state, esc, fmtSize, extOf, toast } from './state.js';
 import { uploadFile } from './api.js';
+import * as dock from './dock.js';
 
 /* Keep in step with ALLOWED_EXT in server/store/http_server.py — the
  * server stays the authority; this only rejects hopeless rows early. */
@@ -13,7 +15,12 @@ const ALLOWED_EXT = ['iso', 'cso', 'pbp', 'zip', '7z', 'rar', 'pkg', 'rap',
 let rows = [];          // {name,size,loaded,status,error,file,el}
 let deps = null;        // { onItems(items) } — injected by ui.js
 let modalBody = null;   // <ul> in the modal, or null while closed
-let dockBody = null;
+let upSec = null;       // dock section handle, made on first use
+
+function up() {
+  if (!upSec) upSec = dock.section('uploads', 'Uploads');
+  return upSec;
+}
 
 export function init(d) { deps = d; }
 
@@ -73,16 +80,14 @@ export function openAdd(prefetched) {
   };
 
   modalBody = document.getElementById('add-list');
-  if (dockBody) renderRows();      // keep the dock in sync while both are open
-  else rows.forEach((r) => modalBody.appendChild(rowEl(r)));
+  renderRows();            // keep the dock section in sync while both are open
   if (prefetched && prefetched.length) addFiles(prefetched);
-  else if (rows.length) showDock();
 }
 
 export function closeAdd() {
   document.getElementById('modal-root').innerHTML = '';
   modalBody = null;
-  if (rows.length) showDock();
+  if (rows.length) { up(); dock.setVisible('uploads', true); }
 }
 
 export function isModalOpen() {
@@ -139,7 +144,8 @@ function pump() {
   if (state.uploading) return;
   const row = rows.find((r) => r.status === 'queued');
   if (!row) return;
-  showDock();
+  up();
+  dock.setVisible('uploads', true);
   state.uploading = true;
   row.status = 'uploading';
   renderRows();
@@ -165,7 +171,9 @@ function pump() {
 /* ---------------- rows / dock ----------------
  * Rows re-render wholesale into every open container (modal and dock show
  * the same queue); a row is just data, so either view can be closed and
- * reopened at any point mid-transfer. */
+ * reopened at any point mid-transfer. The dock's shell, its sections and
+ * the collapse handling belong to dock.js — this module only fills its
+ * section's <ul> and updates the mini-head's count text. */
 
 function rowPct(row) {
   if (row.status === 'ok') return 100;
@@ -202,37 +210,10 @@ function renderRows() {
     modalBody.innerHTML = '';
     rows.forEach((r) => modalBody.appendChild(rowEl(r)));
   }
-  if (dockBody) {
-    dockBody.innerHTML = '';
-    rows.forEach((r) => dockBody.appendChild(rowEl(r)));
-  }
-  updateDockTitle();
-}
-
-function showDock() {
-  const dock = document.getElementById('upload-dock');
-  if (dock.hidden) {
-    dock.hidden = false;
-    dock.className = 'dock';
-    dock.innerHTML =
-      '<div class="dock-head" id="dock-head">' +
-        '<span id="dock-title">Uploading</span>' +
-        '<span class="dock-caret" id="dock-caret">▾</span></div>' +
-      '<div class="dock-body"><ul class="up-list" id="dock-list"></ul></div>';
-    dockBody = document.getElementById('dock-list');
-    document.getElementById('dock-head').onclick = () => {
-      dock.classList.toggle('collapsed');
-      document.getElementById('dock-caret').textContent =
-        dock.classList.contains('collapsed') ? '▸' : '▾';
-    };
-  }
-  renderRows();
-}
-
-function updateDockTitle() {
-  const t = document.getElementById('dock-title');
-  if (!t) return;
+  const list = up().list;
+  list.innerHTML = '';
+  rows.forEach((r) => list.appendChild(rowEl(r)));
   const left = rows.filter((r) => r.status === 'queued' ||
                                  r.status === 'uploading').length;
-  t.textContent = left ? 'Uploading — ' + left + ' to go' : 'Transfers done';
+  up().setInfo(left ? left + ' to go' : 'done');
 }

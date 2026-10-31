@@ -2,8 +2,10 @@
  *
  * Entry module: boot, sidebar/toolbar/grid rendering, keyboard, settings.
  * State lives in state.js; the API in api.js; the Add-Games queue in
- * uploads.js; the detail drawer and manage actions in manage.js. No
- * dependencies, no build step — the Docker image is a file copy. */
+ * uploads.js; the Store queue and activity in store.js (both report into
+ * the shared dock in dock.js); the detail drawer and manage actions in
+ * manage.js. No dependencies, no build step — the Docker image is a file
+ * copy. */
 
 import {
   state, isFav, toggleFav, esc, fmtSize, toast, coverHTML, platformOf,
@@ -12,6 +14,7 @@ import {
 } from './state.js';
 import { fetchCatalog } from './api.js';
 import * as uploads from './uploads.js';
+import * as store from './store.js';
 import * as manage from './manage.js';
 
 const SORTS = [
@@ -25,6 +28,7 @@ const SORTS = [
 
 document.addEventListener('DOMContentLoaded', () => {
   uploads.init({ onItems });
+  store.init({ onItems });
   manage.init({ onItems, refreshGrid: renderLibrary });
   bindChrome();
   bindKeys();
@@ -96,6 +100,7 @@ function bindKeys() {
       return;
     }
     if (e.key === 'Escape') {
+      if (store.isModalOpen()) { store.closeStore(); return; }
       if (uploads.isModalOpen()) { uploads.closeAdd(); return; }
       if (document.querySelector('.modal-scrim.settings')) { closeSettings(); return; }
       if (manage.isOpen()) {

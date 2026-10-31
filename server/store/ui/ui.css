@@ -366,7 +366,7 @@
   .up-row.is-ok .up-status { color: var(--ok); }
   .up-row.is-err .up-status { color: var(--danger); }
 
-  /* ---- upload dock ---- */
+  /* ---- transfer dock (shared: uploads + Store) ---- */
   .dock {
     position: fixed; right: 16px; bottom: 16px; z-index: 45;
     width: min(400px, calc(100vw - 32px));
@@ -379,8 +379,46 @@
     font-weight: 550; font-size: 13px;
   }
   .dock-head .dock-caret { margin-left: auto; color: var(--muted); }
-  .dock-body { padding: 10px 12px; max-height: 40vh; overflow-y: auto; }
+  .dock-body { max-height: 40vh; overflow-y: auto; }
   .dock.collapsed .dock-body { display: none; }
+  .dock-sect + .dock-sect { border-top: 1px solid var(--line); }
+  .dock-sect-head {
+    display: flex; align-items: center; gap: 8px; padding: 7px 14px;
+    cursor: pointer; font-size: 10.5px; font-weight: 600; color: var(--faint);
+    text-transform: uppercase; letter-spacing: .8px; background: var(--surface);
+  }
+  .dock-sect-head .dock-sect-info {
+    margin-left: auto; text-transform: none; letter-spacing: 0;
+    color: var(--muted); font-weight: 500;
+  }
+  .dock-sect-head .dock-caret { color: var(--muted); }
+  .dock-sect-body { padding: 10px 12px; }
+  .dock-sect.collapsed .dock-sect-body { display: none; }
+  .dock-sect .up-list { margin: 0; }
+  .dock-note { font-size: 12px; color: var(--muted); padding: 2px 2px; }
+  .up-row.is-active { border-color: var(--accent-strong); }
+  .spin {
+    display: inline-block; width: 11px; height: 11px; border-radius: 50%;
+    border: 2px solid var(--accent-strong); border-top-color: transparent;
+    animation: spin .8s linear infinite; margin-right: 6px;
+    vertical-align: -1px;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  @media (prefers-reduced-motion: reduce) { .spin { animation-duration: 2.4s; } }
+
+  /* ---- Store queue (modal) ---- */
+  .q-add { background: var(--surface); border: 1px solid var(--line);
+    border-radius: var(--radius); padding: 12px; margin: 14px 0 4px; }
+  .q-add .field { margin-bottom: 8px; }
+  .q-add .form-row .field { flex: 1; margin-bottom: 0; }
+  .q-add .form-row + .form-row { margin-top: 10px; }
+  .q-add .form-row .btn { align-self: flex-end; }
+  .q-head { margin: 16px 0 0; font-size: 11px; color: var(--faint);
+    text-transform: uppercase; letter-spacing: .8px; }
+  .q-list { margin-top: 8px; }
+  .q-live { margin-top: 10px; }
+  .q-actions { display: flex; align-items: center; gap: 6px;
+    justify-content: flex-end; }
 
   /* ---- drop overlay ---- */
   .drop-overlay {

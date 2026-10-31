@@ -32,6 +32,14 @@ export const renameItem = (url, name) =>
 export const setItemMeta = (url, patch) =>
   jsend('PUT', '/api/item/meta', Object.assign({ url }, patch));
 
+/* ---- Store (queue the server-side fetcher works through) ---- */
+export const storeStatus = () => jsend('GET', '/api/store/status');
+export const storeQueue = () => jsend('GET', '/api/store/queue');
+export const storeAdd = (item) => jsend('POST', '/api/store/queue', item);
+export const storeRemove = (url) =>
+  jsend('DELETE', '/api/store/queue?url=' + encodeURIComponent(url));
+export const storeRun = () => jsend('POST', '/api/store/run');
+
 /**
  * Raw-body upload: the file streams as the request body to the server's
  * .part file (a 9 GB ISO never enters the server's memory, and multipart
