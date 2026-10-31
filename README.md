@@ -237,7 +237,7 @@ wrong `X-SHA256` is rejected with `rc=-11`.
 - [x] **ps3netsrv rewritten in house** (`server/netsrv/ps3netsrv.py`, stdlib
       Python 3): the netiso protocol on port 38008, no third-party binary in the
       image. Checked byte-for-byte against upstream's own binaries on one tree
-      with `server/netsrv/netsrv_diff.py` — 57 identical answers, 17 declared
+      with `server/netsrv/netsrv_diff.py` — 60 identical answers, 20 declared
       deviations, 0 undeclared — plus 82 tests in `netsrv_test.py`; spec and
       findings in `docs/PS3NETSRV-PROTOCOL.md`. Ships in the image as the default,
       with `--build-arg NETSRV=ps3netsrv++` kept as the fallback

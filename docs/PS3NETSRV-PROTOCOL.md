@@ -495,6 +495,39 @@ candidate strides, plus the real rip when `PSX_BIN` points at one. See §9.5.
 '1'` at +0 and `"PLAYSTATION "` at +8. Not in the repository — it is a 647 MB
 rip, and the harnesses take its path as an argument.
 
+**The size window, measured** (`server/netsrv/netsrv_synth.py`). The probe only
+runs inside the window and everyone defaults outside it, so the window is where
+the claim is load-bearing. Six sparse fixtures straddle both edges
+(`CEILING_IMAGES` in `netsrv_diff.py`, with six `cd stride` scenarios there;
+the files hold 1 MiB on disk whatever they pretend to be):
+
+| fixture | the file is | ours | `ps3netsrv` | `ps3netsrv++` |
+|---|---|---|---|---|
+| exactly 848 MiB, stride 2448 | 2448 | **2448** | 2352 ✗ | 2352 ✗ |
+| 848 MiB + 1 byte, stride 2448 | 2448 | 2352 (default) | 2352 | 2352 |
+| 1 GiB raw | 2352 | 2352 | 2352 | 2352 |
+| 1 GiB plain 2048 | 2048 | 2352 (default) | 2352 | 2352 |
+| 2 MiB − 1, raw | 2352 | 2352 | 2352 | 2352 |
+| 840 MiB, stride 2448 | 2448 | **2448** | 2352 ✗ | 2352 ✗ |
+
+Three things fall out:
+
+* webMAN's binary answers 2352 on *every* fixture, including the two 2448
+  images that sit squarely inside its own window. The paragraph above stands,
+  and hardens: its probe has never once been seen to leave the default on a
+  measurable file.
+* Above 848 MiB all three servers answer 2352, so on a large raw `.bin` the
+  ceiling costs us nothing *against upstream* — the default only ever
+  disagrees with the file, and it can only disagree where a CD cannot reach:
+  a single-session raw disc tops out near 807 MiB (80 min × 75 sectors/s ×
+  2352 B), so any real CD rip is inside the window. The real files that do
+  cross the ceiling are DVD-layout images, which no client reads with a CD
+  read — the claim at the head of this section, and why nobody ever
+  noticed.
+* `detect_sector_size` itself is asserted against every one of these sizes,
+  at the boundary and one past it, in `netsrv_synth.py`'s offline pass — the
+  table survives the window moving.
+
 ## 6. Throughput notes
 
 `READ_FILE_CRITICAL` is what a PS3 spends its life in, so it is the only path
@@ -541,10 +574,13 @@ Results from each run are appended to `log.md`.
   path handling, the slot rules, an ISO reader walking the synthesised images of
   a virtual ISO, and streaming a real 617 MiB rip through the server.
 * `server/netsrv/netsrv_diff.py` — the same command script against our server,
-  webMAN's `ps3netsrv` and dirkvdb's `ps3netsrv++` on one tree: **57 identical,
-  17 declared (§9), 0 undeclared**, with `--psx` adding the stride measurement on
+  webMAN's `ps3netsrv` and dirkvdb's `ps3netsrv++` on one tree: **60 identical,
+  20 declared (§9), 0 undeclared**, with `--psx` adding the stride measurement on
   a real rip (§5). It runs our server with `LISTING_SORTED` switched off for the
   comparison, so the difference is the wire and not our chosen order.
+* `server/netsrv/netsrv_synth.py` — the sector probe's size window on its own:
+  six sparse fixtures straddling `PROBE_MIN`/`PROBE_MAX`, asserted offline and
+  read back off the wire against any binaries given (§5's window table).
 * `server/netsrv/netsrv_bench.py` — the table above.
 
 ### 6.2 PS1 fixture
@@ -670,13 +706,16 @@ from the filesystem for the same reason.
 
 `server/netsrv/netsrv_diff.py` runs a script of commands against our server and
 against upstream's own binaries on the same tree, and compares the answers. Its
-current tally is **57 byte-identical, 17 declared deviations (§9), 0
-undeclared**, and it is what the claims below rest on. Nine of the seventeen are
-one cause: the symlink inside the test share, which we refuse to follow and
-which we also leave out of a synthesised image (§9.4). Two more are the sector
-probe (§9.5), one is the zero-length-trailer wedge (§9.9), two are the path check
-(§9.6) — one of them on a `/***PS3***/` path — and one each is the trailer length
-(§9.7), opening a directory (§9.11), and the `+24` a CD read of a synthesised ISO
+current tally is **60 byte-identical, 20 declared deviations (§9), 0
+undeclared**, and it is what the claims below rest on — measured 2026-10-31
+with both reference binaries rebuilt (webMAN-MOD tag 1.47.50, dirkvdb
+master) and the six size-window fixtures of §5 in the tree. Nine of the twenty
+are one cause: the symlink inside the test share, which we refuse to follow and
+which we also leave out of a synthesised image (§9.4). Four more are the sector
+probe (§9.5) — two on a plain 2048 image, two on the 2448 images inside the
+window (§5) — two are the zero-length-trailer wedge (§9.9), two are the path
+check (§9.6) — one of them on a `/***PS3***/` path — and one each is the trailer
+length (§9.7), opening a directory (§9.11), and the `+24` a CD read of a synthesised ISO
 should not have (§9.2). §9.12 (no `.INI` merge) never shows up, because neither
 binary merges folders the way the other does; that one stays declared and
 unproven.
@@ -709,8 +748,10 @@ read out of the source:
   descriptor, so its `"CD001"` check cannot pass at all (§5). `ps3netsrv++` has
   no probe: it hardcodes 2352 wherever it reads a CD. On a real `MODE2/2352` rip
   all three agree at 2352, for three different reasons, and that agreement proves
-  nothing. Ours measures, and is right on every fixture (§5, §9.5). The same
-  binary's `-w` option is advertised in its usage text and has no case in its
+  nothing. Ours measures, and is right on every fixture (§5, §9.5). The window
+  fixtures (§5) extend this: an odd 2448 stride sitting *inside* the window is
+  still answered 2352 by both binaries — the probe has never left its default on
+  anything measurable. The same binary's `-w` option is advertised in its usage text and has no case in its
   `getopt` switch, so passing it prints the usage and exits — which is why
   `netsrv_diff.py --psx` serves a hardlink of the rip rather than the rip's own
   directory.
@@ -751,12 +792,16 @@ Still to be settled with a PS3 running webMAN MOD, with results logged in
 
 * Whether a client ever sends `READ_CD_2048_CRITICAL` for an image whose stride
   is 2048, which would put the `+24` bug of §3.3 in front of a real user.
-* Whether the probe's 848 MiB ceiling starves a client streaming a large raw
-  `.bin`. The ceiling is upstream's, and now that the probe itself is correct a
-  1 GB raw image at 2352 is reported as 2352 by us and left at the default by
-  upstream — different answers, and only a PS3 says which one the client wanted.
+* Whether webMAN streams a raw `.bin` near the ceiling without incident. The
+  answer both servers give there is measured (§5): one GiB in, all three agree
+  on the default, so the only thing left is client behaviour — does a 713 MB
+  `MODE2/2352` rip (`Driver (Europe)`, the largest here, and inside the window)
+  play through its late disc regions against ours as it does against upstream.
+  The worry that the servers' answers could *differ* above the ceiling is dead:
+  §5's window table shows no server can differ there.
 * The candidate table for oddball rips. `netsrv_test.py` proves our probe finds
-  2448/2328/2368/2340 when they are there, not that any rip uses one.
+  2448/2328/2368/2340 when they are there, not that any rip uses one — and §5's
+  window table now proves upstream would miss one even if a rip did.
 * Whether webMAN keeps more than one connection per console, and whether it
   relies on the same-IP takeover of §1.1.
 * Whether any client sends an opcode outside §3's table, in particular in the
@@ -802,7 +847,10 @@ outside the share. Everything else is byte-identical, which
    `GET_DIR_SIZE` does not count it. §7.1.
 5. **Sector-size probe.** Deterministic, no reused buffer, probes both `+0` and
    `+24` (§5) — and is right about the one real rip available to test, where
-   both upstream binaries are wrong (§8).
+   both upstream binaries are wrong (§8). Inside the window it is also the only
+   server that ever finds an oddball stride: both binaries answer their default
+   even for a 2448 image sitting where their own probe should have caught it
+   (§5's window table).
 6. **Path checks.** Any `..` component is rejected, and empty components are
    dropped before the check, so `a/../../b` is caught (upstream serves that
    file) and `a//../b`-style spellings cannot punish a legitimate path.

@@ -6,6 +6,76 @@ it records *what was actually run and observed*, including bugs found while test
 
 ---
 
+## 2026-10-31 (server) — the probe's size window, measured against both upstreams
+
+§8's ceiling question — does the 848 MiB edge of the sector probe cost us
+something a real client would notice — had an assumption in it: "a 1 GB raw
+image is reported as 2352 by us and left at the default by upstream —
+different answers". It was never measured, and it is wrong: both answers *are*
+the default. It is now measured, in the direction the claim needed, and the
+answer turned out to be more interesting than the question.
+
+`server/netsrv/netsrv_synth.py` builds six *sparse* fixtures straddling the
+probe window (the probe reads only `sector*16` and `sector*16+24`, and the
+stride is read back off `READ_CD_2048_CRITICAL` from sector 0, so a head of
+varying bytes and a PVD signature is all a fixture needs — 4,586 apparent MiB
+cost 1 MiB on disk) and asserts `detect_sector_size` against each offline,
+then reads the same answer back over the wire from our server and, given
+binaries, from the upstream ones. The fixtures and six matching `cd stride`
+scenarios live in `netsrv_diff.py` (`CEILING_IMAGES`), so §8's table carries
+them.
+
+| fixture | file is | ours | `ps3netsrv` | `ps3netsrv++` |
+|---|---|---|---|---|
+| exactly 848 MiB, stride 2448 | 2448 | **2448** | 2352 ✗ | 2352 ✗ |
+| 848 MiB + 1 byte, 2448 | 2448 | 2352 (default) | 2352 | 2352 |
+| 1 GiB raw | 2352 | 2352 | 2352 | 2352 |
+| 1 GiB plain 2048 | 2048 | 2352 (default) | 2352 | 2352 |
+| 2 MiB − 1, raw | 2352 | 2352 | 2352 | 2352 |
+| 840 MiB, stride 2448 | 2448 | **2448** | 2352 ✗ | 2352 ✗ |
+
+What it settles, in favour of us and against:
+
+* **webMAN's probe has never left its default.** Its binary answers 2352 on
+  *every* fixture — including two 2448-stride images inside its own size
+  window, which its `+24`/stale-buffer probe should catch as cleanly as it
+  misses plain 2048. §5's "cannot be shown to work" is now shown the hard way.
+* **Above the ceiling nobody can differ.** Over 848 MiB all three answer 2352,
+  so §8's "different answers" worry is closed. And a real CD can't *reach* the
+  ceiling anyway: a single-session raw disc tops out near 807 MiB, so every
+  genuine PS1/PS2-CD rip sits inside the window, where our probe does measure.
+  The only files that cross the ceiling are DVD-layout images, which are
+  streamed with `READ_FILE_CRITICAL` and never consult the sector size.
+* **The two ✘ rows are ours alone** — defaults disagreeing with the file — and
+  they are provably the same answers upstream gives on the same files. Nothing
+  a PS3 could notice that upstream wouldn't also notice.
+
+### How it was checked
+
+```
+$ python3 server/netsrv/netsrv_synth.py \
+        --reference /tmp/opencode/ref/ps3netsrv --reference /tmp/opencode/ref/ps3netsrv++
+[synth] fixtures    /tmp/opencode/netsrv-synth  (1 MiB on disk, apparent 4586 MiB)
+[synth] PASS — 6/6 offline, 6/6 over the wire
+
+$ python3 server/netsrv/netsrv_diff.py --reference … --reference …
+[diff] 60 match, 20 declared deviation, 0 unexpected        # 80 scenarios, +6
+```
+
+Both reference binaries are rebuilt ones, from tag **webMAN-MOD 1.47.50**
+(their `ps3netsrv` hides in `_Projects_/ps3netsrv`, builds with
+`make -f Makefile.linux`) and dirkvdb **`ps3netsrv--`** (bitbucket `utils`
+submodule; needs `-include cstdint` on a current gcc). The old 57/17 tally was
+measured against the 2026-10-24 builds; §8's prose now carries 60/20/0 with
+the cause breakdown, and the rebuilt binaries changed no *behaviour* the table
+depends on — 0 unexpected, as before.
+
+Next, on the console: mount `Driver (Europe).bin` (713 MB, verified 2352, the
+largest real rip here) as Phase B of the webMAN session — it is now the
+load-bearing case for everything the window table says about real rips.
+
+---
+
 ## 2026-10-30 (server) — folder games: the virtual ISO is implemented
 
 `/***PS3***/<dir>` and `/***DVD***/<dir>` had been answered with "not found" —

@@ -125,6 +125,49 @@ def cd_image(path: Path, stride: int, size: int, raw: bool = True) -> None:
         fh.write(b"\x01CD001\x00\x00PLAYSTATION ")
 
 
+def synth_image(path: Path, stride: int, total: int, raw: bool = True) -> None:
+    """A *sparse* CD image of *total* bytes: PVD in sector 16 at *stride*.
+
+    The probe only ever reads ``sector * 16`` and ``sector * 16 + 24`` (§5), and
+    ``measure_stride`` reconstructs its reply from sector 0, so a head of varying
+    bytes is all the content the file needs; the rest is a hole and the fixture
+    builds instantly at any size. A real 850 MiB rip would say the same thing.
+    """
+    head = PROBE_HEAD * (PROBE_HEAD_LEN // len(PROBE_HEAD) + 1)
+    with path.open("wb") as fh:
+        fh.write(head[:PROBE_HEAD_LEN])
+        fh.truncate(total)
+        fh.seek(stride * 16 + (24 if raw else 0))
+        fh.write(b"\x01CD001\x00\x00PLAYSTATION ")
+
+
+# Images straddling the probe's size window (§5, §8): the ceiling is upstream's,
+# so every row here is measured against it, and the two 2448 rows are where our
+# correct probe and upstream's answer are guaranteed to part company. The
+# ``truth`` column is what the file actually is — where ours disagrees with it,
+# the ceiling defeated the probe, which is the finding.
+CEILING_IMAGES = {
+    # name: (size, stride, raw, truth, ours, note)
+    "PSXISO-atceiling-2448.bin":
+        (ns.PROBE_MAX, 2448, True, 2448, 2448, "last size still scanned"),
+    "PSXISO-overceiling-2448.bin":
+        (ns.PROBE_MAX + 1, 2448, True, 2448, ns.CD_SECTOR_DEFAULT,
+         "one byte past, and the default is wrong for the file"),
+    "PSXISO-giant-2352.bin":
+        (1 << 30, 2352, True, 2352, 2352, "Q2's raw .bin: default agrees by luck"),
+    "PSXISO-giant-2048.iso":
+        (1 << 30, 2048, False, 2048, ns.CD_SECTOR_DEFAULT,
+         "a DVD-sized ISO: the default disagrees with the file"),
+    "PSXISO-belowfloor-2352.bin":
+        (ns.PROBE_MIN - 1, 2352, True, 2352, 2352, "the floor behaves the same"),
+    "PSXISO-under-2448.bin":
+        (ns.PROBE_MAX - (8 << 20), 2448, True, 2448, 2448,
+         "oddball stride inside the window: found"),
+}
+PROBE_HEAD_LEN = 2448 * 128 + 24 + 2048  # measure_stride's 128-sector window
+PROBE_HEAD = bytes((i * 7 + i // 251) % 256 for i in range(4097))
+
+
 def build_tree(root: Path) -> Path:
     """One tree for every server, holding the shapes the spec cares about."""
     for rel, body in FIXTURE_FILES.items():
@@ -136,6 +179,8 @@ def build_tree(root: Path) -> Path:
     (root.parent / OUTSIDE.decode()).write_bytes(b"never serve this")
     cd_image(root / "PSXISO-raw2352.bin", 2352, ns.PROBE_MIN + 4096)
     cd_image(root / "PSXISO-plain2048.iso", 2048, ns.PROBE_MIN + 4096, raw=False)
+    for name, (size, stride, raw, *_rest) in CEILING_IMAGES.items():
+        synth_image(root / name, stride, size, raw)
     os.symlink(root.parent / OUTSIDE.decode(), root / "GAMES/escape.iso")
     return root
 
@@ -480,6 +525,23 @@ SCENARIOS = [
     scenario("cd stride plain 2048 image", cd_stride("/PSXISO-plain2048.iso"),
              declares=["our probe finds the 2048 stride, upstream's misses it and "
                        "answers 2352 for a plain image (§5)"]),
+    # The probe's size window itself (§5, §8): sparse fixtures straddling
+    # PROBE_MIN/PROBE_MAX. Where ours reports the default on a file whose real
+    # stride is something else, only a real client can say whether it cares —
+    # the §8 open question these rows are built for.
+    scenario("cd stride at ceiling 2448", cd_stride("/PSXISO-atceiling-2448.bin"),
+             declares=["ours is the only probe that finds an odd stride at all; "
+                       "upstream answers its default (§5, §9.5)"]),
+    scenario("cd stride over ceiling 2448",
+             cd_stride("/PSXISO-overceiling-2448.bin")),
+    scenario("cd stride giant 2352", cd_stride("/PSXISO-giant-2352.bin")),
+    scenario("cd stride giant 2048", cd_stride("/PSXISO-giant-2048.iso")),
+    scenario("cd stride below floor 2352",
+             cd_stride("/PSXISO-belowfloor-2352.bin")),
+    scenario("cd stride under ceiling 2448",
+             cd_stride("/PSXISO-under-2448.bin"),
+             declares=["as at the ceiling: 2448 inside the window is ours alone "
+                       "to find (§5, §9.5)"]),
     scenario("state across two commands", then_stat),
     scenario("unknown opcode 0x2412", lambda c, r: expect_close(c, r, 0x2412)),
     scenario("unknown opcode 0x2fff", lambda c, r: expect_close(c, r, 0x2FFF)),
