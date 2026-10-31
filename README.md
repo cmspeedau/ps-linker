@@ -382,6 +382,12 @@ wrong `X-SHA256` is rejected with `rc=-11`.
       their disc-layout `ICON0.PNG`. `generate_catalog.py` publishes the
       sidecar as the entry's `icon` and the web GUI tiles render it; the
       device Store views still draw initials (no PNG codec there)
+- [x] Linux front-end for managing games and catalog metadata — retired its
+      GTK/Qt framing and shipped through the server web GUI: the drawer edits
+      metadata, renames, moves games between categories (`POST /api/item/move`,
+      sidecars and hidden covers travelling, license-pairing rules), and
+      controls cover art (upload, re-extract, clear — all on the same
+      `.icon0` sidecar convention, no second UI stack to build or drift)
 
 ### In progress
 - [ ] Test Store flow end-to-end through the Docker container with a real queue
@@ -397,7 +403,6 @@ wrong `X-SHA256` is rejected with `rc=-11`.
       sector probe's 848 MiB ceiling)
 
 ### Later
-- [ ] GTK/Qt GUI front-end for Linux (manage games + edit catalog metadata)
 - [ ] PS4 support: platform-aware share (ps4 alongside psp/ps3 in upload tags,
       metadata, and GUI sections) organizing PKG titles and the user's own
       .rap licenses like everything else, plus docs/PS4.md for the real

@@ -31,11 +31,11 @@ shell is ES modules and modern CSS with no bundler and no framework.
 | `ui.css` | Single stylesheet. Design tokens under `@layer tokens` (`[data-theme="light"]` overrides them), then base/layout/components. |
 | `ui.js` | Entry module: boot, sidebar sections with counts, toolbar (search `/` to focus, sort), card grid with roving keyboard focus (arrows navigate, Enter opens, `F` favorites), settings modal, theme handling, mobile sidebar, Escape closes the top-most overlay (Store modal, Add modal, drawer). |
 | `state.js` | Shared state + localStorage (`pslinker.favorites.v1`, `pslinker.recent.v1`, `pslinker.settings.v1`), section/sort/filter logic, and the helpers (escape, size format, deterministic placeholder covers, toasts). |
-| `api.js` | Everything that talks to the JSON API: catalog fetch, upload, delete/rename/meta, and the Store queue/status/run calls. |
+| `api.js` | Everything that talks to the JSON API: catalog fetch, upload, delete/rename/move/meta, the cover upload/extract/clear trio, and the Store queue/status/run calls. |
 | `dock.js` | The shared transfer dock: one corner panel, one titled collapsible section per module (Uploads, Store); the dock itself only shows while some section has activity. |
 | `uploads.js` | Add Games modal, the serial upload queue (its rows render into the dock's Uploads section, so progress survives closing the modal), and the whole-window drop overlay. |
 | `store.js` | Store: the sidebar entry with its pending-count badge, the queue modal (add form, remove, Download now, live current-item bar, recent-download history), and the dock's Store section. Polls `/api/store/status` every 2 s while anything is live or the modal is open, every 60 s otherwise, and refetches the catalog when a completed download has changed it so new cards appear without a reload. |
-| `manage.js` | Detail drawer: metadata display, Favorite, Download, Rename, Metadata edit, delete with an explicit second-click confirm, and the License (RAP) section (attach/change/remove). |
+| `manage.js` | Detail drawer: metadata display, Favorite, Download, Rename, Move to folder (datalist over existing categories), Metadata edit, a Cover section (upload art, re-extract, remove), delete with an explicit second-click confirm, and the License (RAP) section (attach/change/remove). |
 
 Layout is direction "B — modern dashboard": sidebar (Library: All/Favorites/
 Recently Viewed; Platforms: PSP/PS3; Folders: the catalog's own categories
@@ -50,8 +50,12 @@ the PSP/PS3 apps only; the web shell replaced it with the grid.
 | `/api/catalog` | GET | `{"items": [...], "categories": [...]}`. Tolerates the `items` / `entries` / `games` key spellings in the file; `items` is the key the shell reads. `categories` is passed through only when the catalogue declares one. |
 | `/api/upload` | POST | `multipart/form-data` with a `platform` field (`psp`/`ps3`) and one or more `file` parts. Reads the whole body into memory, so it suits curl and small files; the shell does not use it. Writes into the library root (atomic `.part` + rename), rejects extensions outside the game set, then refreshes `catalog.json` in whatever top-level shape it already had. |
 | `/api/upload/file` | POST | The shell's Add Games path: one file per request, raw request body (no multipart), `?name=<url-encoded>&platform=<psp|ps3>&dir=<optional>`. The body is streamed to `<name>.part` in 256 KiB chunks and renamed in atomically, so uploads of ISO-sized files never buffer in memory. `dir` names an existing folder inside the library (default: the root) — it is how a license `.rap` lands beside its game; an escaping or missing `dir` is refused with `400` before the body is read. Chunked bodies get `411`. |
-| `/api/item?url=…` | DELETE | Removes one library file plus its `.meta.json`/`.sha256` sidecars and its catalog entry. Directories get `405`; `catalog.json`, dotfiles, in-flight `.part` files, and bare sidecars get `404`; a url resolving outside the library gets `404`. |
-| `/api/item/rename` | POST | JSON `{"url":…, "name":…}`. A rename is a rename, not a move: the file stays in its folder, sidecars come with it, the catalog entry is re-keyed. Renaming a referenced `.rap` also rewrites the sidecars and catalog entries beside it that point at the old name. Same name/extension guards as uploads; an existing name in the folder is `409`. |
+| `/api/item?url=…` | DELETE | Removes one library file plus its `.meta.json`/`.sha256` sidecars, its hidden cover sidecar(s), and its catalog entry. Directories get `405`; `catalog.json`, dotfiles, in-flight `.part` files, and bare sidecars get `404`; a url resolving outside the library gets `404`. |
+| `/api/item/rename` | POST | JSON `{"url":…, "name":…}`. A rename is a rename, not a move: the file stays in its folder, sidecars come with it (a hidden `.name.icon0.png` cover is re-derived from the new stem), the catalog entry is re-keyed. Renaming a referenced `.rap` also rewrites the sidecars and catalog entries beside it that point at the old name. Same name/extension guards as uploads; an existing name in the folder is `409`. |
+| `/api/item/move` | POST | JSON `{"url":…, "category":…}`. Sends a game to another top-level category folder (creating it). `category` is one visible folder name, the store queue's rule; the target name colliding in that folder is `409`. The game's `.meta.json`, `.sha256`, and hidden cover sidecar all travel with it, and the entry re-keys with the new `category`. A paired `.rap` follows only when no other game in the source folder still references it — otherwise the pairing clears (sidecar and catalog) instead of dangling across folders, and moving an attached `.rap` itself is `409`. |
+| `/api/item/cover?url=…` | POST | Raw image body (PNG/JPEG by magic bytes, 1…8 MiB, `413`/`400` otherwise) → replaces the game's hidden `.<stem>.icon0.<ext>` sidecar — the same file cover_art.py writes, so manual and extracted art stay one convention — and republishes the catalog `icon`. Other `.<stem>.icon0.*` variants are pruned: one cover per game. `.rap` files get `400`. |
+| `/api/item/cover/extract` | POST | JSON `{"url":…}`. Forces a re-run of the embedded ICON0 extraction (ISO/CSO/PBP only — other formats `400`); a game with nothing inside is `409` and keeps its current cover. Success replaces the sidecar (pruning uploads) and republishes the `icon`. |
+| `/api/item/cover/clear` | POST | JSON `{"url":…}`. Deletes the hidden sidecars and drops `icon` from the entry; the tile falls back to its deterministic placeholder. |
 | `/api/item/meta` | PUT | JSON `{"url":…, "title"?, "version"?, "description"?, "platform"?, "rap"?}`; `null` or `""` clears a field, `platform` is `psp`/`ps3` only, strings cap at 500 characters. `rap` names a license file and is validated specially (see below). Merged into the game's `<name>.meta.json` (existing keys preserved; an emptied sidecar is deleted) and into the catalog entry. |
 | `/api/store/queue` | GET | `{"queue": [pending items], "running": [claimed items] | null}`. The pending list is `.store-queue.json`; `running` is the fetcher's live claim (`.store-queue.json.processing`) when one exists. |
 | `/api/store/queue` | POST | JSON `{"url", "title"?, "category"?}`. `url` must be http(s) (≤2000 chars); `category` is one visible folder name (no path, no leading `.`, ≤64) matching what the fetcher itself enforces; `title` defaults to the URL's filename stem. Appends under a lock; a duplicate url or one already in the live claim is `409`, a bad url/category `400`. Answers `201` with the merged queue. |
@@ -133,10 +137,14 @@ preferences touches the server. Settings → *Reset local data* clears them.
 `server/store/check_share.sh` covers the share this GUI depends on: listings,
 `Range`/206/416, the `/gui/` routes, `/api/catalog`'s key, both upload paths
 (streamed bytes land identical, rejections write nothing, chunked is refused),
-the management trio (merge-not-replace metadata writes, sidecar ride-alongs,
-rename collisions, and refusals for directories, sidecars, `catalog.json`, and
-traversal), license pairing (`dir=` placement and refusals, attach validation,
-license renames repointing references, detach, regeneration passthrough), the
+the management endpoints (merge-not-replace metadata writes, sidecar
+ride-alongs, rename collisions, category moves with every sidecar travelling —
+including the hidden cover — and refusals for directories, sidecars,
+`catalog.json`, traversal, taken names, and hidden categories), cover control
+(extract/upload/prune/clear, magic-byte and format refusals, and rename
+carrying the cover), license pairing (`dir=` placement and refusals, attach
+validation, license renames repointing references, detach, the
+license-follows-the-last-game move rule, regeneration passthrough), the
 Store endpoints (validation codes, the hidden queue file, a claimed-url delete
 refused `409`, a stale status read back as idle, and a real `POST /api/store/run`
 drain byte-matched against the served file and reaching `/api/catalog`), and

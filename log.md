@@ -1179,3 +1179,52 @@ Browser proof: a two-ISO library (red/green ICON0s) plus a PS3 disc
 folder, regenerated, opened in the GUI — all four tiles render real
 pictures (extracted sidecars and the folder's own `ICON0.PNG`), none a
 placeholder gradient.
+
+## 2026-10-31 (Server) — The Linux front-end became the web GUI: moves + covers
+
+The roadmap's "GTK/Qt GUI front-end for Linux (manage games + edit
+catalog metadata)" retired as a native-app idea: the web GUI already
+covered upload/rename/metadata/delete/license work, and the two real gaps
+were functional, not technological. Both closed on the share itself, so a
+native shell would have duplicated one API against two UIs.
+
+`POST /api/item/move` {url, category}: the category guard is the store
+queue's rule reused; a game's `.meta.json`, `.sha256` and hidden cover
+sidecar travel with it, the entry re-keys with the new category. The
+license rule followed the existing contract (co-location *is* the
+pairing): a paired `.rap` follows only if nothing else in the source
+folder still references it — otherwise the pairing clears on disk and in
+the catalog rather than dangling across folders, and moving an attached
+`.rap` away is a `409`. Covers got three small endpoints — raw-body
+upload (magic bytes, 8 MiB cap → hidden `.<stem>.icon0.<ext>`),
+force-extract, clear — all writing the same sidecar `cover_art.py`
+extracts into, so no new metadata model exists; `prune_other_covers`
+keeps the one-cover-per-game rule that directory-order `find_icon`
+requires. Rename gained the carry it was missing (a stem-changing rename
+re-derives the dot-sidecar and repoints the entry's `icon`), and delete
+now takes the game's covers with it.
+
+Suite lessons: the live `catalog.json` *changes top-level shape*
+mid-suite — the API preserves `items`, a `generate_catalog.py` pass
+writes `entries` — so assertions after any regeneration must read
+whichever list is present, exactly like `catalog_load_items`; and `ls`
+without `-a` silently counts zero for dotfiles, which turned two
+"sidecar gone" checks into vacuous passes until `find` replaced them.
+`check_share.sh` 121 → 153 assertions, green twice running.
+
+Browser proof: moved `UT_Port.iso` to `Handhelds` through the drawer's
+Move panel (datalist over existing folders) — file and cover landed in
+the new folder, the entry re-keyed, sidebar folder counts followed; the
+extracted red cover of `Doom_Port.iso` visibly replaced by an uploaded
+violet PNG on the tile, and the Cover panel's Re-extract ran live from
+the drawer.
+
+## 2026-10-31 (Harness) — Reading a *file-backed* catalog in tests
+
+The catalog file is the union of two writers (the HTTP API keeps the
+existing top-level key; the generator introduces its own), so "read the
+entry" tests must go through the same shape-agnostic lookup the server
+uses — `d.get('items') or d.get('entries') or []` — or they KeyError
+into an empty string that *looks* like a server failure. And hidden
+files are invisible to plain `ls`, so `find -name '.x.icon0.*'` is the
+only honest way to assert "exactly one cover".
