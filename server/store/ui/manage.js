@@ -7,10 +7,13 @@ import {
   state, itemById, isFav, toggleFav, markViewed, esc, fmtSize, toast,
   coverHTML, platformOf, gameDirOf, licenseInfo, availableRaps, extOf,
 } from './state.js';
-import { deleteItem, renameItem, setItemMeta, uploadFile } from './api.js';
+import {
+  deleteItem, renameItem, moveItem, setItemMeta, uploadFile,
+  uploadCover, extractCover, clearCover,
+} from './api.js';
 
 let deps = null;        // { onItems(items), refreshGrid() }
-let form = '';          // '' | 'rename' | 'meta'
+let form = '';          // '' | 'rename' | 'move' | 'meta'
 let deleteArmed = false;
 
 export function init(d) { deps = d; }
@@ -48,6 +51,16 @@ function fileName(item) {
   return u.slice(u.lastIndexOf('/') + 1);
 }
 
+/** Existing folder names, for the Move form's datalist suggestions. */
+function categoryNames() {
+  const seen = {};
+  state.items.forEach((it) => {
+    const cat = it.category;
+    if (cat && cat !== 'Uncategorized') seen[cat] = true;
+  });
+  return Object.keys(seen).sort();
+}
+
 function render() {
   const drawer = document.getElementById('drawer');
   const item = itemById(state.selectedId);
@@ -68,18 +81,20 @@ function render() {
         '<dt>File</dt><dd>' + esc(fileName(item)) + '</dd>' +
         '<dt>ID</dt><dd>' + esc(item.id || '—') + '</dd>' +
       '</dl>' +
-      (form ? '' : licenseSection(item)) +
+      (form ? '' : coverSection(item) + licenseSection(item)) +
       (form ? renderForm(item) : renderActions(item, fav)) +
     '</div>';
 
   if (!form) {
     bindLicense(item);
+    bindCover(item);
     drawer.querySelector('.a-fav').onclick = () => {
       toggleFav(item.id);
       render();
       deps.refreshGrid();
     };
     drawer.querySelector('.a-rename').onclick = () => { form = 'rename'; render(); };
+    drawer.querySelector('.a-move').onclick = () => { form = 'move'; render(); };
     drawer.querySelector('.a-meta').onclick = () => { form = 'meta'; render(); };
     const del = drawer.querySelector('.a-del');
     del.onclick = () => {
@@ -114,7 +129,9 @@ function renderActions(item, fav) {
       (fav ? '★ Favorited' : '☆ Favorite') + '</button>' +
     '<a class="btn" href="' + esc(item.url) + '" download>⭳ Download</a>' +
     '<button class="btn btn-ghost a-rename" type="button">✎ Rename file</button>' +
-    '<button class="btn btn-ghost a-meta" type="button">✎ Metadata</button>' +
+    '<button class="btn btn-ghost a-move" type="button">⇄ Move to folder</button>' +
+    '<button class="btn btn-ghost a-meta" type="button" style="grid-column:1/-1">' +
+      '✎ Metadata</button>' +
     '<button class="btn btn-danger a-del" type="button" style="grid-column:1/-1">' +
       '🗑 Delete from library</button>' +
   '</div>';
@@ -238,6 +255,76 @@ function bindLicense(item) {
   };
 }
 
+/* ---- Cover section ------------------------------------------------------
+ * Covers are the hidden '<stem>.icon0.<ext>' sidecar: extracted ICON0 or
+ * uploaded art, one per game, either way already rendered by coverHTML.
+ * This section is control, not preview — the drawer's own cover up top is
+ * the preview, so mutations just re-render and refreshGrid(). */
+
+function coverSection(item) {
+  if (extOf(fileName(item)) === 'rap') return '';   // licenses get no covers
+  const ext = extOf(fileName(item));
+  const extractable = ext === 'iso' || ext === 'cso' || ext === 'pbp';
+  const stateLine = item.icon
+    ? '🖼 Cover art <a href="' + esc(item.icon) +
+      '" target="_blank" rel="noopener">view file</a>'
+    : '<span class="lic-state">Placeholder tile' +
+      (extractable ? ' — no ICON0 found inside the game' : '') +
+      '</span>';
+  return '<div class="drawer-form lic-row"><h4>Cover</h4>' +
+    '<div class="lic-state">' + stateLine + '</div>' +
+    '<div class="form-row">' +
+      '<button class="btn btn-ghost a-cov-up" type="button">⭱ Upload art</button>' +
+      (extractable
+        ? '<button class="btn btn-ghost a-cov-ex" type="button">↻ Re-extract</button>'
+        : '') +
+      (item.icon
+        ? '<button class="btn btn-ghost a-cov-rm" type="button">Remove</button>'
+        : '') +
+    '</div>' +
+    '<input type="file" id="cov-file" accept="image/png,image/jpeg" hidden />' +
+  '</div>';
+}
+
+function bindCover(item) {
+  const drawer = document.getElementById('drawer');
+  const up = drawer.querySelector('.a-cov-up');
+  if (!up) return;
+  const settle = (btn, fn) => { btn.disabled = true; fn().then(() => {
+    btn.disabled = false; render(); deps.refreshGrid();
+  }); };
+  const input = drawer.querySelector('#cov-file');
+  up.onclick = () => input.click();
+  input.onchange = () => {
+    const file = input.files && input.files[0];
+    input.value = '';
+    if (!file) return;
+    if (file.size > 8 * 1024 * 1024) {
+      toast('Covers are capped at 8 MiB', 'err');
+      return;
+    }
+    settle(up, () => uploadCover(item.url, file)
+      .then((data) => { deps.onItems(data.items); toast('Cover updated', 'ok'); })
+      .catch((err) => toast('Cover upload failed: ' + err.message, 'err')));
+  };
+  const ex = drawer.querySelector('.a-cov-ex');
+  if (ex) ex.onclick = () =>
+    settle(ex, () => extractCover(item.url)
+      .then((data) => {
+        deps.onItems(data.items);
+        toast('Cover re-extracted from the game', 'ok');
+      })
+      .catch((err) => toast('Extraction failed: ' + err.message, 'err')));
+  const rm = drawer.querySelector('.a-cov-rm');
+  if (rm) rm.onclick = () =>
+    settle(rm, () => clearCover(item.url)
+      .then((data) => {
+        deps.onItems(data.items);
+        toast('Cover removed — tile back to placeholder', 'ok');
+      })
+      .catch((err) => toast('Cover remove failed: ' + err.message, 'err')));
+}
+
 function renderForm(item) {
   if (form === 'rename') {
     return '<div class="drawer-form"><h4>Rename file</h4>' +
@@ -245,6 +332,23 @@ function renderForm(item) {
         '" aria-label="New file name" /></div>' +
       '<div class="form-row"><button class="btn btn-primary f-save" type="button">' +
         'Rename</button>' +
+      '<button class="btn btn-ghost f-cancel" type="button">Cancel</button></div></div>';
+  }
+  if (form === 'move') {
+    const cats = categoryNames();
+    const cur = item.category && item.category !== 'Uncategorized'
+      ? item.category : '';
+    return '<div class="drawer-form"><h4>Move to folder</h4>' +
+      '<div class="field"><label for="f-cat">Category folder</label>' +
+        '<input id="f-cat" list="f-cat-list" value="' + esc(cur) +
+        '" placeholder="Existing or new folder" /></div>' +
+      '<datalist id="f-cat-list">' + cats.map((c) =>
+        '<option value="' + esc(c) + '"></option>').join('') + '</datalist>' +
+      '<div class="lic-state">Sidecars travel with the game: metadata, ' +
+        'checksum, cover — and its license, when nothing else still needs ' +
+        'it.</div>' +
+      '<div class="form-row"><button class="btn btn-primary f-save" type="button">' +
+        'Move</button>' +
       '<button class="btn btn-ghost f-cancel" type="button">Cancel</button></div></div>';
   }
   const opt = (v, cur, label) =>
@@ -285,6 +389,21 @@ function bindForm(item) {
         form = '';
         toast('Renamed to ' + name, 'ok');
         render();
+      }).catch(fail);
+    };
+  } else if (form === 'move') {
+    save.onclick = () => {
+      const cat = drawer.querySelector('#f-cat').value.trim();
+      if (!cat) { toast('Pick or type a folder name', 'err'); return; }
+      save.disabled = true;
+      moveItem(item.url, cat).then((data) => {
+        deps.onItems(data.items);
+        state.selectedId = data.moved.id;     // ids carry the path
+        markViewed(itemById(state.selectedId));
+        form = '';
+        toast('Moved to ' + cat, 'ok');
+        render();
+        deps.refreshGrid();
       }).catch(fail);
     };
   } else {

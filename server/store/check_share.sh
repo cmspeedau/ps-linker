@@ -400,6 +400,153 @@ print(next(e for e in d['entries'] if e['url']=='/PSP/Shown.iso').get('icon'))")
     [ "$before" = "$after" ] && [ "$icon" = "/PSP/.Shown.icon0.png" ] \
         && echo yes || echo no)"
 
+# -------------------------------------- category moves + cover control ----
+echo "category moves and cover control (web GUI management)"
+mpost() { curl -s -o /dev/null -w '%{http_code}' -X POST \
+          -H 'Content-Type: application/json' -d "$2" "$BASE$1"; }
+# A game with every sidecar kind: meta, checksum, hidden extracted cover.
+cp "$W/games/PSP/Shown.iso" "$W/games/PSP/Mover.iso"
+cp "$W/games/PSP/.Shown.icon0.png" "$W/games/PSP/.Mover.icon0.png"
+printf '{"title": "Mover"}' > "$W/games/PSP/Mover.iso.meta.json"
+sha256sum "$W/games/PSP/Mover.iso" | cut -d' ' -f1 > "$W/games/PSP/Mover.iso.sha256"
+chk "move to a new category accepted" 200 \
+    "$(mpost /api/item/move '{"url":"/PSP/Mover.iso","category":"Moved"}')"
+chk "move relocated file and every sidecar" yes "$(
+    [ -f "$W/games/Moved/Mover.iso" ] && [ -f "$W/games/Moved/Mover.iso.meta.json" ] &&
+    [ -f "$W/games/Moved/Mover.iso.sha256" ] && [ -f "$W/games/Moved/.Mover.icon0.png" ] &&
+    [ ! -e "$W/games/PSP/Mover.iso" ] && [ ! -e "$W/games/PSP/.Mover.icon0.png" ] &&
+    echo yes || echo no)"
+chk "listing shows the new category folder" yes "$(
+    case "$(curl -s "$BASE/")" in *'href="Moved/"'*) echo yes;; *) echo no;; esac)"
+chk "listing no longer shows the old row" yes "$(
+    case "$(curl -s "$BASE/PSP/")" in *'href="Mover.iso"'*) echo no;; *) echo yes;; esac)"
+# The live catalog may be in either top-level shape on disk (the API
+# preserves "items", a generate_catalog pass writes "entries") — reads here
+# take whichever list is present, exactly like the server's own loader.
+chk "move rekeyed the catalog entry" "yes Moved" "$(
+    python3 -c "import json;d=json.load(open('$W/games/catalog.json'));
+L=d.get('items') or d.get('entries') or []
+i=[i for i in L if i.get('url')=='/Moved/Mover.iso']
+gone=not any(j.get('url')=='/PSP/Mover.iso' for j in L)
+print(('yes' if i and gone else 'no'), i[0]['category'] if i else '-')")"
+chk "rekeyed entry carries the carried cover" /Moved/.Mover.icon0.png "$(
+    python3 -c "import json;d=json.load(open('$W/games/catalog.json'));
+L=d.get('items') or d.get('entries') or []
+i=next(i for i in L if i.get('url')=='/Moved/Mover.iso');print(i.get('icon'))")"
+chk "cover served from the new folder" 200 "$(code /Moved/.Mover.icon0.png)"
+chk "old url is gone from the share" 404 "$(code /PSP/Mover.iso)"
+chk "moving onto a taken name is 409" 409 "$(
+    mkdir -p "$W/games/Clash"
+    head -c 100 /dev/urandom > "$W/games/Clash/Taken.iso"
+    head -c 100 /dev/urandom > "$W/games/PSP/Taken.iso"
+    mpost /api/item/move '{"url":"/PSP/Taken.iso","category":"Clash"}')"
+chk "refused move left the game in place" yes \
+    "$([ -f "$W/games/PSP/Taken.iso" ] && echo yes || echo no)"
+chk "already-in-that-category is a refusal" 400 \
+    "$(mpost /api/item/move '{"url":"/Moved/Mover.iso","category":"Moved"}')"
+chk "traversal category refused, nothing escaped" "400 yes" "$(
+    c=$(mpost /api/item/move '{"url":"/PSP/Taken.iso","category":"../Escape"}')
+    [ ! -e "$W/Escape" ] && echo "$c yes" || echo "$c gone")"
+chk "hidden category refused" 400 \
+    "$(mpost /api/item/move '{"url":"/PSP/Taken.iso","category":".secret"}')"
+
+# Licenses and moves: co-location is the pairing's whole point, so the
+# .rap follows its last remaining game — or the pairing clears.
+cp "$W/games/PSP/Shown.iso" "$W/games/PSP/Tagged.iso"
+cp "$W/games/PSP/Shown.iso" "$W/games/PSP/Other.iso"
+head -c 64 /dev/urandom > "$W/games/PSP/BLESTAGG.rap"
+printf '{"rap": "BLESTAGG.rap"}' > "$W/games/PSP/Tagged.iso.meta.json"
+printf '{"rap": "BLESTAGG.rap"}' > "$W/games/PSP/Other.iso.meta.json"
+mcode=$(mpost /api/item/move '{"url":"/PSP/Tagged.iso","category":"Tagged2"}')
+chk "game sharing a license moves, the .rap stays" "200 yes yes" "$(
+    [ -f "$W/games/PSP/BLESTAGG.rap" ] && [ ! -e "$W/games/Tagged2/BLESTAGG.rap" ] &&
+    [ -f "$W/games/Tagged2/Tagged.iso" ] && echo "$mcode yes yes" || echo "$mcode no no")"
+chk "cleared pairing left no lying sidecar" gone "$(
+    [ ! -e "$W/games/Tagged2/Tagged.iso.meta.json" ] && echo gone || echo present)"
+chk "cleared pairing dropped from the catalog entry" none "$(
+    python3 -c "import json;d=json.load(open('$W/games/catalog.json'));
+L=d.get('items') or d.get('entries') or []
+i=[i for i in L if i.get('url')=='/Tagged2/Tagged.iso']
+print('none' if i and 'rap' not in i[0] else 'stale')")"
+chk "attached .rap cannot be moved away" 409 \
+    "$(mpost /api/item/move '{"url":"/PSP/BLESTAGG.rap","category":"Elsewhere"}')"
+chk "refused .rap move kept it beside its games" yes \
+    "$([ -f "$W/games/PSP/BLESTAGG.rap" ] && echo yes || echo no)"
+head -c 32 /dev/urandom > "$W/games/Loose.rap"
+chk "unattached .rap moves freely" 200 \
+    "$(mpost /api/item/move '{"url":"/Loose.rap","category":"Raps"}')"
+
+# Cover control on a fresh game: extract, upload, prune, reject, clear.
+python3 - "$HERE" "$W" <<'PY'
+import sys, os
+sys.path.insert(0, sys.argv[1])
+import cover_test as ct
+open(os.path.join(sys.argv[2], 'alt.png'), 'wb').write(ct.make_png(8, 8, (200, 10, 200)))
+open(os.path.join(sys.argv[2], 'fake.jpg'), 'wb').write(b'\xff\xd8\xff\xe0' + b'jpegish' * 40)
+open(os.path.join(sys.argv[2], 'junk.bin'), 'wb').write(b'not an image at all')
+PY
+cp "$W/games/PSP/Shown.iso" "$W/games/PSP/CoverMe.iso"
+chk "re-extract endpoint pulls the ICON0" /PSP/.CoverMe.icon0.png "$(
+    curl -s -X POST -H 'Content-Type: application/json' \
+         -d '{"url":"/PSP/CoverMe.iso"}' "$BASE/api/item/cover/extract" |
+    python3 -c 'import json,sys;print(json.load(sys.stdin).get("cover","none"))')"
+chk "PNG upload replaces the sidecar" yes "$(
+    curl -s -o /dev/null -X POST --data-binary "@$W/alt.png" \
+         "$BASE/api/item/cover?url=/PSP/CoverMe.iso"
+    cmp -s "$W/alt.png" "$W/games/PSP/.CoverMe.icon0.png" && echo yes || echo no)"
+chk "uploaded art reaches the catalog icon" /PSP/.CoverMe.icon0.png "$(
+    python3 -c "import json;d=json.load(open('$W/games/catalog.json'));
+L=d.get('items') or d.get('entries') or []
+i=next(i for i in L if i.get('url')=='/PSP/CoverMe.iso');print(i.get('icon'))")"
+chk "JPEG upload stored as .icon0.jpg" yes "$(
+    curl -s -o /dev/null -X POST --data-binary "@$W/fake.jpg" \
+         "$BASE/api/item/cover?url=/PSP/CoverMe.iso"
+    cmp -s "$W/fake.jpg" "$W/games/PSP/.CoverMe.icon0.jpg" && echo yes || echo no)"
+chk "one cover per game: uploads prune the other variant" yes "$(
+    [ "$(find "$W/games/PSP" -maxdepth 1 -name '.CoverMe.icon0.*' | wc -l)" = 1 ] \
+        && echo yes || echo no)"
+chk "non-image bytes refused" 400 "$(
+    curl -s -o /dev/null -w '%{http_code}' -X POST --data-binary "@$W/junk.bin" \
+         "$BASE/api/item/cover?url=/PSP/CoverMe.iso")"
+chk "licenses get no covers" 400 "$(
+    curl -s -o /dev/null -w '%{http_code}' -X POST --data-binary "@$W/alt.png" \
+         "$BASE/api/item/cover?url=/PSP/BLESTAGG.rap")"
+chk "extract refused for formats with no embedded art" 400 "$(
+    head -c 100 /dev/urandom > "$W/games/PSP/Pack.zip"
+    curl -s -o /dev/null -w '%{http_code}' -X POST \
+         -H 'Content-Type: application/json' -d '{"url":"/PSP/Pack.zip"}' \
+         "$BASE/api/item/cover/extract")"
+chk "extraction with nothing inside is 409" 409 "$(
+    head -c 300000 /dev/zero > "$W/games/PSP/Bare.iso"
+    curl -s -o /dev/null -w '%{http_code}' -X POST \
+         -H 'Content-Type: application/json' -d '{"url":"/PSP/Bare.iso"}' \
+         "$BASE/api/item/cover/extract")"
+chk "cover clear drops sidecar and catalog icon" "0 none" "$(
+    curl -s -o /dev/null -X POST -H 'Content-Type: application/json' \
+         -d '{"url":"/PSP/CoverMe.iso"}' "$BASE/api/item/cover/clear"
+    left=$(find "$W/games/PSP" -maxdepth 1 -name '.CoverMe.icon0.*' | wc -l)
+    icon=$(python3 -c "import json;d=json.load(open('$W/games/catalog.json'));
+L=d.get('items') or d.get('entries') or []
+i=next(i for i in L if i.get('url')=='/PSP/CoverMe.iso')
+print('none' if 'icon' not in i else 'present')")
+    echo "$left $icon")"
+
+# Renames re-derive the hidden cover name; deletes take it with them.
+cp "$W/games/PSP/Shown.iso" "$W/games/Moved/RenC.iso"
+cp "$W/games/PSP/.Shown.icon0.png" "$W/games/Moved/.RenC.icon0.png"
+chk "rename carries the hidden cover" yes "$(
+    mpost /api/item/rename '{"url":"/Moved/RenC.iso","name":"RenD.iso"}' >/dev/null
+    [ -f "$W/games/Moved/.RenD.icon0.png" ] && [ ! -e "$W/games/Moved/.RenC.icon0.png" ] \
+        && echo yes || echo no)"
+chk "rename repointed the catalog icon" /Moved/.RenD.icon0.png "$(
+    python3 -c "import json;d=json.load(open('$W/games/catalog.json'));
+L=d.get('items') or d.get('entries') or []
+i=next(i for i in L if i.get('url')=='/Moved/RenD.iso');print(i.get('icon'))")"
+chk "delete removed the game's cover too" yes "$(
+    curl -s -o /dev/null -X DELETE "$BASE/api/item?url=/Moved/RenD.iso"
+    [ ! -e "$W/games/Moved/RenD.iso" ] && [ ! -e "$W/games/Moved/.RenD.icon0.png" ] \
+        && echo yes || echo no)"
+
 # ------------------------------------------------- store queue + activity ----
 echo "store queue, status file, and the fetcher run endpoint"
 Q="$BASE/api/store/queue"

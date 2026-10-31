@@ -5,8 +5,10 @@ One port serves three things, in this routing order:
 
 1. ``/api/*`` — the web GUI's JSON endpoints (``GET /api/catalog``,
    ``POST /api/upload``, ``POST /api/upload/file``, the library
-   management trio ``DELETE /api/item``, ``POST /api/item/rename``,
-   ``PUT /api/item/meta``, and the Store endpoints
+   management set ``DELETE /api/item``, ``POST /api/item/rename``,
+   ``POST /api/item/move``, ``PUT /api/item/meta``, and the cover trio
+   ``POST /api/item/cover`` (raw image body), ``…/cover/extract``,
+   ``…/cover/clear``), and the Store endpoints
    ``GET/POST/DELETE /api/store/queue``, ``GET /api/store/status``,
    ``POST /api/store/run``). Both uploads record the
    entry in the catalog and leave a ``<name>.meta.json`` sidecar, so the
@@ -47,6 +49,12 @@ import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import unquote, urlparse
+
+try:                              # works as a script and as an import
+    import cover_art
+except ImportError:               # same folder not on sys.path
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    import cover_art
 
 RANGE_RE = re.compile(r"^bytes=(\d*)-(\d*)$")
 # Characters that must never appear in an uploaded filename (basename is
@@ -278,6 +286,76 @@ def sidecar_sha256(fs_path: str) -> str:
     except (OSError, IndexError):
         return ""
     return token if len(token) == 64 else ""
+
+
+# ---- cover sidecars (the '.<stem>.icon0.<ext>' family cover_art.py keeps) --
+
+COVER_EXTS = (".png", ".jpg", ".jpeg", ".bmp")   # what find_icon accepts
+MAX_COVER_BYTES = 8 * 1024 * 1024
+COVER_MAGIC = ((b"\x89PNG\r\n\x1a\n", ".png"), (b"\xff\xd8\xff", ".jpg"))
+
+
+def cover_sidecar_paths(fs_path: str) -> list:
+    """Existing hidden cover sidecars belonging to a game file."""
+    folder, base = os.path.split(fs_path)
+    stem = os.path.splitext(base)[0]
+    prefix = "." + stem + ".icon0."
+    try:
+        names = os.listdir(folder)
+    except OSError:
+        return []
+    return [os.path.join(folder, n) for n in names
+            if n.startswith(prefix)
+            and os.path.splitext(n)[1].lower() in COVER_EXTS]
+
+
+def rename_cover_sidecars(fs_path: str, new_name: str) -> str:
+    """After a rename to *new_name* (game file already moved), re-derive the
+    hidden sidecar names from the new stem. Returns the new sidecar's path,
+    or '' when there is no cover or the stem did not change (the sidecar
+    name is still correct). A generic folder image (a PS3 disc's ICON0.PNG)
+    is not stem-bound and simply stays where it is."""
+    old_stem = os.path.splitext(os.path.basename(fs_path))[0]
+    new_stem = os.path.splitext(new_name)[0]
+    if old_stem == new_stem:
+        return ""
+    folder = os.path.dirname(fs_path)
+    moved = ""
+    for cov in cover_sidecar_paths(fs_path):
+        ext = os.path.splitext(cov)[1]
+        newp = os.path.join(folder, "." + new_stem + ".icon0" + ext)
+        if os.path.exists(newp):
+            continue
+        try:
+            os.rename(cov, newp)
+        except OSError:
+            continue
+        moved = newp
+    return moved
+
+
+def rap_referents(folder: str, rap_name: str, exclude=None) -> list:
+    """File names in *folder* whose sidecar pairs them with *rap_name*
+    (*exclude* names the game being moved, so it does not block itself)."""
+    try:
+        names = os.listdir(folder)
+    except OSError:
+        return []
+    out = []
+    for fname in names:
+        if not fname.endswith(".meta.json"):
+            continue
+        game = fname[:-len(".meta.json")]
+        if exclude is not None and game == exclude:
+            continue
+        try:
+            with open(os.path.join(folder, fname), encoding="utf8") as fh:
+                meta = json.load(fh)
+        except (OSError, ValueError):
+            continue
+        if isinstance(meta, dict) and meta.get("rap") == rap_name:
+            out.append(game)
+    return out
 
 
 # ---- Store queue helpers (endpoints below; the fetcher claims the file) --
@@ -513,6 +591,18 @@ def make_handler(games_dir: str):
                 return
             if path == "/api/item/rename":
                 self.handle_item_rename()
+                return
+            if path == "/api/item/move":
+                self.handle_item_move()
+                return
+            if path == "/api/item/cover":
+                self.handle_cover_upload()
+                return
+            if path == "/api/item/cover/extract":
+                self.handle_cover_extract()
+                return
+            if path == "/api/item/cover/clear":
+                self.handle_cover_clear()
                 return
             if path != "/api/upload":
                 self.send_error(404)
@@ -802,6 +892,8 @@ def make_handler(games_dir: str):
                 for side in (fs_path + ".meta.json", fs_path + ".sha256"):
                     if os.path.isfile(side):
                         os.remove(side)
+                for cov in cover_sidecar_paths(fs_path):
+                    os.remove(cov)
             except OSError as exc:
                 self.send_json(500, {"error": str(exc)})
                 return
@@ -830,6 +922,7 @@ def make_handler(games_dir: str):
                 for suffix in (".meta.json", ".sha256"):
                     if os.path.isfile(fs_path + suffix):
                         os.rename(fs_path + suffix, target + suffix)
+                moved_cover = rename_cover_sidecars(fs_path, name)
             except OSError as exc:
                 self.send_json(500, {"error": str(exc)})
                 return
@@ -860,8 +953,248 @@ def make_handler(games_dir: str):
             # sidecar, so the renamed catalog title must agree with it.
             sidecar_title = str(self.read_sidecar(target).get("title") or "")
             entry["title"] = sidecar_title or title_from_filename(name)
+            if moved_cover:
+                entry["icon"] = "/" + os.path.relpath(moved_cover, games_dir) \
+                    .replace(os.sep, "/")
             self.send_json(200, {"renamed": entry,
                                  "items": catalog_upsert(catalog_path, entry)})
+
+        # ---- move + covers ------------------------------------------------
+        #
+        # Rename pins the file's folder, so moving a game to another
+        # category needs its own verb; covers reuse the hidden
+        # '.<stem>.icon0.<ext>' sidecar convention cover_art.py established
+        # — manual art and extracted art are the same kind of file, so the
+        # listing/catalog skips already cover both and no metadata model
+        # grows.
+
+        def entry_for(self, fs_path: str) -> dict:
+            """Catalog entry for a library file: fresh path fields merged
+            over any entry the catalog already carries under the same url
+            (title/description/size ride along; a missing entry gets a
+            complete fresh one)."""
+            rel = os.path.relpath(fs_path, games_dir).replace(os.sep, "/")
+            name = os.path.basename(fs_path)
+            top = rel.split("/")[0] if "/" in rel else ""
+            fresh = {"id": rel.replace("/", "_"), "name": name, "path": rel,
+                     "url": "/" + rel, "category": top or "Uncategorized"}
+            old = next((it for it in catalog_load_items(catalog_path)
+                        if _entry_key(it) == fresh["url"]), {})
+            entry = {**old, **fresh}
+            entry.setdefault("title", title_from_filename(name))
+            return entry
+
+        def handle_item_move(self) -> None:
+            """POST /api/item/move {url, category} — the game (and its
+            sidecars) go to another top-level category folder. The category
+            is the library's organizing axis, and a .rap must not be pulled
+            out from under games that still reference it: the license
+            travels only with its last user, otherwise the pairing clears
+            rather than dangling across folders."""
+            data, err = self.read_json()
+            if err:
+                self.send_json(err[0], {"error": err[1]})
+                return
+            fs_path = self.resolve_item(data.get("url"))
+            if fs_path is None:
+                return
+            category = str(data.get("category", "")).strip()
+            if not store_category_ok(category) or category == "catalog.json":
+                self.send_json(400, {"error": f"invalid category: {category!r}"})
+                return
+            name = os.path.basename(fs_path)
+            old_rel = os.path.relpath(fs_path, games_dir).replace(os.sep, "/")
+            new_rel = category + "/" + name
+            if new_rel == old_rel:
+                self.send_json(400, {"error": "already in that category"})
+                return
+            target_dir = os.path.join(games_dir, category)
+            target = os.path.join(target_dir, name)
+            if os.path.exists(target):
+                self.send_json(409, {"error": "that category holds the name"})
+                return
+            src_dir = os.path.dirname(fs_path)
+            meta = self.read_sidecar(fs_path)
+            rap_name = str(meta.get("rap") or "")
+            rap_src = os.path.join(src_dir, rap_name) if rap_name else ""
+            rap_follows = rap_orphans = False
+            drop = []
+            if name.lower().endswith(".rap"):
+                if rap_referents(src_dir, name):
+                    self.send_json(409, {
+                        "error": f"{name} is attached to games there — "
+                                 "move those games (the license travels)"})
+                    return
+            elif rap_name and os.path.isfile(rap_src):
+                if rap_referents(src_dir, rap_name, exclude=name):
+                    rap_orphans = True          # it stays for the others
+                elif os.path.exists(os.path.join(target_dir, rap_name)):
+                    self.send_json(409, {"error":
+                        f"license {rap_name} already exists in the target"})
+                    return
+                else:
+                    rap_follows = True
+            try:
+                os.makedirs(target_dir, exist_ok=True)
+                os.rename(fs_path, target)
+                for suffix in (".meta.json", ".sha256"):
+                    if os.path.isfile(fs_path + suffix):
+                        os.rename(fs_path + suffix, target + suffix)
+                if rap_follows:
+                    os.rename(rap_src, os.path.join(target_dir, rap_name))
+                moved_cover = ""
+                for cov in cover_sidecar_paths(fs_path):
+                    newp = os.path.join(target_dir, os.path.basename(cov))
+                    if not os.path.exists(newp):
+                        os.rename(cov, newp)
+                        moved_cover = newp
+            except OSError as exc:
+                self.send_json(500, {"error": str(exc)})
+                return
+            if rap_orphans:
+                # The pairing cannot follow; say so on disk instead of
+                # leaving a cross-folder pointer the meta endpoint would
+                # refuse to make in the first place.
+                side = target + ".meta.json"
+                moved_meta = self.read_sidecar(target)
+                if "rap" in moved_meta:
+                    moved_meta.pop("rap")
+                    drop.append("rap")
+                    try:
+                        if moved_meta:
+                            tmp = side + ".part"
+                            with open(tmp, "w", encoding="utf8") as fh:
+                                json.dump(moved_meta, fh, indent=2)
+                            os.replace(tmp, side)
+                        else:
+                            os.remove(side)
+                    except OSError:
+                        pass
+            old_key = "/" + old_rel
+            old_entry = next((it for it in catalog_load_items(catalog_path)
+                              if _entry_key(it) == old_key), {})
+            catalog_remove(catalog_path, old_key)
+            fresh = {"id": new_rel.replace("/", "_"), "name": name,
+                     "path": new_rel, "url": "/" + new_rel,
+                     "category": category}
+            entry = {**{"title": title_from_filename(name)}, **old_entry,
+                     **fresh}
+            entry["title"] = str(self.read_sidecar(target).get("title")
+                                 or title_from_filename(name))
+            if moved_cover:
+                entry["icon"] = "/" + os.path.relpath(moved_cover, games_dir) \
+                    .replace(os.sep, "/")
+            elif entry.pop("icon", None) is not None:
+                # Whatever picture the entry carried belonged to the old
+                # folder's neighbourhood; the next regeneration re-decides.
+                drop.append("icon")
+            for field in drop:
+                entry.pop(field, None)
+            self.send_json(200, {"moved": entry,
+                                 "items": catalog_upsert(catalog_path, entry,
+                                                         tuple(drop))})
+
+        def handle_cover_upload(self) -> None:
+            """POST /api/item/cover?url=<library url>, body = raw PNG/JPEG
+            bytes. Replaces the game's hidden cover sidecar; the whole body
+            is small by construction (MAX_COVER_BYTES), so no streaming
+            dance is needed, but a refusal before the read still ends the
+            connection so its bytes are never parsed as a second request."""
+            url = parse_query(urlparse(self.path).query).get("url", "")
+            self.close_connection = True
+            fs_path = self.resolve_item(url)
+            if fs_path is None:
+                return
+            if os.path.basename(fs_path).lower().endswith(".rap"):
+                self.send_json(400, {"error": "licenses do not get covers"})
+                return
+            if "chunked" in self.headers.get("Transfer-Encoding", "").lower():
+                self.send_json(411, {"error": "chunked upload unsupported"})
+                return
+            length = self.headers.get("Content-Length", "")
+            if not length.isdigit():
+                self.send_json(411, {"error": "Content-Length required"})
+                return
+            length = int(length)
+            if length == 0 or length > MAX_COVER_BYTES:
+                self.send_json(413, {"error": "cover must be 1..8 MiB"})
+                return
+            blob = self.rfile.read(length)
+            ext = next((e for magic, e in COVER_MAGIC
+                        if blob.startswith(magic)), "")
+            if not ext:
+                self.send_json(400, {"error": "not a PNG or JPEG"})
+                return
+            folder = os.path.dirname(fs_path)
+            stem = os.path.splitext(os.path.basename(fs_path))[0]
+            out = os.path.join(folder, "." + stem + ".icon0" + ext)
+            tmp = out + ".part"
+            try:
+                with open(tmp, "wb") as fh:
+                    fh.write(blob)
+                os.replace(tmp, out)
+                cover_art.prune_other_covers(out)   # one cover per game
+            except OSError as exc:
+                try:
+                    os.remove(tmp)
+                except OSError:
+                    pass
+                self.send_json(500, {"error": str(exc)})
+                return
+            entry = self.entry_for(fs_path)
+            entry["icon"] = "/" + os.path.relpath(out, games_dir) \
+                .replace(os.sep, "/")
+            self.send_json(200, {"cover": entry["icon"],
+                                 "items": catalog_upsert(catalog_path, entry)})
+
+        def handle_cover_extract(self) -> None:
+            """POST /api/item/cover/extract {url} — force a re-run of the
+            embedded-cover extraction (ICON0 inside ISO/CSO/PBP). A failure
+            leaves the current cover untouched; only success re-publishes."""
+            data, err = self.read_json()
+            if err:
+                self.send_json(err[0], {"error": err[1]})
+                return
+            fs_path = self.resolve_item(data.get("url"))
+            if fs_path is None:
+                return
+            rel = os.path.relpath(fs_path, games_dir).replace(os.sep, "/")
+            if os.path.splitext(rel)[1].lower() not in (".iso", ".cso", ".pbp"):
+                self.send_json(400, {
+                    "error": "only ISO/CSO/PBP files embed cover art"})
+                return
+            icon = cover_art.ensure_cover(games_dir, rel, force=True)
+            if not icon:
+                self.send_json(409, {"error": "no ICON0 inside this file"})
+                return
+            entry = self.entry_for(fs_path)
+            entry["icon"] = icon
+            self.send_json(200, {"cover": icon,
+                                 "items": catalog_upsert(catalog_path, entry)})
+
+        def handle_cover_clear(self) -> None:
+            """POST /api/item/cover/clear {url} — drop the hidden sidecars
+            and the entry's icon; the tile goes back to its placeholder."""
+            data, err = self.read_json()
+            if err:
+                self.send_json(err[0], {"error": err[1]})
+                return
+            fs_path = self.resolve_item(data.get("url"))
+            if fs_path is None:
+                return
+            removed = 0
+            for cov in cover_sidecar_paths(fs_path):
+                try:
+                    os.remove(cov)
+                    removed += 1
+                except OSError as exc:
+                    self.send_json(500, {"error": str(exc)})
+                    return
+            rel = "/" + os.path.relpath(fs_path, games_dir).replace(os.sep, "/")
+            items = catalog_load_items(catalog_path)
+            if any(_entry_key(it) == rel for it in items):
+                items = catalog_upsert(catalog_path, {"url": rel}, ("icon",))
+            self.send_json(200, {"cleared": removed, "items": items})
 
         def do_PUT(self) -> None:
             if urlparse(self.path).path != "/api/item/meta":

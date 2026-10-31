@@ -258,6 +258,26 @@ def extract_cover(lib_root: str, rel_game: str) -> bytes:
         return b""
 
 
+def prune_other_covers(keep_path: str) -> None:
+    """Keep the one-cover rule: delete sibling ``.<stem>.icon0.*`` variants
+    next to *keep_path*. An uploaded JPEG and an extracted PNG cannot both
+    be *the* cover — find_icon would pick either one by directory order."""
+    folder, keep = os.path.split(keep_path)
+    if ".icon0." not in keep:
+        return
+    prefix = keep.rsplit(".icon0.", 1)[0] + ".icon0."
+    try:
+        names = os.listdir(folder)
+    except OSError:
+        return
+    for name in names:
+        if name.startswith(prefix) and name != keep:
+            try:
+                os.unlink(os.path.join(folder, name))
+            except OSError:
+                pass
+
+
 def ensure_cover(lib_root: str, rel_game: str, force: bool = False):
     """Extract-and-cache entry point used by the catalog generator.
     Returns the URL the catalog should publish, or None."""
@@ -281,6 +301,7 @@ def ensure_cover(lib_root: str, rel_game: str, force: bool = False):
         with open(tmp, "wb") as fh:
             fh.write(blob)
         os.replace(tmp, out_path)
+        prune_other_covers(out_path)
     except OSError:
         try:
             os.unlink(tmp)

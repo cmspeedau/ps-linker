@@ -29,8 +29,34 @@ export const deleteItem = (url) =>
   jsend('DELETE', '/api/item?url=' + encodeURIComponent(url));
 export const renameItem = (url, name) =>
   jsend('POST', '/api/item/rename', { url, name });
+export const moveItem = (url, category) =>
+  jsend('POST', '/api/item/move', { url, category });
 export const setItemMeta = (url, patch) =>
   jsend('PUT', '/api/item/meta', Object.assign({ url }, patch));
+
+/* ---- cover art ----
+ * The server stores covers as the hidden '<stem>.icon0.<ext>' sidecar
+ * cover_art.py uses, so an upload and an extraction are the same file and
+ * tiles/icons need no special handling: every response carries the updated
+ * items. */
+export const extractCover = (url) =>
+  jsend('POST', '/api/item/cover/extract', { url });
+export const clearCover = (url) =>
+  jsend('POST', '/api/item/cover/clear', { url });
+
+/** Raw-body image upload like uploadFile, but small and capped at 8 MiB,
+ *  so a plain fetch is enough — no progress plumbing. */
+export async function uploadCover(url, file) {
+  const r = await fetch('/api/item/cover?url=' + encodeURIComponent(url), {
+    method: 'POST',
+    headers: { 'Content-Type': file.type || 'application/octet-stream' },
+    body: file,
+  });
+  let data = null;
+  try { data = await r.json(); } catch (e) { /* not JSON */ }
+  if (!r.ok) throw new Error((data && data.error) || 'HTTP ' + r.status);
+  return data;
+}
 
 /* ---- Store (queue the server-side fetcher works through) ---- */
 export const storeStatus = () => jsend('GET', '/api/store/status');
