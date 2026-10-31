@@ -30,7 +30,6 @@
 #include <unistd.h>
 
 #include "store.h"
-#include "ui.h"
 #include "gfx.h"
 #include "store_gui.h"
 #include "http.h"
@@ -158,7 +157,7 @@ static int url_is_rap(const char *url)
 }
 
 /* ------------------------------------------------------------------ */
-/* Render backends: pixel only (gfx.c already initialised by ui_init)  */
+/* Render backends: pixel only (gfx.c is up from main.c already)        */
 /* ------------------------------------------------------------------ */
 
 static void ui_init_backend(void) { }        /* gfx already up        */

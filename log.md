@@ -6,6 +6,68 @@ it records *what was actually run and observed*, including bugs found while test
 
 ---
 
+## 2026-11-01 (ps3) — the PS3 app's own UI layer is deleted: main.c draws through store_gui
+
+`ps3/ui.h` and `ps3/ui_pix.c` are gone. They were the last thing the PS3 client
+had that the PSP client has not: a second UI layer with its own chrome (the
+Media Go sidebar rail, blue-cell Settings picker and separate splash / error /
+download / result frames). `ps3/main.c` now calls the Store renderers directly,
+exactly as `psp/main.c` does — `store_gui_browse()` for the browser,
+`store_gui_progress()` for downloads, `store_gui_status()` for the splash,
+error and one-line result panels through three local helpers (`draw_splash()`,
+`draw_error()`, `draw_result()`) — and opens the screen itself with
+`gfx_init()`/`gfx_term()`. `FileEntry` moved into `main.c` (the PSP twin
+declares it locally too), and `ps3/store.c` no longer includes the deleted
+header. header. The `.self` ended up about 300 bytes smaller with one source fewer.
+
+Fixing the panels surfaced a real layout bug in *both* twins:
+`store_gui_status()` clipped its body to one line, so the longest message the
+clients show — "`Game_Demo_1.0.pkg` stopped early - download it again to
+resume" — ended mid-word at the screen edge. Both `store_gui_status()`
+implementations now run their body through a shared `status_lines()` word-wrap
+(two lines, breaking at the last space that fits: 50 glyphs per line at the
+PS3's scale-3 grid, 58 at the PSP's 480-wide scale 1).
+
+### On-device E2E — PS3 / RPCS3
+
+Rebuilt the fixture share to mirror the real library so the tab rail could be
+checked against the PSP client's: `Games/ Homebrew/ PS3/ Utilities/` with a
+`catalog.json` labelling two of the files `platform: PSP` and the rest `PS3`,
+served by `server/store/http_server.py` on **18000** (the live Store on 8000
+untouched), `Net: Internet enabled: Connected` and settings.txt at the vfs
+target `…/PCSX3/dev_hdd0/NASDL/`. A hand-written
+`Game_Demo_1.0.pkg.part` put a paused row in the Downloads tab.
+
+Observed (`shots/`): the rail reads **`All | Games | Homebrew | Utilities |
+Downloads`** — categories in listing order, the own-console `PS3` tab hidden,
+and inside `/Games/` only the `.pkg` survives (the PSP `.iso` is dropped, the
+folder's own rail collapsing to `All | Games | Downloads`) (`40`, `48`); the
+Downloads tab is a row list with a name and a progress bar per row, `paused`
+for the partial and `100%` for finished files, exactly the PSP client's layout
+(`41`); SELECT opens the Utilities page with the NAS URL row and the
+`/dev_hdd0/NASDL/` line (`42`); X on a Downloads row and the panel after a real
+download both render as the Store status frame, now with the long message
+wrapped over two lines (`44`, `50`); the download itself completed
+(`Game_Demo_1.0.pkg`, 524288 bytes, in the emulated HDD).
+
+Torn down: RPCS3 and the fixture server stopped, both fixture files and the
+fake `.part` removed from `dev_hdd0/NASDL/`, `settings.txt` and
+`Net: Internet enabled: Disconnected` restored from the pre-test copies.
+
+Harness notes:
+
+1. **`pkill -f` matched the harness again, twice** — once because the *launch*
+   shared a command line with the kill (`pkill -f "[r]pcs3.appimage"; …
+   rpcs3.appimage …`), once because a later argument (`rpcs3_core`) contained
+   the pattern's expansion. The kill must be its own command, alone.
+2. **`cd X && cmd &` backgrounds the whole chain** — the following `drive.py`
+   call then ran from the repo and failed with "No such file or directory";
+   the driver is called by absolute path from now on, and RPCS3 is launched
+   with `setsid nohup` so a harness-side interrupt cannot take it down.
+3. `store_gui_status()`'s one-line clip was invisible until a message longer
+   than the panel was put on screen — worth remembering that the *longest*
+   string, not the typical one, decides a fixed-width panel.
+
 ## 2026-10-31 (ps3) — the whole PS3 app on the Store frame: pixel Utilities page, sidebar chrome deleted
 
 The PS3 client's last foreign-looking screens are gone. `ps3/ui_pix.c` was

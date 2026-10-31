@@ -536,14 +536,39 @@ void store_gui_url_edit(const char *url, int pick)
     gui_end();
 }
 
+/* Split a status body over at most two lines, breaking at the last space
+ * that fits, so a whole sentence reads instead of running off the panel.
+ * Twin of ps3/store_gui.c's helper at the PSP's 480x272 grid. */
+static void status_lines(const char *src, char *l1, size_t c1,
+                         char *l2, size_t c2, int cols)
+{
+    size_t n = 0;
+    while (n + 1 < c1 && n < (size_t)cols && src[n]) { l1[n] = src[n]; n++; }
+    l1[n] = '\0';
+    if (c2) l2[0] = '\0';
+    if (!src[n] || c2 == 0) return;
+
+    size_t cut = n;                       /* last space on the first line */
+    while (cut > 0 && l1[cut - 1] != ' ') cut--;
+    if (cut > 1) l1[cut - 1] = '\0';      /* the space belongs to no line */
+    else cut = n;                         /* one long word: hard break    */
+
+    const char *rest = src + (cut > 1 ? cut : n);
+    while (*rest == ' ') rest++;
+    size_t m = 0;
+    while (m + 1 < c2 && m < (size_t)cols && rest[m]) { l2[m] = rest[m]; m++; }
+    l2[m] = '\0';
+}
+
 void store_gui_status(const char *header, const char *body, const char *hint)
 {
     gui_begin(COL_BG);
     draw_header(header ? header : "PS Linker", "");
     if (body) {
-        char buf[60];
-        clip(buf, sizeof buf, body, 58);
-        gui_text(10, 40, buf, COL_TEXT, 1);
+        char l1[120], l2[120];
+        status_lines(body, l1, sizeof l1, l2, sizeof l2, 58);
+        gui_text(10, 40, l1, COL_TEXT, 1);
+        if (l2[0]) gui_text(10, 56, l2, COL_TEXT, 1);
     }
     if (hint) {
         gui_rect(0, 256, SCR_W, 16, COL_LINE);

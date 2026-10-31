@@ -23,9 +23,9 @@
  *                    Circle = delete, Start = ok, Select = cancel.
  *
  * Output goes to the RSX pixel display (ps3/gfx.c: CPU-drawn frames
- * flipped through two RSX buffers, so the TV shows the app). The app
- * is pixel-only: the old ANSI/netdebug UI (ui_text.c) went away with
- * the Cover Flow browser redesign.
+ * flipped through two RSX buffers, so the TV shows the app). There is no
+ * UI layer of the app's own: every screen draws through ps3/store_gui.c,
+ * the way psp/main.c does, so both clients share one look.
  */
 
 #include <stdio.h>
@@ -43,8 +43,8 @@
 #include "http.h"
 #include "resume.h"
 #include "store.h"
+#include "gfx.h"
 #include "store_gui.h"
-#include "ui.h"
 #include "../ui/browser_model.h"
 
 /* ------------------------------------------------------------------ */
@@ -68,6 +68,18 @@
 /* ------------------------------------------------------------------ */
 /* State                                                               */
 /* ------------------------------------------------------------------ */
+
+/* One directory-listing entry, as parsed below. size/category come from
+ * the share's anchor data-size/data-cat attributes; -1/"" when the share
+ * does not report them. */
+typedef struct {
+    char name[256];
+    char url[256];
+    long long size;
+    char category[64];
+    char platform[16];    /* data-platform ("PSP"/"PS3"), "" if none */
+    int  is_dir;
+} FileEntry;
 
 static FileEntry g_files[MAX_FILES];
 static int g_file_count = 0;
@@ -271,8 +283,7 @@ static int fetch_listing(void)
 }
 
 /* ------------------------------------------------------------------ */
-/* Download with a live progress frame (ui_download backend decides    */
-/* how much redrawing is worth it).                                    */
+/* Download with a live progress frame (store_gui_progress draws it)    */
 /* ------------------------------------------------------------------ */
 
 static char g_dl_name[MAX_PATH_LEN];
@@ -289,7 +300,7 @@ static void download_progress(int pct, long total)
         return;
     g_dl_last_pct = pct;
     g_dl_last_total = total;
-    ui_download(g_dl_name, g_dl_path, pct, total);
+    store_gui_progress(g_dl_name, g_dl_path, pct, total);
 }
 
 static int download_file(const char *url, const char *dest_path,
@@ -299,8 +310,34 @@ static int download_file(const char *url, const char *dest_path,
     snprintf(g_dl_path, sizeof(g_dl_path), "%s", dest_path);
     g_dl_last_pct = -999;
     g_dl_last_total = 0;
-    ui_download(g_dl_name, g_dl_path, -1, 0);
+    store_gui_progress(g_dl_name, g_dl_path, -1, 0);
     return ps3_resume_download(url, dest_path, download_progress);
+}
+
+/* ------------------------------------------------------------------ */
+/* The two state screens (both are one Store status frame, as on PSP)   */
+/* ------------------------------------------------------------------ */
+
+/* Splash/loading panel: shown while the app works, no input expected. */
+static void draw_splash(const char *msg)
+{
+    store_gui_status("PS Linker", msg, "Starting...");
+}
+
+/* Error panel; the caller waits for a button afterwards, so the hint bar
+ * carries the instruction (second line) where the frame puts key hints. */
+static void draw_error(const char *line1, const char *line2)
+{
+    store_gui_status("PS Linker", line1 ? line1 : "",
+                     line2 && line2[0] ? line2
+                                       : "Press any button to retry");
+}
+
+/* One-line result after a download or a Downloads row (the PSP twin's
+ * "Done: x" / "already on this card" panel); caller waits for a button. */
+static void draw_result(const char *msg)
+{
+    store_gui_status("PS Linker", msg, "Press any button to continue");
 }
 
 /* ------------------------------------------------------------------ */
@@ -495,7 +532,7 @@ static int utilities_view(void)
 
 /* The browser IS the Cover Flow frame: main.c drives the shared
    ui/coverflow.c state through ui/browser_model.c (listing -> covers +
-   tab rail), and ui_browse draws it with the Store's pixel cards.
+   tab rail), and store_gui_browse draws it with the Store's pixel cards.
    The tab rail is All | <share categories> | Downloads; the Downloads tab
    is a row list (name + progress bar) of what landed in DEST_DIR, .part
    resumes included as paused rows. Licenses is hidden here (and in the
@@ -644,7 +681,7 @@ static int fetch_or_retry(void)
 
         char msg[128];
         snprintf(msg, sizeof(msg), "Could not reach %.70s", g_nas_base);
-        ui_error(msg, "SELECT edits the URL, any other button retries");
+        draw_error(msg, "SELECT edits the URL, any other button retries");
 
         unsigned pressed;
         int prc = wait_press(&pressed);
@@ -652,7 +689,7 @@ static int fetch_or_retry(void)
         if (pressed & PAD_BTN_SELECT) {
             if (utilities_view() < 0) return -1;   /* it saved on exit */
             g_cwd[0] = '\0';                       /* new server, new root */
-            ui_splash("Loading share...");
+            draw_splash("Loading share...");
         }
     }
 }
@@ -660,11 +697,11 @@ static int fetch_or_retry(void)
 /* Returns:  0 = quit at root, -2 = system quit */
 static int browser(void)
 {
-    ui_splash("Fetching listing from NAS...");
+    draw_splash("Fetching listing from NAS...");
     if (fetch_or_retry() < 0) return -2;
 
     if (coverflow_init(&g_cf, g_cf_items, 0, 80, 40, 0) != 0) {
-        ui_error("Out of memory.", "");
+        draw_error("Out of memory.", "");
         sleep(3);
         return -2;
     }
@@ -683,7 +720,7 @@ static int browser(void)
             pct[i]   = g_downloads_active ? dl_progress(&g_dl[g_cf_map[i]])
                                           : -1;
         }
-        ui_browse(&g_cf, ids, descs, g_cwd,
+        store_gui_browse(&g_cf, ids, descs, g_cwd,
                   g_downloads_active ? pct : NULL);
 
         unsigned pressed;
@@ -696,7 +733,7 @@ static int browser(void)
             if (ur < 0) { rc = -2; break; }
             if (ur & 2) {                  /* new server: refetch root */
                 g_cwd[0] = '\0';
-                ui_splash("Loading share...");
+                draw_splash("Loading share...");
                 if (fetch_or_retry() < 0) { rc = -2; break; }
                 browser_fill(1);
             }
@@ -737,19 +774,19 @@ static int browser(void)
                     snprintf(msg, sizeof(msg), "%s stopped early - download it again to resume", d->name);
                 else
                     snprintf(msg, sizeof(msg), "%s is already on this HDD", d->name);
-                ui_result(1, msg);
+                draw_result(msg);
                 if (wait_button() < 0) { rc = -2; break; }
                 continue;
             }
 
             FileEntry *e = &g_files[g_cf_map[slot]];
             if (e->is_dir) {
-                ui_splash("Loading directory...");
+                draw_splash("Loading directory...");
                 char saved[MAX_PATH_LEN];
                 snprintf(saved, sizeof(saved), "%s", g_cwd);
                 if (cwd_enter(e->name) != 0 || fetch_listing() != 0) {
                     snprintf(g_cwd, sizeof(g_cwd), "%s", saved);  /* rollback */
-                    ui_error("Could not open directory.", "");
+                    draw_error("Could not open directory.", "");
                     if (wait_button() < 0) { rc = -2; break; }
                     continue;
                 }
@@ -763,7 +800,7 @@ static int browser(void)
             char msg[256];
             if (drc == 0) snprintf(msg, sizeof(msg), "Done: %s", e->name);
             else          snprintf(msg, sizeof(msg), "Failed (%d): %s", drc, e->name);
-            ui_result(drc == 0, msg);
+            draw_result(msg);
             if (wait_button() < 0) { rc = -2; break; }
             scan_downloads();      /* the new file belongs in the tab */
             if (g_downloads_active) browser_fill(0);
@@ -774,10 +811,10 @@ static int browser(void)
                 continue;
             }
             if (g_cwd[0] != '\0') {
-                ui_splash("Going up...");
+                draw_splash("Going up...");
                 cwd_up();
                 if (fetch_listing() != 0) {
-                    ui_error("Could not reload parent directory.", "");
+                    draw_error("Could not reload parent directory.", "");
                     if (wait_button() < 0) { rc = -2; break; }
                 }
                 browser_fill(1);
@@ -800,13 +837,18 @@ int main(void)
     ioPadInit(1);
     sysUtilRegisterCallback(SYSUTIL_EVENT_SLOT0, sysutil_cb, NULL);
 
-    ui_init();          /* RSX pixel when the display allows, else TTY */
-    ui_splash("Starting...");
+    /* The RSX display is the app's only screen (store_gui draws on it). */
+    if (gfx_init() != 0) {
+        sleep(5);                 /* nothing to draw on: let a debugger see */
+        ioPadEnd();
+        return 1;
+    }
+    draw_splash("Starting...");
 
     if (netInitialize() < 0) {   /* uses XMB network settings */
-        ui_error("Network init failed.", "Check XMB network settings.");
+        draw_error("Network init failed.", "Check XMB network settings.");
         sleep(5);
-        ui_exit();
+        gfx_term();
         ioPadEnd();
         return 1;
     }
@@ -816,11 +858,11 @@ int main(void)
 
     browser();               /* fetch retries and Utilities live inside it */
 
-    ui_splash("Goodbye!");
+    draw_splash("Goodbye!");
     sleep(2);
 
     netDeinitialize();
-    ui_exit();
+    gfx_term();              /* XMB owns the screen again */
     ioPadEnd();
     return 0;
 }

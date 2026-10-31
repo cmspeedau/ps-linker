@@ -583,20 +583,29 @@ wrong `X-SHA256` is rejected with `rc=-11`.
       was down), OFF → raw names + inert START across a cold boot, ON →
       stripped names + START popup, all persisted through `settings.txt`
       (`log.md` 2026-10-31, screenshots `3[1-9]*.png`–`6*.png`).
-- [x] **The PS3 client now looks like the PSP client** — the last screens still
-      wearing the Media Go sidebar chrome (splash, error, download, result) were
-      redrawn on the Store frame (`frame()` + `hint_bar()` in `ps3/ui_pix.c`,
-      its blue-cell Settings picker deleted with them), and SELECT opens a pixel
-      Utilities page in that same frame: `store_gui_utilities()` (the NAS URL
-      row, X to edit, plus where downloads land — no pill switch, `gclite` is a
-      PSP plugin) over `store_gui_url_edit()`, the PS3 twin of the PSP keyboard
-      sharing `STORE_URL_CHARS` and a 13-column grid, with `fetch_or_retry()`
-      giving every failed fetch the same SELECT-opens-Utilities escape. Proven
-      on RPCS3 against a fixture share on 18000: boot with a saved dead port →
-      retry screen → SELECT → keyboard (insert, O and `<` delete, OK commit) →
-      fix, save and refetch to root; SELECT inside the keyboard discards the
-      edit; a committed URL survives a restart in `settings.txt`
-      (`log.md` 2026-10-31, screenshots `1[0-9]-*.png`, `3*.png`).
+- [x] **The PS3 client now looks like the PSP client** — the PS3 app's own UI
+      layer (`ps3/ui.h` + `ps3/ui_pix.c`: the Media Go sidebar chrome, its
+      blue-cell Settings picker, standalone splash/download/result frames) is
+      deleted. `ps3/main.c` now draws through the Store renderers directly, the
+      way `psp/main.c` does — `store_gui_browse` for the browser,
+      `store_gui_progress` for downloads, `store_gui_status` for the splash,
+      error and one-line result panels (which wrap to two lines instead of
+      running off the panel), with `gfx_init()`/`gfx_term()` opening the screen.
+      SELECT opens a pixel Utilities page in the same frame:
+      `store_gui_utilities()` (the NAS URL row, X to edit, plus where downloads
+      land — no pill switch, `gclite` is a PSP plugin) over
+      `store_gui_url_edit()`, the PS3 twin of the PSP keyboard sharing
+      `STORE_URL_CHARS` and a 13-column grid, with `fetch_or_retry()` giving
+      every failed fetch the same SELECT-opens-Utilities escape. Proven on
+      RPCS3 against a fixture share on 18000 (`Games/ Homebrew/ PS3/
+      Utilities/` + a `data-platform` catalog): rail
+      `All | Games | Homebrew | Utilities | Downloads` with the own-console tab
+      hidden and the PSP file dropped, Downloads as name + progress-bar rows
+      (a `.part` showing `paused`), download → `Done:` panel, boot on a saved
+      dead port → retry screen → SELECT → keyboard (insert, O and `<` delete, OK
+      commit) → fix, save and refetch to root, and SELECT inside the keyboard
+      discarding the edit (`log.md` 2026-10-31/11-01, screenshots
+      `1[0-9]-*.png`, `3*.png`, `4*.png`).
 
 ### In progress
 

@@ -12,7 +12,7 @@ SRC		:= main.c resume.c http.c store.c \
 		   ../ui/catalog.c ../ui/store_logic.c
 
 # Pixel-only app: every screen draws on the RSX renderer in gfx.c.
-SRC		+= ui_pix.c gfx.c store_gui.c
+SRC		+= gfx.c store_gui.c
 
 OBJS		:= $(SRC:.c=.o)
 OFILES		:= $(OBJS)
@@ -47,7 +47,7 @@ run: $(TARGET).self
 	ps3load $(TARGET).self
 
 clean:
-	rm -f main.o resume.o http.o store.o ui_pix.o gfx.o \
+	rm -f main.o resume.o http.o store.o gfx.o \
 	      store_gui.o ../ui/coverflow.o ../ui/browser_model.o \
 	      ../ui/catalog.o ../ui/store_logic.o \
 	      $(TARGET).elf $(TARGET).self $(TARGET).fake.self \

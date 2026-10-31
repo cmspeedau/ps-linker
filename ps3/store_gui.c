@@ -352,14 +352,40 @@ void store_gui_browse(const coverflow_state_t *cf,
     gfx_end();
 }
 
+/* Split a status body over at most two lines, breaking at the last space
+ * that fits, so a whole sentence ("Quake_1.08.pkg stopped early - download
+ * it again to resume") reads instead of running off the panel. `cols` is
+ * the glyph budget of one line at the scale the caller draws with. */
+static void status_lines(const char *src, char *l1, size_t c1,
+                         char *l2, size_t c2, int cols)
+{
+    size_t n = 0;
+    while (n + 1 < c1 && n < (size_t)cols && src[n]) { l1[n] = src[n]; n++; }
+    l1[n] = '\0';
+    if (c2) l2[0] = '\0';
+    if (!src[n] || c2 == 0) return;
+
+    size_t cut = n;                       /* last space on the first line */
+    while (cut > 0 && l1[cut - 1] != ' ') cut--;
+    if (cut > 1) l1[cut - 1] = '\0';      /* the space belongs to no line */
+    else cut = n;                         /* one long word: hard break    */
+
+    const char *rest = src + (cut > 1 ? cut : n);
+    while (*rest == ' ') rest++;
+    size_t m = 0;
+    while (m + 1 < c2 && m < (size_t)cols && rest[m]) { l2[m] = rest[m]; m++; }
+    l2[m] = '\0';
+}
+
 void store_gui_status(const char *header, const char *body, const char *hint)
 {
     gfx_begin(COL_BG);
     draw_header(header ? header : "PS Linker", "");
     if (body) {
-        char buf[300];
-        clip(buf, sizeof buf, body, SCR_W - 80, 3);
-        gfx_text(40, 200, buf, COL_TEXT, 3);
+        char l1[300], l2[300];
+        status_lines(body, l1, sizeof l1, l2, sizeof l2, (SCR_W - 80) / 24);
+        gfx_text(40, 200, l1, COL_TEXT, 3);
+        if (l2[0]) gfx_text(40, 236, l2, COL_TEXT, 3);
     }
     if (hint) {
         gfx_rect(0, STATUS_Y, SCR_W, SCR_H - STATUS_Y, COL_LINE);
