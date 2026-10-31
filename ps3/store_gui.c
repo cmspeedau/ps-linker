@@ -346,8 +346,8 @@ void store_gui_browse(const coverflow_state_t *cf,
     gfx_text(18, STATUS_Y + 12,
              progress ? "L/R row  UpDn jump  L1R1 tab  X info  O leave"
              : cf->view == COVERFLOW_VIEW_GRID
-                 ? "Arrows move  L1R1 tab  Sq flow  X open  O up  Sel settings"
-                 : "L/R cover  UpDn jump  L1R1 tab  Sq grid  X open  O up  Sel/Tri",
+                 ? "Arrows move  L1R1 tab  Sq flow  X open  O up  SEL:util"
+                 : "L/R cover  UpDn jump  L1R1 tab  Sq grid  X open  O up  SEL:util TRI:store",
              COL_TEXT, 2);
     gfx_end();
 }
@@ -367,6 +367,97 @@ void store_gui_status(const char *header, const char *body, const char *hint)
     }
     gfx_end();
 }
+
+/* The Utilities page: the browser's SELECT screen, in the Store's frame.
+ * The NAS server URL is the one control (X opens the keyboard); a dim
+ * line states where downloads land. The PSP page has the gclite pill
+ * switch here too - that plugin is PSP-only, so this twin keeps the
+ * page to what a PS3 can actually change. */
+void store_gui_utilities(const char *url)
+{
+    gfx_begin(COL_BG);
+    draw_header("PS Linker", "utilities");
+
+    gfx_text(28, 80, "NAS SERVER URL", COL_HEADER, 2);
+
+    /* the URL row: the Downloads list's highlight marks the control */
+    const int ry = 110;
+    gfx_rect(0, ry, SCR_W, 64, COL_CARD);
+    gfx_rect(0, ry, 6, 64, COL_HEADER);
+    char shown[256];
+    clip(shown, sizeof shown, url ? url : "", SCR_W - 240, 3);
+    if (shown[0]) gfx_text(28, ry + 18, shown, COL_TEXT, 3);
+    else          gfx_text(28, ry + 18, "(not set - X to type one)",
+                           COL_FAINT, 3);
+    const char *e = "X edit";
+    gfx_text(SCR_W - 18 - gfx_text_width(e, 2), ry + 22, e, COL_FAINT, 2);
+
+    gfx_text(28, 226, "DOWNLOADS", COL_HEADER, 2);
+    gfx_text(28, 258, "/dev_hdd0/NASDL/", COL_TEXT, 2);
+    gfx_text(28, 292, "finished files and paused partials, listed on the "
+                      "Downloads tab", COL_DIM, 2);
+
+    gfx_rect(0, STATUS_Y, SCR_W, SCR_H - STATUS_Y, COL_LINE);
+    gfx_text(18, STATUS_Y + 12, "X edit the server URL   O or Start back",
+             COL_TEXT, 2);
+    gfx_end();
+}
+
+/* The keyboard grid: 13 columns - a-z and the digits/punctuation of
+ * STORE_URL_CHARS, then <del and OK. Up/Down jump a row (a remote's
+ * natural move on a TV-sized grid); the cell geometry lives here so the
+ * picker in main.c only walks slot numbers. */
+#define URLK_COLS 13
+
+void store_gui_url_edit(const char *url, int pick)
+{
+    gfx_begin(COL_BG);
+    draw_header("PS Linker", "edit url");
+
+    gfx_text(28, 76, "NAS SERVER URL", COL_HEADER, 2);
+
+    /* the value: tail-anchored so a long URL always shows its end, and
+     * a caret marks where X and O act */
+    const int fx = 28, fw = SCR_W - 56, fy = 108, fh = 64;
+    gfx_rect(fx, fy, fw, fh, COL_FIELD);
+    gfx_rect(fx, fy, fw, 2, COL_LINE);
+    gfx_rect(fx, fy + fh - 2, fw, 2, COL_LINE);
+    const int len = url ? (int)strlen(url) : 0;
+    const int vis = (fw - 48) / 24;                 /* scale-3 glyphs */
+    const char *tail = len > vis ? url + len - vis : url;
+    if (len) gfx_text(fx + 20, fy + 18, tail, COL_TEXT, 3);
+    else     gfx_text(fx + 20, fy + 18, "(type one)", COL_FAINT, 3);
+    gfx_rect(fx + 20 + (len > vis ? vis : len) * 24, fy + 12, 4, fh - 24,
+             COL_HEADER);
+
+    /* the key grid */
+    const char *chars = STORE_URL_CHARS;
+    const int nchars = (int)strlen(chars);
+    const int nslots = nchars + 2;                  /* + < + OK */
+    const int cell_w = 78, cell_h = 54, gap = 8;
+    const int grid_w = URLK_COLS * (cell_w + gap) - gap;
+    const int x0 = (SCR_W - grid_w) / 2, y0 = 230;
+    for (int slot = 0; slot < nslots; slot++) {
+        const int x = x0 + (slot % URLK_COLS) * (cell_w + gap);
+        const int y = y0 + (slot / URLK_COLS) * (cell_h + gap);
+        const int sel = (slot == pick);
+        gfx_rect(x, y, cell_w, cell_h, sel ? COL_HEADER : COL_FIELD);
+        char label[4] = { 0 };
+        if (slot < nchars)          label[0] = chars[slot];
+        else if (slot == nchars)    label[0] = '<';
+        else                        snprintf(label, sizeof label, "OK");
+        gfx_text_center(x + cell_w / 2, y + (cell_h - 16) / 2, label,
+                        sel ? COL_BLACK : COL_TEXT, 2);
+    }
+
+    gfx_rect(0, STATUS_Y, SCR_W, SCR_H - STATUS_Y, COL_LINE);
+    gfx_text(18, STATUS_Y + 12,
+             "LR key  UpDn row  X insert  O delete  Start ok  Sel cancel",
+             COL_TEXT, 2);
+    gfx_end();
+}
+
+int store_gui_url_edit_cols(void) { return URLK_COLS; }
 
 void store_gui_progress(const char *title, const char *path, int pct, long total)
 {

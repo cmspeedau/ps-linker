@@ -16,11 +16,11 @@
  *                       Square = flow/grid, Cross = open/download,
  *                       Circle = parent directory (Downloads view off,
  *                                quit at root),
- *                       Select = Settings (edit NAS URL),
+ *                       Select = Utilities (edit NAS URL),
  *                       Triangle = Store
- * Settings:  Left/Right = pick char, Up/Down = jump a row,
- *            Cross = insert, Circle = delete char,
- *            Start = save & exit, Select = cancel
+ * Utilities: Cross = edit the URL, Circle/Start = back (saved).
+ * In the URL editor: Left/Right = key, Up/Down = row, Cross = insert,
+ *                    Circle = delete, Start = ok, Select = cancel.
  *
  * Output goes to the RSX pixel display (ps3/gfx.c: CPU-drawn frames
  * flipped through two RSX buffers, so the TV shows the app). The app
@@ -43,6 +43,7 @@
 #include "http.h"
 #include "resume.h"
 #include "store.h"
+#include "store_gui.h"
 #include "ui.h"
 #include "../ui/browser_model.h"
 
@@ -50,8 +51,8 @@
 /* Config                                                              */
 /* ------------------------------------------------------------------ */
 
-/* Default base URL of the NAS share; editable at runtime via Settings
-   and persisted to SETTINGS_PATH. */
+/* Default base URL of the NAS share; editable at runtime on the
+   Utilities page and persisted to SETTINGS_PATH. */
 #define DEFAULT_NAS_URL "http://192.168.1.50:8000"
 
 /* Destination directory on the PS3 HDD */
@@ -76,7 +77,7 @@ static int g_file_count = 0;
 static char g_cwd[MAX_PATH_LEN] = "";
 
 /* Base URL of the NAS share, e.g. "http://192.168.1.50:8000".
-   Editable in the Settings view; lives in RAM after load. */
+   Editable on the pixel Utilities page; lives in RAM after load. */
 static char g_nas_base[MAX_URL_LEN] = DEFAULT_NAS_URL;
 
 /* sysutil asked us to exit (XMB quit / PS menu). */
@@ -88,13 +89,6 @@ static void sysutil_cb(u64 status, u64 param, void *usrdata)
     if ((status & SYSUTIL_EXIT_GAME))
         g_sys_quit = 1;
 }
-
-/* Settings character strip shared with the backends (the header pins
-   the length, so the picker slots line up across files). */
-const char SETTINGS_CHARS[] =
-    "abcdefghijklmnopqrstuvwxyz0123456789-.:/_";
-typedef char settings_chars_len_must_match_ui_h
-    [(sizeof(SETTINGS_CHARS) - 1 == SETTINGS_NCHARS) ? 1 : -1];
 
 /* ------------------------------------------------------------------ */
 /* Settings persistence                                                */
@@ -408,55 +402,89 @@ static void cwd_up(void)
 }
 
 /* ------------------------------------------------------------------ */
-/* Settings view: edit the NAS URL with an on-screen character picker  */
+/* Pixel Utilities page (SELECT): NAS URL editor                       */
 /* ------------------------------------------------------------------ */
 
-/* Returns 0 to keep browsing, <0 for a system quit. */
-static int settings_view(void)
-{
-    const int nslots = SETTINGS_NCHARS + 2;   /* chars, delete, save-exit */
-    const int cols = ui_settings_cols();
-    int pick = 0;
+/* The URL editor's key slots, same numbering store_gui_url_edit draws:
+   0..URL_NCHARS-1 are URL_CHARS, then delete, then OK. */
+static const char URL_CHARS[] = STORE_URL_CHARS;
+#define URL_NCHARS ((int)(sizeof(URL_CHARS) - 1))
+#define UP_DEL     URL_NCHARS
+#define UP_OK      (URL_NCHARS + 1)
+#define UP_NSLOTS  (URL_NCHARS + 2)
 
-    while (1) {
-        ui_settings(g_nas_base, pick, nslots);
+/* Full-screen pixel keyboard over a working copy of the URL. Returns 1
+   to apply `work`, 0 (Select) to discard it, <0 for a system quit. */
+static int url_picker_view(char *work, size_t cap)
+{
+    const int rowsel = store_gui_url_edit_cols();
+    int pick = 7;      /* start on 'h': an empty URL starts "http://" */
+
+    for (;;) {
+        store_gui_url_edit(work, pick);
 
         unsigned pressed;
-        int prc;
-        do { usleep(16000); prc = get_pressed(&pressed); } while (prc == -1);
+        int prc = wait_press(&pressed);
         if (prc < 0) return -1;
 
         if (pressed & PAD_BTN_RIGHT) {
-            if (pick < nslots - 1) pick++;
+            if (pick < UP_NSLOTS - 1) pick++;
         } else if (pressed & PAD_BTN_LEFT) {
             if (pick > 0) pick--;
         } else if (pressed & PAD_BTN_DOWN) {
-            if (pick + cols < nslots) pick += cols;
-            else pick = nslots - 1;
+            if (pick + rowsel < UP_NSLOTS) pick += rowsel;
+            else pick = UP_OK;                    /* land on the last key */
         } else if (pressed & PAD_BTN_UP) {
-            if (pick >= cols) pick -= cols;
+            if (pick >= rowsel) pick -= rowsel;
         } else if (pressed & PAD_BTN_CROSS) {
-            if (pick < SETTINGS_NCHARS) {
-                size_t l = strlen(g_nas_base);
-                if (l + 1 < sizeof(g_nas_base)) {
-                    g_nas_base[l] = SETTINGS_CHARS[pick];
-                    g_nas_base[l + 1] = '\0';
-                }
-            } else if (pick == nslots - 2) {     /* delete last char */
-                size_t l = strlen(g_nas_base);
-                if (l > 0) g_nas_base[l - 1] = '\0';
-            } else {                             /* save & exit */
-                save_settings();
-                return 0;
+            size_t l = strlen(work);
+            if (pick < URL_NCHARS && l + 1 < cap) {
+                work[l] = URL_CHARS[pick];
+                work[l + 1] = '\0';
+            } else if (pick == UP_DEL && l > 0) {
+                work[l - 1] = '\0';
+            } else if (pick == UP_OK) {
+                return 1;                         /* the OK key */
             }
         } else if (pressed & PAD_BTN_CIRCLE) {
-            size_t l = strlen(g_nas_base);    /* delete last char */
-            if (l > 0) g_nas_base[l - 1] = '\0';
+            size_t l = strlen(work);              /* O deletes too */
+            if (l > 0) work[l - 1] = '\0';
         } else if (pressed & PAD_BTN_START) {
-            save_settings();
-            return 0;
+            return 1;
         } else if (pressed & PAD_BTN_SELECT) {
-            return 0;                           /* cancel */
+            return 0;                             /* discard the edit */
+        }
+    }
+}
+
+/* SELECT's home: the NAS server URL row (a PS3 has no PSP feature
+   switches to carry - gclite is a PSP plugin). Leaving with O, START or
+   Select saves whatever changed; returns 2 when the server URL changed,
+   0 when nothing did, <0 for a system quit. */
+static int utilities_view(void)
+{
+    int mask = 0;
+
+    for (;;) {
+        store_gui_utilities(g_nas_base);
+
+        unsigned pressed;
+        int prc = wait_press(&pressed);
+        if (prc < 0) return -1;
+
+        if (pressed & PAD_BTN_CROSS) {
+            char work[MAX_URL_LEN];
+            snprintf(work, sizeof(work), "%s", g_nas_base);
+            int r = url_picker_view(work, sizeof(work));
+            if (r < 0) return -1;
+            if (r && strcmp(work, g_nas_base) != 0) {
+                snprintf(g_nas_base, sizeof(g_nas_base), "%s", work);
+                mask = 2;
+            }
+        } else if (pressed & (PAD_BTN_CIRCLE | PAD_BTN_START |
+                              PAD_BTN_SELECT)) {
+            if (mask) save_settings();   /* O, START and Select all apply */
+            return mask;
         }
     }
 }
@@ -606,18 +634,34 @@ static coverflow_key_t browser_key(unsigned pressed)
     return COVERFLOW_KEY_NONE;
 }
 
-/* Returns:  0 = quit at root, -1 = retry the listing, -2 = system quit */
+/* Fetch g_cwd; on failure show the retry screen, whose SELECT opens the
+   Utilities page - the one retry that can change what the next retry
+   means. Returns 0 with the listing in g_files, <0 for a system quit. */
+static int fetch_or_retry(void)
+{
+    for (;;) {
+        if (fetch_listing() == 0 && g_file_count > 0) return 0;
+
+        char msg[128];
+        snprintf(msg, sizeof(msg), "Could not reach %.70s", g_nas_base);
+        ui_error(msg, "SELECT edits the URL, any other button retries");
+
+        unsigned pressed;
+        int prc = wait_press(&pressed);
+        if (prc < 0) return -1;
+        if (pressed & PAD_BTN_SELECT) {
+            if (utilities_view() < 0) return -1;   /* it saved on exit */
+            g_cwd[0] = '\0';                       /* new server, new root */
+            ui_splash("Loading share...");
+        }
+    }
+}
+
+/* Returns:  0 = quit at root, -2 = system quit */
 static int browser(void)
 {
     ui_splash("Fetching listing from NAS...");
-
-    if (fetch_listing() != 0 || g_file_count == 0) {
-        char msg[128];
-        snprintf(msg, sizeof(msg), "Could not reach %s", g_nas_base);
-        ui_error(msg, "Check the NAS URL in Settings (Select).");
-        if (wait_button() < 0) return -2;
-        return -1;
-    }
+    if (fetch_or_retry() < 0) return -2;
 
     if (coverflow_init(&g_cf, g_cf_items, 0, 80, 40, 0) != 0) {
         ui_error("Out of memory.", "");
@@ -648,8 +692,15 @@ static int browser(void)
         if (prc < 0) { rc = -2; break; }
 
         if (pressed & PAD_BTN_SELECT) {
-            if (settings_view() < 0) { rc = -2; break; }
-            continue;   /* URL may have changed: redraw */
+            const int ur = utilities_view();  /* pixel page, owns the pad */
+            if (ur < 0) { rc = -2; break; }
+            if (ur & 2) {                  /* new server: refetch root */
+                g_cwd[0] = '\0';
+                ui_splash("Loading share...");
+                if (fetch_or_retry() < 0) { rc = -2; break; }
+                browser_fill(1);
+            }
+            continue;
         }
         if (pressed & PAD_BTN_TRIANGLE) {
             store_run(g_nas_base, get_pressed);
@@ -763,8 +814,7 @@ int main(void)
     mkdir(DEST_DIR, 0777);   /* also holds settings.txt */
     load_settings();
 
-    int rc;
-    do { rc = browser(); } while (rc == -1);
+    browser();               /* fetch retries and Utilities live inside it */
 
     ui_splash("Goodbye!");
     sleep(2);

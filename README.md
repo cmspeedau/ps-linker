@@ -151,11 +151,16 @@ make
 
 The PS3 app draws every screen on the RSX pixel display (`ps3/gfx.c`:
 CPU-drawn frames copied into two RSX buffers, flipped on vsync — no shaders,
-so RPCS3 and CFW both scan it out reliably) at a virtual 1280x720 grid. It
-boots straight into the Cover Flow browser (the share listing as covers, the
-tab rail `All | categories | Downloads`, the Downloads tab a row list of
-name plus progress bar per download); Settings and the Store (Triangle)
-share the same pixel look. Download to the HDD with resume support; Store
+so RPCS3 and CFW both scan it out reliably) at a virtual 1280x720 grid, in the
+frame the PSP client uses: orange header, tab rail with an active underline,
+Cover Flow cards or the card grid, bottom hint bar. It boots straight into the
+Cover Flow browser (the share listing as covers, the tab rail `All |
+categories | Downloads`, the Downloads tab a row list of name plus progress bar
+per download); SELECT opens the pixel **Utilities page** (the NAS server URL as
+an editable row — X opens a pixel on-screen keyboard — above where downloads
+land) and Triangle opens the Store, so one look runs through the whole app: the
+old Media Go sidebar chrome and its character-grid Settings screen were removed
+with that page. Download to the HDD with resume support; Store
 installs derive `/dev_hdd0` destinations (`.pkg` to `packages/`, disc images
 to `PS3ISO`/`PSPISO`, `.rap` to `exdata/`). A game whose catalog entry names
 an attached `rap` downloads that license into `exdata/` in the same action,
@@ -176,7 +181,9 @@ make pkg      # optional: installable .pkg
 
 - RPCS3 loads `nasdl.self` directly (File → Boot SELF) or via the generated `.pkg`.
 - Real-hardware PS3s need the `.pkg` installed; run the app from the XMB.
-- Set the server URL in the app's Settings view (persisted to `settings.txt`).
+- Set the server URL on the app's Utilities page (SELECT, then X on the URL row;
+      persisted to `settings.txt`). Its keyboard starts on `h`, so an empty URL
+      is a few presses from `http://`.
 
 ## Build verification
 
@@ -217,7 +224,8 @@ wrong `X-SHA256` is rejected with `rc=-11`.
 - [x] Server: Docker image + docker-compose (netiso server + HTTP share, one
       command, nothing third-party in the image)
 - [x] Both apps: subdirectory navigation (X enters dirs, O goes up)
-- [x] Both apps: Settings view (on-device NAS URL editing, persisted to settings.txt)
+- [x] Both apps: on-device NAS URL editing, persisted to settings.txt (then the
+      pixel Utilities page + on-screen keyboard, see below)
 - [x] Store (server-side): Store fetcher downloads CDN titles directly into /games so
       uploaded and store-sourced games appear in one unified client view;
       `generate_catalog.py` keeps catalog.json in sync (atomic writes, skips .part files);
@@ -575,6 +583,20 @@ wrong `X-SHA256` is rejected with `rc=-11`.
       was down), OFF → raw names + inert START across a cold boot, ON →
       stripped names + START popup, all persisted through `settings.txt`
       (`log.md` 2026-10-31, screenshots `3[1-9]*.png`–`6*.png`).
+- [x] **The PS3 client now looks like the PSP client** — the last screens still
+      wearing the Media Go sidebar chrome (splash, error, download, result) were
+      redrawn on the Store frame (`frame()` + `hint_bar()` in `ps3/ui_pix.c`,
+      its blue-cell Settings picker deleted with them), and SELECT opens a pixel
+      Utilities page in that same frame: `store_gui_utilities()` (the NAS URL
+      row, X to edit, plus where downloads land — no pill switch, `gclite` is a
+      PSP plugin) over `store_gui_url_edit()`, the PS3 twin of the PSP keyboard
+      sharing `STORE_URL_CHARS` and a 13-column grid, with `fetch_or_retry()`
+      giving every failed fetch the same SELECT-opens-Utilities escape. Proven
+      on RPCS3 against a fixture share on 18000: boot with a saved dead port →
+      retry screen → SELECT → keyboard (insert, O and `<` delete, OK commit) →
+      fix, save and refetch to root; SELECT inside the keyboard discards the
+      edit; a committed URL survives a restart in `settings.txt`
+      (`log.md` 2026-10-31, screenshots `1[0-9]-*.png`, `3*.png`).
 
 ### In progress
 

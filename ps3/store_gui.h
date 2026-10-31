@@ -28,6 +28,22 @@ void store_gui_browse(const coverflow_state_t *cf,
 /* Status screen: header bar text, one body row, optional hint row. */
 void store_gui_status(const char *header, const char *body, const char *hint);
 
+/* Characters of the URL editor's key strip. Slot indexes are
+   0..(chars-1), then delete, then OK (same numbering in main.c). */
+#define STORE_URL_CHARS "abcdefghijklmnopqrstuvwxyz0123456789-.:/_"
+
+/* Utilities page (the browser's SELECT screen): the NAS server URL row.
+   No PSP-style feature switches live here - gclite is a PSP plugin.
+   The caller owns keys. */
+void store_gui_utilities(const char *url);
+
+/* URL editor: full-screen pixel keyboard showing `url` with the cursor
+   on key slot `pick`. The caller owns keys. */
+void store_gui_url_edit(const char *url, int pick);
+
+/* Key slots per keyboard row (Up/Down jump by this). */
+int store_gui_url_edit_cols(void);
+
 /* Install screen with a progress bar; pct < 0 before the first byte. */
 void store_gui_progress(const char *title, const char *path, int pct, long total);
 

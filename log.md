@@ -6,6 +6,83 @@ it records *what was actually run and observed*, including bugs found while test
 
 ---
 
+## 2026-10-31 (ps3) — the whole PS3 app on the Store frame: pixel Utilities page, sidebar chrome deleted
+
+The PS3 client's last foreign-looking screens are gone. `ps3/ui_pix.c` was
+rewritten: its Media Go sidebar rail, blue selection cells and the
+character-grid `ui_settings()` picker are deleted, and the splash / error /
+download / result frames now draw through `frame()` + `hint_bar()` — the orange
+header and bottom hint bar of the Store frame, so a boot splash, a Cover Flow
+listing and an error read as one app. SELECT opens a pixel Utilities page built
+in the same module as the Store (`store_gui_utilities()`: the NAS server URL as
+one row with `X edit`, and where downloads land — deliberately no pill switch,
+`gclite` is a PSP plugin) over `store_gui_url_edit()`, the PS3 twin of the PSP
+keyboard: 13 columns over the shared `STORE_URL_CHARS`, `<` and OK as the last
+two slots, the selected cell inverted to orange, the value tail-anchored with a
+caret. `main.c` drops `settings_view()`/`SETTINGS_CHARS` for
+`utilities_view()`/`url_picker_view()`, and the new `fetch_or_retry()` gives
+*every* failed fetch (boot, tab change, new server) the same retry screen whose
+SELECT opens Utilities, replacing the boot-only escape and the dead-end "could
+not reach the new server" screen the first build showed. `ui_error()` now puts
+its second line in the hint bar (where the PSP twin puts key hints) instead of
+showing both a centered instruction and a contradicting bar.
+
+### On-device E2E — PS3 / RPCS3
+
+Built with the real toolchain; booted as the `.self`:
+
+```bash
+docker run --rm -v "$PWD:/src" -w /src/ps3 ps3dev/ps3dev:submodules make   # nasdl.self
+QT_QPA_PLATFORM=xcb ~/AppImages/rpcs3.appimage ps3/nasdl.self &
+```
+
+Share: `PS3/` (`Small_Demo.pkg` 384 KB, `Utility_Pack_1.0.pkg` 2 MiB + `.rap`,
+later a 24 MiB `Big_Pack_2.0.bin`), `PSP/PSP_Only.PBP` and a three-item
+`catalog.json`, served by the repo's `server/store/http_server.py` on
+**18000** (the live Store on 8000 was left alone). Guest network: `Net:
+Internet enabled: Connected`, and settings.txt written to the *vfs target*
+`/run/media/google/Data/PCSX3/dev_hdd0/NASDL/`, not to `~/.config/rpcs3/`.
+
+Observed (`shots/`): boot reaches the Cover Flow frame over the HTTP listing
+with the new `SEL:util TRI:store` hint bar (`00`, `30`); SELECT lands on the
+Utilities page (`01`), X opens the 13-column keyboard with the cursor on `h`
+(`02`); O deletes and X inserts, verified by driving the URL to
+`http://127.0.0.1:h` (`04`); typed `19999`, `<` and OK committed it, the page
+showed the new URL, START saved `settings.txt` and the refetch failed as it
+should (`05`, `06`, `07`). Restarting with that dead port saved then proved the
+escape from cold boot: the retry screen offers SELECT (`11`), the page shows the
+bad URL (`12`), four deletes + `8000` + OK + START refetch root and the browser
+comes back with the working share (`13`–`15`). Downloads rows, folder covers,
+the result frame after a real download and the utilities page with no
+sidebar-chrome screen anywhere (`16`, `31`, `32`); SELECT inside the keyboard
+discards the edit and leaves `settings.txt` untouched (`33`, `34`).
+
+Torn down: RPCS3 and the fixture server stopped, the three fixture files removed
+from `dev_hdd0/NASDL/`, `settings.txt` and `Net: Internet enabled: Disconnected`
+restored from the pre-test copies.
+
+Harness notes (this session's `/tmp/opencode` was wiped mid-work, so
+`ps3-e2e/` is a *new* directory with a fresh driver, `/tmp/opencode/ps3e2e/drive.py`):
+
+1. **python3-Xlib 0.33 has neither `Window.is_visible()` nor
+   `get_visibility()`** — an AttributeError inside a `except Exception: continue`
+   loop made the window walk return *zero* windows and looked like "no X
+   window at all". `get_attributes().map_state == IsViewable` is the portable
+   test; a bare `keysym_to_keycode(XK.XK_string_to_keysym(...))` is likewise
+   `XK.string_to_keysym` here.
+2. **RPCS3 is Qt, not SDL** — `QT_QPA_PLATFORM=xcb` under this Wayland session
+   gives a normal X window (`FPS: … | nasdl.self []`), and keys must target
+   *that* window, not the `RPCS3 … Alpha` GUI window. One key per XTEST call
+   with a re-focus before each; bursts drop events.
+3. **Keys pressed at a result screen are *consumed*, not queued** — a `cross`
+   sent to dismiss "Done:" re-selected the cover under it and silently
+   re-downloaded that file, which first read as "the share lost a new file" when
+   the folder listing was in fact fine (`curl` the listing before blaming the
+   server or its `.bin` extension filter).
+4. RPCS3's native-passthrough guest net pulled 2 MiB in under two seconds, so
+   the download progress frame scrolls past too fast to screenshot — catch it
+   with a 20 MiB+ fixture or don't bother proving it on screen.
+
 ## 2026-10-31 (psp) — SELECT goes straight to a pixel Utilities page; the Settings dialog is deleted
 
 The app's last debug-screen UI is gone. SELECT now opens the pixel
