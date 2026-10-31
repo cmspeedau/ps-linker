@@ -87,11 +87,30 @@ export function openAdd(prefetched) {
 export function closeAdd() {
   document.getElementById('modal-root').innerHTML = '';
   modalBody = null;
-  if (rows.length) { up(); dock.setVisible('uploads', true); }
+  reapIfIdle();            /* closing the panel means done looking */
 }
 
 export function isModalOpen() {
   return !!document.getElementById('add-scrim');
+}
+
+/* Finished rows are history once nobody is looking: closing the Add panel
+ * (or a completed queue whose panel is closed) drops the "✓ Added" rows,
+ * and the dock section — the "upload box" in the corner — disappears with
+ * them. In-flight uploads are kept so closing the panel never hides live
+ * progress; the dock then vanishes when the last one lands. */
+let hideTimer = null;
+function reapIfIdle() {
+  if (isModalOpen()) return;
+  if (rows.some((r) => r.status === 'queued' || r.status === 'uploading'))
+    return;
+  rows = rows.filter((r) => r.status === 'err');   // keep failures visible
+  if (rows.length) { renderRows(); return; }
+  if (upSec) dock.setVisible('uploads', false);
+}
+function scheduleHide() {
+  clearTimeout(hideTimer);
+  hideTimer = setTimeout(reapIfIdle, 5000);
 }
 
 /** Whole-window drop: any file dragged onto the page opens the panel. */
@@ -143,7 +162,7 @@ function addFiles(files) {
 function pump() {
   if (state.uploading) return;
   const row = rows.find((r) => r.status === 'queued');
-  if (!row) return;
+  if (!row) { scheduleHide(); return; }   // queue drained: the dock retires
   up();
   dock.setVisible('uploads', true);
   state.uploading = true;
