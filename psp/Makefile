@@ -1,8 +1,11 @@
 TARGET = nasdl
-OBJS = main.o resume.o store.o store_logic.o coverflow_psp.o gui.o store_gui.o
+# ../ui objects build from the shared sources; each app keeps its own
+# object files, so the two toolchains never overwrite each other's .o.
+OBJS = main.o resume.o store.o ../ui/store_logic.o ../ui/catalog.o \
+       coverflow_psp.o gui.o store_gui.o
 
 INCDIR =
-CFLAGS = -O2 -G0 -Wall -I../ui
+CFLAGS = -O2 -G0 -Wall -I../ui $(EXTRA_CFLAGS)
 CXXFLAGS = $(CFLAGS) -fno-exceptions -fno-rtti
 ASFLAGS = $(CFLAGS)
 

@@ -17,11 +17,26 @@ CFLAGS ?= -std=c11 -Wall -Wextra -Wpedantic -Werror
 
 TEST_BIN := /tmp/coverflow_test
 
-test: $(TEST_BIN)
+test: $(TEST_BIN) /tmp/store_logic_test /tmp/catalog_test
 	$(TEST_BIN)
+	/tmp/store_logic_test
+	/tmp/catalog_test
 
 $(TEST_BIN): coverflow.c coverflow.h coverflow_test.c
 	$(CC) $(CFLAGS) -o $@ coverflow.c coverflow_test.c
+
+# Store catalog logic (shared by both device Stores) and the catalog
+# parser, host-tested since they moved out of psp/ (the psp/tests runner
+# moved here with them).
+/tmp/store_logic_test: store_logic.c store_logic.h store_logic_test.c
+	$(CC) $(CFLAGS) -o $@ store_logic.c store_logic_test.c -lm
+
+/tmp/catalog_test: catalog.c catalog.h store_logic.c store_logic.h catalog_test.c
+	$(CC) $(CFLAGS) -o $@ catalog.c store_logic.c catalog_test.c -lm
+
+test-store: /tmp/store_logic_test /tmp/catalog_test
+	/tmp/store_logic_test
+	/tmp/catalog_test
 
 test-asan: coverflow.c coverflow.h coverflow_test.c
 	$(CC) $(CFLAGS) -fsanitize=address,undefined -g \

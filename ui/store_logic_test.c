@@ -1,4 +1,4 @@
-#include "../store_logic.h"
+#include "store_logic.h"
 #include <assert.h>
 #include <stdio.h>
 #include <string.h>
@@ -71,6 +71,38 @@ int main(void)
     assert(store_derive_path(NULL, "x", path, sizeof path) == -1);
     /* too long is a different failure from "not installable" */
     assert(store_derive_path("/x/EBOOT.PBP", "x", path, 4) == -2);
+
+    /* --- PS3 destinations ------------------------------------------------ */
+    assert(store_derive_path_ps3("/PS3/quake.pkg", "Quake", "", path, sizeof path) == 0);
+    assert(strcmp(path, "/dev_hdd0/packages/quake.pkg") == 0);
+    assert(store_derive_path_ps3("/PS3/Games/game.iso", "Game", "PS3",
+                                 path, sizeof path) == 0);
+    assert(strcmp(path, "/dev_hdd0/PS3ISO/game.iso") == 0);
+    /* a PSP disc image goes to PSPISO (manager-mountable there), by the
+       sidecar platform in any case, and cso is a disc image too */
+    assert(store_derive_path_ps3("/PSP/game.iso", "Game", "psp", path, sizeof path) == 0);
+    assert(strcmp(path, "/dev_hdd0/PSPISO/game.iso") == 0);
+    assert(store_derive_path_ps3("/PSP/game.CSO", "Game", "PSP", path, sizeof path) == 0);
+    assert(strcmp(path, "/dev_hdd0/PSPISO/game.CSO") == 0);
+    /* licenses land in exdata */
+    assert(store_derive_path_ps3("/licenses/BLES00001.rap", "", "",
+                                 path, sizeof path) == 0);
+    assert(strcmp(path, "/dev_hdd0/exdata/BLES00001.rap") == 0);
+    /* PSP homebrew is not installable on a PS3, nor is anything unknown */
+    assert(store_derive_path_ps3("/PSP/Doom/EBOOT.PBP", "EBOOT", "PSP",
+                                 path, sizeof path) == -1);
+    assert(store_derive_path_ps3("/x/game.elf", "x", "", path, sizeof path) == -1);
+    /* the file name is sanitised, queries drop, over-long paths differ */
+    assert(store_derive_path_ps3("/a b/quake 3.pkg", "", "", path, sizeof path) == 0);
+    assert(strcmp(path, "/dev_hdd0/packages/quake_3.pkg") == 0);
+    assert(store_derive_path_ps3("/g/quake.pkg?tk=1", "", "", path, sizeof path) == 0);
+    assert(strcmp(path, "/dev_hdd0/packages/quake.pkg") == 0);
+    assert(store_derive_path_ps3("/g/quake.pkg", "", "", path, 4) == -2);
+    /* a catalog entry with no usable basename falls back to the title */
+    assert(store_derive_path_ps3("/games/", "Quake Pack", "", path, sizeof path) == -1);
+    assert(store_derive_path_ps3("http://h:8000/", "Quake.pkg", "",
+                                 path, sizeof path) == 0);
+    assert(strcmp(path, "/dev_hdd0/packages/Quake.pkg") == 0);
 
     /* ---- placeholder cover tiles: web GUI parity -----------------------
      * server/store/ui/state.js: h=0; per byte h=(h*31+byte)&0x3fffffff;

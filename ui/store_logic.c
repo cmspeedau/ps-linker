@@ -92,6 +92,22 @@ static size_t parent_dir_of(const char *url, char *out, size_t outlen)
     return fold_name(out, outlen, prev + 1, (size_t)(slash - prev - 1));
 }
 
+/* Sanitise a file name: [A-Za-z0-9._-] kept, anything else becomes '_'.
+   Returns the stored length (0 = nothing usable). */
+static size_t sanitize_file(char *dst, size_t cap, const char *src, size_t srclen)
+{
+    size_t n = 0;
+    for (size_t i = 0; i < srclen && n < cap - 1; i++) {
+        unsigned char c = (unsigned char)src[i];
+        if ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+            (c >= '0' && c <= '9') || c == '.' || c == '_' || c == '-')
+            dst[n++] = (char)c;
+        else dst[n++] = '_';
+    }
+    dst[n] = '\0';
+    return n;
+}
+
 int store_derive_path(const char *url, const char *title,
                       char *out, size_t outlen)
 {
@@ -122,22 +138,52 @@ int store_derive_path(const char *url, const char *title,
     folder[nfolder] = '\0';
 
     char file[64];
-    size_t nfile = 0;
     if (base_len == 0) base = "EBOOT.PBP", base_len = strlen(base);
-    for (size_t i = 0; i < base_len && nfile < sizeof(file) - 1; i++) {
-        unsigned char c = (unsigned char)base[i];
-        if ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
-            (c >= '0' && c <= '9') || c == '.' || c == '_' || c == '-')
-            file[nfile++] = (char)c;
-        else file[nfile++] = '_';
-    }
+    size_t nfile = sanitize_file(file, sizeof(file), base, base_len);
     if (nfile == 0) return -1;
-    file[nfile] = '\0';
     if (strcmp(file, "EBOOT.PBP") == 0 || strcmp(file, "eboot.pbp") == 0) {
         int n = snprintf(out, outlen, "ms0:/PSP/GAME/%s/EBOOT.PBP", folder);
         return n >= 0 && (size_t)n < outlen ? 0 : -2;
     }
     int n = snprintf(out, outlen, "ms0:/PSP/GAME/%s/%s", folder, file);
+    return n >= 0 && (size_t)n < outlen ? 0 : -2;
+}
+
+int store_derive_path_ps3(const char *url, const char *title,
+                          const char *platform, char *out, size_t outlen)
+{
+    if (!url || !out || outlen == 0) return -1;
+    const char *base = basename_of(url);
+    size_t base_len = strcspn(base, "?");
+    char file[96];
+    if (base_len == 0) {                      /* catalogue with a bare name */
+        if (!title || !title[0]) return -1;
+        base_len = strlen(title);
+        base = title;
+    }
+    if (sanitize_file(file, sizeof(file), base, base_len) == 0) return -1;
+
+    const int pkg  = ends_with_ci(file, strlen(file), ".pkg");
+    const int iso  = ends_with_ci(file, strlen(file), ".iso");
+    const int cso  = ends_with_ci(file, strlen(file), ".cso");
+    const int rap  = ends_with_ci(file, strlen(file), ".rap");
+    if (!pkg && !iso && !cso && !rap) return -1;   /* .pbp and the rest: no */
+
+    /* A PSP disc image mounted by a PS3 game manager lives in PSPISO;
+       the sidecar's platform field is the only signal the catalog has. */
+    int psp_disc = 0;
+    if (iso || cso) {
+        const char *p = platform;
+        psp_disc = p && ((p[0] == 'p' || p[0] == 'P') &&
+                         (p[1] == 's' || p[1] == 'S') &&
+                         (p[2] == 'p' || p[2] == 'P'));
+    }
+
+    const char *dir = rap ? "/dev_hdd0/exdata/"
+                    : pkg ? "/dev_hdd0/packages/"
+                    : psp_disc ? "/dev_hdd0/PSPISO/"
+                    : "/dev_hdd0/PS3ISO/";
+    int n = snprintf(out, outlen, "%s%s", dir, file);
     return n >= 0 && (size_t)n < outlen ? 0 : -2;
 }
 

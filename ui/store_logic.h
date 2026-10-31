@@ -18,6 +18,17 @@ void store_format_size(uint64_t bytes, char *out, size_t outlen);
 int store_derive_path(const char *url, const char *title,
                       char *out, size_t outlen);
 
+/* PS3 twin: the /dev_hdd0 destination for a catalog item.
+   - .pkg              -> /dev_hdd0/packages/   (installed from XMB afterwards)
+   - PS3 .iso          -> /dev_hdd0/PS3ISO/
+   - PSP .iso/.cso     -> /dev_hdd0/PSPISO/     (`platform` starting with
+                          "psp", case-insensitive, picks this over PS3ISO)
+   - .rap              -> /dev_hdd0/exdata/     (game license)
+   Returns 0 on success, -1 if the type is not installable, -2 if the path
+   does not fit in `out`. */
+int store_derive_path_ps3(const char *url, const char *title,
+                          const char *platform, char *out, size_t outlen);
+
 /* ---- id-hashed placeholder cover tiles ---------------------------------
  * The web GUI draws an icon-less item's cover as a gradient keyed to a
  * hash of the item id (server/store/ui/state.js `placeholderBG`). The

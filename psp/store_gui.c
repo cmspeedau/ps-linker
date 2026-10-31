@@ -17,7 +17,7 @@
 
 #include "gui.h"
 #include "store_gui.h"
-#include "store_logic.h"
+#include "catalog.h"
 #include "../ui/coverflow.h"
 
 /* Palette: store.c's debug-screen colours verbatim, plus the two shades
