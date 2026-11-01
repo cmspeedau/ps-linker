@@ -5,6 +5,11 @@ web side; the on-device look is specified in [UI-REFERENCE.md](UI-REFERENCE.md)
 and the shared device-side Cover Flow module in
 [`ui/INTEGRATION.md`](../ui/INTEGRATION.md).
 
+A rendered portrait of the current UI — every screen, component state and
+design token, self-contained HTML built from `ui.css` and the live catalog —
+is [web-gui-reference.html](web-gui-reference.html) (regenerate with
+`python3 scripts/gen-web-gui-reference.py`).
+
 ## Where it is served
 
 `http://<host>:<port>/gui/`, assets at `/gui/<asset>` (`/ui/*` is an alias).

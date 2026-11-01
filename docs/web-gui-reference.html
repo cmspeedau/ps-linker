@@ -1,0 +1,606 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>PS Linker — Web GUI reference</title>
+<style>
+/* PS Linker — web library (direction B: modern dashboard).
+ * Dependency-free. Tokens first, then base, layout, components.
+ * Theme = [data-theme] on <html>; "light" only overrides the tokens. */
+
+@layer tokens, base, layout, components;
+
+@layer tokens {
+  :root {
+    --bg: #0d1117;
+    --chrome: #11161d;
+    --surface: #161b22;
+    --surface-2: #1c2330;
+    --line: #262c36;
+    --line-strong: #30363d;
+    --text: #e6edf3;
+    --muted: #8b949e;
+    --faint: #6e7681;
+    --accent: #2f6feb;
+    --accent-strong: #4f8cff;
+    --accent-soft: rgba(47, 111, 235, 0.16);
+    --accent-line: rgba(79, 140, 255, 0.45);
+    --ok: #3fb950;
+    --warn: #d29922;
+    --danger: #f85149;
+    --danger-soft: rgba(248, 81, 73, 0.12);
+    --fav: #e3b341;
+    --radius: 10px;
+    --radius-sm: 6px;
+    --shadow: 0 10px 30px rgba(0, 0, 0, 0.45);
+    --shadow-soft: 0 2px 10px rgba(0, 0, 0, 0.25);
+    --dur: 160ms;
+  }
+  :root[data-theme="light"] {
+    --bg: #eef2f7;
+    --chrome: #ffffff;
+    --surface: #ffffff;
+    --surface-2: #f2f5f9;
+    --line: #dbe2ea;
+    --line-strong: #c6d0dc;
+    --text: #1c2733;
+    --muted: #576879;
+    --faint: #7b8794;
+    --accent: #2f6feb;
+    --accent-strong: #2f6feb;
+    --accent-soft: rgba(47, 111, 235, 0.10);
+    --accent-line: rgba(47, 111, 235, 0.45);
+    --ok: #1a7f37;
+    --warn: #9a6700;
+    --danger: #c62f3f;
+    --danger-soft: rgba(198, 47, 63, 0.08);
+    --fav: #b58900;
+    --shadow: 0 10px 30px rgba(30, 45, 70, 0.16);
+    --shadow-soft: 0 2px 10px rgba(30, 45, 70, 0.10);
+  }
+}
+
+@layer base {
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; height: 100%; }
+  body {
+    background: var(--bg); color: var(--text);
+    font: 14px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    overflow: hidden;
+  }
+  button { font: inherit; color: inherit; cursor: pointer; }
+  /* Author display rules (icon-btn, drop-overlay) would otherwise beat the
+   * UA [hidden] rule and show everything we hide by attribute. */
+  [hidden] { display: none !important; }
+  input, select { font: inherit; color: inherit; }
+  a { color: var(--accent-strong); }
+  :focus-visible { outline: 2px solid var(--accent-strong); outline-offset: 2px; }
+  ::placeholder { color: var(--faint); }
+  @media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after { transition: none !important; animation: none !important; }
+  }
+}
+
+@layer layout {
+  .shell { display: flex; height: 100vh; width: 100vw; }
+
+  .sidebar {
+    flex: 0 0 224px; display: flex; flex-direction: column;
+    background: var(--chrome); border-right: 1px solid var(--line);
+    min-height: 0;
+  }
+  .brand {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 14px 14px 10px;
+  }
+  .brand-mark {
+    font-weight: 650; font-size: 15px; letter-spacing: .3px;
+    color: var(--text);
+  }
+  .nav-scroll { flex: 1 1 auto; overflow-y: auto; padding: 4px 8px; min-height: 0; }
+  .sidebar-foot { padding: 8px; border-top: 1px solid var(--line); }
+
+  .main-col { flex: 1 1 auto; display: flex; flex-direction: column; min-width: 0; }
+  .toolbar {
+    flex: 0 0 auto; display: flex; align-items: center; gap: 10px;
+    padding: 12px 16px; background: var(--chrome);
+    border-bottom: 1px solid var(--line);
+  }
+  .library { flex: 1 1 auto; overflow-y: auto; padding: 18px; min-height: 0; }
+
+  .drawer {
+    flex: 0 0 320px; background: var(--chrome);
+    border-left: 1px solid var(--line);
+    overflow-y: auto; min-height: 0;
+    animation: drawer-in var(--dur) ease;
+  }
+  @keyframes drawer-in { from { transform: translateX(16px); opacity: .5; } }
+
+  /* Mobile: sidebar off-canvas, drawer bottom-sheet. */
+  #menu-btn[hidden] { display: none; }
+  @media (max-width: 860px) {
+    .sidebar {
+      position: fixed; z-index: 40; top: 0; bottom: 0; left: 0;
+      transform: translateX(-100%); transition: transform var(--dur) ease;
+      box-shadow: var(--shadow);
+    }
+    .sidebar.open { transform: none; }
+    .scrim {
+      position: fixed; inset: 0; z-index: 35;
+      background: rgba(0, 0, 0, 0.45);
+    }
+    #menu-btn { display: inline-flex; }
+    .drawer {
+      position: fixed; z-index: 30; left: 0; right: 0; bottom: 0;
+      max-height: 70vh; border-left: 0;
+      border-top: 1px solid var(--line); border-radius: 14px 14px 0 0;
+      box-shadow: var(--shadow);
+    }
+  }
+}
+
+@layer components {
+  /* ---- controls ---- */
+  .btn {
+    appearance: none; border: 1px solid var(--line-strong);
+    background: var(--surface-2); color: var(--text);
+    border-radius: var(--radius-sm); padding: 6px 12px;
+    transition: background var(--dur) ease, border-color var(--dur) ease;
+    white-space: nowrap;
+  }
+  .btn:hover { background: var(--line); }
+  .btn-primary {
+    background: var(--accent); border-color: var(--accent); color: #fff;
+  }
+  .btn-primary:hover { background: var(--accent-strong); border-color: var(--accent-strong); }
+  .btn-danger { background: var(--danger); border-color: var(--danger); color: #fff; }
+  .btn-danger:hover { filter: brightness(1.1); background: var(--danger); }
+  .btn-ghost { background: transparent; border-color: var(--line-strong); }
+  .btn:disabled { opacity: .5; cursor: default; }
+
+  .icon-btn {
+    appearance: none; background: transparent; border: 1px solid transparent;
+    border-radius: var(--radius-sm); width: 32px; height: 32px;
+    display: inline-flex; align-items: center; justify-content: center;
+    color: var(--muted); font-size: 15px;
+  }
+  .icon-btn:hover { background: var(--surface-2); color: var(--text); }
+
+  .search {
+    flex: 1 1 200px; max-width: 380px;
+    background: var(--surface); border: 1px solid var(--line-strong);
+    border-radius: 8px; padding: 7px 12px; color: var(--text);
+  }
+  .search:focus { border-color: var(--accent-line); outline: none;
+    box-shadow: 0 0 0 2px var(--accent-soft); }
+
+  .select {
+    appearance: none; background: var(--surface);
+    border: 1px solid var(--line-strong); border-radius: 8px;
+    padding: 7px 10px; color: var(--text); cursor: pointer;
+  }
+
+  .field { display: flex; flex-direction: column; gap: 4px; margin-bottom: 10px; }
+  .field label { font-size: 11px; color: var(--muted); text-transform: uppercase;
+    letter-spacing: .6px; }
+  .field input, .field select, .field textarea {
+    background: var(--surface); border: 1px solid var(--line-strong);
+    border-radius: var(--radius-sm); padding: 7px 10px; color: var(--text);
+  }
+  .field textarea { resize: vertical; min-height: 56px; }
+
+  /* ---- sidebar nav ---- */
+  .nav-group { margin: 10px 0 2px; padding: 0 8px;
+    font-size: 10.5px; text-transform: uppercase; letter-spacing: .8px;
+    color: var(--faint); }
+  .nav-item {
+    display: flex; align-items: center; gap: 8px; width: 100%;
+    appearance: none; background: transparent; border: 0;
+    border-radius: var(--radius-sm); padding: 7px 10px;
+    color: var(--muted); text-align: left;
+    transition: background var(--dur) ease, color var(--dur) ease;
+  }
+  .nav-item:hover { background: var(--surface-2); color: var(--text); }
+  .nav-item.active {
+    background: var(--accent-soft); color: var(--text); font-weight: 550;
+    box-shadow: inset 2px 0 0 var(--accent-strong);
+  }
+  .nav-count {
+    margin-left: auto; font-size: 11px; color: var(--faint);
+    background: var(--surface-2); border-radius: 999px; padding: 1px 7px;
+  }
+  .nav-item.active .nav-count { background: transparent; color: var(--muted); }
+
+  /* ---- card grid ---- */
+  .grid {
+    display: grid; gap: 14px;
+    grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+  }
+  .card {
+    appearance: none; text-align: left; padding: 0; cursor: pointer;
+    position: relative;
+    background: var(--surface); border: 1px solid var(--line);
+    border-radius: var(--radius); overflow: hidden;
+    display: flex; flex-direction: column;
+    transition: transform var(--dur) ease, border-color var(--dur) ease,
+      box-shadow var(--dur) ease;
+  }
+  .card:hover { transform: translateY(-2px); border-color: var(--line-strong);
+    box-shadow: var(--shadow-soft); }
+  .card.is-selected { border-color: var(--accent-line);
+    box-shadow: 0 0 0 1px var(--accent-line), var(--shadow-soft); }
+  .card-cover {
+    aspect-ratio: 3 / 4; position: relative;
+    background: var(--surface-2) center/cover no-repeat;
+  }
+  .card-cover.placeholder::after {
+    content: attr(data-label);
+    position: absolute; inset: 0;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 15px; font-weight: 600; letter-spacing: 1px;
+    color: rgba(255, 255, 255, 0.55);
+  }
+  .card-body { padding: 8px 10px 10px; }
+  .card-title {
+    font-size: 12.5px; font-weight: 550; color: var(--text);
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  .card-meta { font-size: 11px; color: var(--muted); margin-top: 2px;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .fav-star {
+    position: absolute; top: 6px; right: 6px; z-index: 2;
+    appearance: none; border: 0; border-radius: 999px;
+    width: 26px; height: 26px; font-size: 13px; line-height: 1;
+    background: rgba(8, 12, 18, 0.55); color: rgba(255, 255, 255, 0.85);
+    backdrop-filter: blur(4px);
+    opacity: 0; transition: opacity var(--dur) ease;
+  }
+  .card:hover .fav-star, .fav-star.on, .fav-star:focus-visible { opacity: 1; }
+  .fav-star.on { color: var(--fav); }
+  .chip {
+    display: inline-block; font-size: 10px; font-weight: 600;
+    letter-spacing: .5px; text-transform: uppercase;
+    color: var(--accent-strong); background: var(--accent-soft);
+    border-radius: 4px; padding: 1px 5px; margin-left: 6px;
+  }
+
+  /* ---- licenses (.rap) ---- */
+  .badge-key {
+    position: absolute; top: 6px; left: 6px; z-index: 2;
+    font-size: 12px; line-height: 1; padding: 4px 5px;
+    border-radius: 999px; background: rgba(8, 12, 18, 0.55);
+    backdrop-filter: blur(4px);
+  }
+  .badge-key.is-broken { background: var(--danger); }
+  .card.is-license { border-style: dashed; }
+  .card.is-license .card-cover::after {
+    content: "🔑"; position: absolute; inset: 0;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 30px; opacity: .8;
+  }
+  .lic-row h4 { margin-bottom: 4px; }
+  .lic-state { font-size: 12.5px; color: var(--muted); }
+  .lic-state a { font-size: 12px; }
+  .lic-state.missing { color: var(--danger); }
+  .lic-spare {
+    display: flex; flex-wrap: wrap; gap: 6px; align-items: center;
+    font-size: 12px; color: var(--muted);
+    background: var(--surface); border: 1px solid var(--line);
+    border-radius: var(--radius-sm); padding: 6px 8px;
+  }
+  .lic-spare .btn { padding: 2px 8px; font-size: 11.5px; }
+  .hint-ps3 { color: var(--warn); }
+
+  /* ---- states ---- */
+  .state-box {
+    text-align: center; color: var(--muted); padding: 70px 20px;
+  }
+  .state-box .state-big { font-size: 16px; color: var(--text); margin-bottom: 6px; }
+  .state-box.err { color: var(--danger); }
+
+  /* ---- detail drawer ---- */
+  .drawer-inner { padding: 16px; display: flex; flex-direction: column; gap: 12px; }
+  .drawer-cover {
+    height: 170px; border-radius: var(--radius);
+    background: var(--surface-2) center/cover no-repeat; position: relative;
+  }
+  .drawer-cover.placeholder::after {
+    content: attr(data-label); position: absolute; inset: 0;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 26px; font-weight: 700; color: rgba(255, 255, 255, .5);
+  }
+  .drawer-title { font-size: 17px; font-weight: 650; color: var(--text); }
+  .drawer-sub { font-size: 12px; color: var(--muted); margin-top: -8px; }
+  .kv { display: grid; grid-template-columns: auto 1fr; gap: 3px 12px;
+    font-size: 12px; }
+  .kv dt { color: var(--faint); }
+  .kv dd { margin: 0; color: var(--text); overflow-wrap: anywhere; }
+  .drawer-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+  .drawer-actions .btn { text-align: center; }
+  .drawer-form { display: flex; flex-direction: column; gap: 8px;
+    background: var(--surface-2); border: 1px solid var(--line);
+    border-radius: var(--radius); padding: 12px; }
+  .drawer-form h4 { margin: 0; font-size: 12px; color: var(--muted);
+    text-transform: uppercase; letter-spacing: .6px; }
+  .form-row { display: flex; gap: 8px; }
+  .form-row .btn { flex: 0 0 auto; }
+
+  /* ---- modal ---- */
+  .modal-scrim {
+    position: fixed; inset: 0; z-index: 50; background: rgba(0, 0, 0, .5);
+    display: flex; align-items: center; justify-content: center;
+    padding: 18px; animation: fade-in var(--dur) ease;
+  }
+  @keyframes fade-in { from { opacity: 0; } }
+  .modal {
+    width: 100%; max-width: 560px; max-height: 88vh; overflow-y: auto;
+    background: var(--chrome); border: 1px solid var(--line);
+    border-radius: 14px; box-shadow: var(--shadow); padding: 18px;
+  }
+  .modal h3 { margin: 0 0 12px; font-size: 16px; }
+  .modal .close-x { float: right; margin: -4px -4px 0 0; }
+
+  /* ---- upload panel (modal + dock share these) ---- */
+  .drop-zone {
+    border: 2px dashed var(--line-strong); border-radius: var(--radius);
+    padding: 26px 16px; text-align: center; color: var(--muted);
+    cursor: pointer; transition: border-color var(--dur) ease, background var(--dur) ease;
+  }
+  .drop-zone:hover, .drop-zone.is-over {
+    border-color: var(--accent-strong); background: var(--accent-soft); color: var(--text);
+  }
+  .drop-hint { margin-top: 6px; font-size: 11.5px; color: var(--faint); }
+  .up-list { list-style: none; margin: 12px 0 0; padding: 0;
+    display: flex; flex-direction: column; gap: 8px; }
+  .up-row {
+    /* minmax(0,...): a grid's 1fr defaults to minmax(auto,1fr), and a long
+     * single-word name (FIFA_Club_3_..._PSP-Googglecus.iso) has a min-content
+     * width of the whole word - with auto it widened the row past the modal
+     * instead of letting the name ellipsize. */
+    display: grid; grid-template-columns: minmax(0, 1fr) 110px 84px;
+    gap: 10px;
+    align-items: center; background: var(--surface);
+    border: 1px solid var(--line); border-radius: var(--radius-sm);
+    padding: 8px 12px; min-width: 0;
+  }
+  .up-row > div:first-child { min-width: 0; }   /* the name cell */
+  .up-name { font-size: 12.5px; white-space: nowrap; overflow: hidden;
+    text-overflow: ellipsis; }
+  .up-size { font-size: 11px; color: var(--muted); }
+  .up-bar { height: 7px; background: var(--bg);
+    border: 1px solid var(--line); border-radius: 999px; overflow: hidden; }
+  .up-fill { height: 100%; width: 0; background: var(--accent-strong);
+    transition: width .2s ease; }
+  .up-row.is-ok .up-fill { background: var(--ok); }
+  .up-row.is-err .up-fill { background: var(--danger); }
+  .up-status { font-size: 11.5px; color: var(--muted); text-align: right;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .up-row.is-ok .up-status { color: var(--ok); }
+  .up-row.is-err .up-status { color: var(--danger); }
+
+  /* ---- transfer dock (shared: uploads + Store) ---- */
+  .dock {
+    position: fixed; right: 16px; bottom: 16px; z-index: 45;
+    width: min(400px, calc(100vw - 32px));
+    background: var(--chrome); border: 1px solid var(--line-strong);
+    border-radius: 12px; box-shadow: var(--shadow); overflow: hidden;
+  }
+  .dock-head {
+    display: flex; align-items: center; gap: 8px;
+    padding: 10px 14px; cursor: pointer; background: var(--surface-2);
+    font-weight: 550; font-size: 13px;
+  }
+  .dock-head .dock-caret { margin-left: auto; color: var(--muted); }
+  .dock-body { max-height: 40vh; overflow-y: auto; }
+  .dock.collapsed .dock-body { display: none; }
+  .dock-sect + .dock-sect { border-top: 1px solid var(--line); }
+  .dock-sect-head {
+    display: flex; align-items: center; gap: 8px; padding: 7px 14px;
+    cursor: pointer; font-size: 10.5px; font-weight: 600; color: var(--faint);
+    text-transform: uppercase; letter-spacing: .8px; background: var(--surface);
+  }
+  .dock-sect-head .dock-sect-info {
+    margin-left: auto; text-transform: none; letter-spacing: 0;
+    color: var(--muted); font-weight: 500;
+  }
+  .dock-sect-head .dock-caret { color: var(--muted); }
+  .dock-sect-body { padding: 10px 12px; }
+  .dock-sect.collapsed .dock-sect-body { display: none; }
+  .dock-sect .up-list { margin: 0; }
+  .dock-note { font-size: 12px; color: var(--muted); padding: 2px 2px; }
+  .up-row.is-active { border-color: var(--accent-strong); }
+  .spin {
+    display: inline-block; width: 11px; height: 11px; border-radius: 50%;
+    border: 2px solid var(--accent-strong); border-top-color: transparent;
+    animation: spin .8s linear infinite; margin-right: 6px;
+    vertical-align: -1px;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  @media (prefers-reduced-motion: reduce) { .spin { animation-duration: 2.4s; } }
+
+  /* ---- Store queue (modal) ---- */
+  .q-add { background: var(--surface); border: 1px solid var(--line);
+    border-radius: var(--radius); padding: 12px; margin: 14px 0 4px; }
+  .q-add .field { margin-bottom: 8px; }
+  .q-add .form-row .field { flex: 1; margin-bottom: 0; }
+  .q-add .form-row + .form-row { margin-top: 10px; }
+  .q-add .form-row .btn { align-self: flex-end; }
+  .q-head { margin: 16px 0 0; font-size: 11px; color: var(--faint);
+    text-transform: uppercase; letter-spacing: .8px; }
+  .q-list { margin-top: 8px; }
+  .q-live { margin-top: 10px; }
+  .q-actions { display: flex; align-items: center; gap: 6px;
+    justify-content: flex-end; }
+
+  /* ---- drop overlay ---- */
+  .drop-overlay {
+    position: fixed; inset: 0; z-index: 60;
+    display: flex; align-items: center; justify-content: center;
+    background: rgba(6, 13, 24, .82); color: var(--text);
+    font-size: 20px; font-weight: 600;
+    border: 3px dashed var(--accent-strong);
+  }
+
+  /* ---- toasts ---- */
+  .toasts {
+    position: fixed; left: 16px; bottom: 16px; z-index: 70;
+    display: flex; flex-direction: column; gap: 8px; max-width: 360px;
+  }
+  .toast {
+    background: var(--chrome); color: var(--text);
+    border: 1px solid var(--line-strong); border-left: 3px solid var(--accent-strong);
+    border-radius: var(--radius-sm); padding: 9px 12px;
+    box-shadow: var(--shadow); font-size: 13px; cursor: pointer;
+    animation: toast-in var(--dur) ease;
+  }
+  @keyframes toast-in { from { transform: translateY(8px); opacity: 0; } }
+  .toast.ok { border-left-color: var(--ok); }
+  .toast.err { border-left-color: var(--danger); }
+
+  /* ---- settings ---- */
+  .settings-kv { display: flex; flex-direction: column; gap: 6px;
+    font-size: 12.5px; color: var(--muted); margin-top: 14px; }
+  .settings-kv code { background: var(--surface-2); border-radius: 4px;
+    padding: 1px 6px; font-size: 12px; color: var(--text); }
+}
+
+</style>
+<style>
+
+html,body{height:auto;overflow:visible}
+body{overflow:auto;padding-bottom:80px}
+.ref-head{max-width:1180px;margin:0 auto;padding:34px 20px 6px}
+.ref-head h1{font-size:22px;margin:0 0 6px}
+.ref-head p{color:var(--muted);max-width:80ch;margin:6px 0}
+.ref-wrap{max-width:1180px;margin:0 auto;padding:0 20px}
+h2.ref-sec{font-size:13px;text-transform:uppercase;letter-spacing:.8px;
+  color:var(--faint);margin:38px 0 10px}
+.ref-note{font-size:12.5px;color:var(--muted);max-width:90ch;margin:8px 0 14px}
+.ref-note code, .sw code{background:var(--surface-2);border-radius:4px;
+  padding:1px 6px;font-size:12px;color:var(--text);font-family:ui-monospace,monospace}
+.screen{position:relative;border:1px solid var(--line-strong);border-radius:12px;
+  overflow:hidden;box-shadow:var(--shadow);background:var(--bg);margin:6px 0}
+.screen .shell{height:100%;width:100%}
+.screen .modal-scrim,.screen .dock,.screen .toasts,.screen .drop-overlay{position:absolute}
+.row2{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+.row3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:16px}
+@media (max-width:900px){.row2,.row3{grid-template-columns:1fr}}
+.sw{display:flex;align-items:center;gap:10px;margin:5px 0;font-size:12.5px}
+.sw-chip{width:26px;height:26px;border-radius:6px;border:1px solid var(--line-strong);flex:0 0 auto}
+.sw-desc{color:var(--muted)}
+.screen.light{--bg:#eef2f7;--chrome:#fff;--surface:#fff;--surface-2:#f2f5f9;
+  --line:#dbe2ea;--line-strong:#c6d0dc;--text:#1c2733;--muted:#576879;--faint:#7b8794;
+  --accent:#2f6feb;--accent-strong:#2f6feb;--accent-soft:rgba(47,111,235,.10);
+  --accent-line:rgba(47,111,235,.45);--ok:#1a7f37;--warn:#9a6700;--danger:#c62f3f;
+  --danger-soft:rgba(198,47,63,.08);--fav:#b58900;
+  --shadow:0 10px 30px rgba(30,45,70,.16);--shadow-soft:0 2px 10px rgba(30,45,70,.10)}
+/* Mock the <=860px layout at desktop page size (the media query cannot
+ * trigger inside the reference page): same geometry, scoped selectors. */
+.screen.narrow .sidebar{position:absolute;top:0;bottom:0;left:0;z-index:40;
+  transform:translateX(-100%);transition:none;box-shadow:var(--shadow)}
+.screen.narrow .sidebar.open{transform:none}
+.screen.narrow .scrim{position:absolute;inset:0;z-index:35;background:rgba(0,0,0,.45)}
+.screen.narrow .drawer.sheet{position:absolute;left:0;right:0;bottom:0;z-index:30;
+  max-height:70%;border-left:0;border-top:1px solid var(--line);
+  border-radius:14px 14px 0 0;box-shadow:var(--shadow)}
+
+</style>
+</head>
+<body>
+
+<div class="ref-head">
+  <h1>PS Linker — Web GUI reference</h1>
+  <p>A static, self-contained portrait of the <b>current server UI</b>
+     (<code>server/store/ui/</code>, served at <code>http://this-host:PORT/gui/</code>).
+     Every screen below is rendered with the GUI's real stylesheet
+     (<code>ui.css</code>, inlined) and markup copied from
+     <code>ui.js / manage.js / uploads.js / store.js / dock.js</code>; the
+     library data is the live <code>catalog.json</code>. Use it as the visual
+     baseline for layout work — anything that drifts from these frames is a
+     bug in one of the two.</p>
+  <p>Tokens: dark theme <code>data-theme="dark"</code> (default; a light theme
+     overrides only the token block). Radius <code>--radius:10px</code>,
+     controls <code>--radius-sm:6px</code>, transitions <code>160ms</code>,
+     no dependencies, no build step.</p>
+</div>
+
+<div class="ref-wrap">
+
+<h2 class="ref-sec">1 · Design tokens</h2>
+<div class="row2">
+  <div><div class="sw"><span class="sw-chip" style="background:var(--bg)"></span><code>--bg</code><span class="sw-desc">app background</span></div><div class="sw"><span class="sw-chip" style="background:var(--chrome)"></span><code>--chrome</code><span class="sw-desc">sidebar / toolbar / modal</span></div><div class="sw"><span class="sw-chip" style="background:var(--surface)"></span><code>--surface</code><span class="sw-desc">cards, rows, inputs</span></div><div class="sw"><span class="sw-chip" style="background:var(--surface-2)"></span><code>--surface-2</code><span class="sw-desc">hover, dock head, code</span></div><div class="sw"><span class="sw-chip" style="background:var(--line)"></span><code>--line</code><span class="sw-desc">hairline borders</span></div><div class="sw"><span class="sw-chip" style="background:var(--line-strong)"></span><code>--line-strong</code><span class="sw-desc">control borders</span></div><div class="sw"><span class="sw-chip" style="background:var(--text)"></span><code>--text</code><span class="sw-desc">primary text</span></div><div class="sw"><span class="sw-chip" style="background:var(--muted)"></span><code>--muted</code><span class="sw-desc">secondary text</span></div><div class="sw"><span class="sw-chip" style="background:var(--faint)"></span><code>--faint</code><span class="sw-desc">labels, hints</span></div><div class="sw"><span class="sw-chip" style="background:var(--accent)"></span><code>--accent</code><span class="sw-desc">primary button</span></div><div class="sw"><span class="sw-chip" style="background:var(--accent-strong)"></span><code>--accent-strong</code><span class="sw-desc">links, active, fills</span></div><div class="sw"><span class="sw-chip" style="background:var(--ok)"></span><code>--ok</code><span class="sw-desc">success ✓</span></div><div class="sw"><span class="sw-chip" style="background:var(--warn)"></span><code>--warn</code><span class="sw-desc">.rap / PS3 hints</span></div><div class="sw"><span class="sw-chip" style="background:var(--danger)"></span><code>--danger</code><span class="sw-desc">delete, errors</span></div><div class="sw"><span class="sw-chip" style="background:var(--fav)"></span><code>--fav</code><span class="sw-desc">favourite star</span></div></div>
+  <div>
+    <div class="ref-note">Type: 14px system sans; card titles 12.5px/550;
+      group labels 10.5px uppercase +0.8px tracking; status/counts 11–12px.
+      Layout: 224px sidebar · 320px drawer · fluid card grid
+      (min 150px tiles, 3:4 covers) · 560px modal · 400px dock.
+      Below <b>860px</b> the sidebar goes off-canvas (burger
+      <code>☰</code>) and the drawer becomes a bottom sheet.</div>
+    <div class="ref-note">The whole palette in the <b>light</b> theme, same
+      components (Settings → Theme writes
+      <code>pslinker.settings.v1</code> into localStorage):</div>
+    <div class="screen light" ><div class="shell" style="height:190px"><header class="toolbar"><button class="icon-btn" aria-label="Open menu" hidden>☰</button><input class="search" type="search" placeholder="Search library" aria-label="Search library" /><select class="select" aria-label="Sort by"><option value="title" selected>Title A–Z</option><option value="title-desc">Title Z–A</option><option value="size-desc">Largest first</option><option value="size-asc">Smallest first</option></select><button class="btn btn-primary" type="button">＋ Add Games</button></header><main class="library"><div class="state-box"><div class="state-big">Light theme</div>Token override only — components are unchanged</div></main></div></div>
+  </div>
+</div>
+
+<h2 class="ref-sec">2 · Library — the app shell</h2>
+<div class="ref-note">Sidebar = <code>sections()</code> (All / Favorites / Recently Viewed, then
+Platforms PSP/PS3 when present, then one entry per catalog <i>Folder</i>, each with a count pill);
+foot holds Store (badge = queue activity) and Settings. Toolbar = search, sort
+(<code>SORTS</code>), <b>＋ Add Games</b>. Cards come straight from
+<code>catalog.json</code>: placeholder covers are an id-hashed gradient with the title's first two
+letters, <code>☆</code> favours, one selected card shows the accent ring.</div>
+<div class="screen " ><div class="shell" style="height:640px"><aside class="sidebar"><div class="brand"><span class="brand-mark">PS Linker</span><button class="icon-btn" aria-label="Close menu" hidden>✕</button></div><nav class="nav-scroll"><div class="nav-group">Library</div><button class="nav-item active" type="button"><span>All Games</span><span class="nav-count">8</span></button><button class="nav-item" type="button"><span>Favorites</span><span class="nav-count">1</span></button><button class="nav-item" type="button"><span>Recently Viewed</span><span class="nav-count">2</span></button><div class="nav-group">Platforms</div><button class="nav-item" type="button"><span>PSP</span><span class="nav-count">4</span></button><button class="nav-item" type="button"><span>PS3</span><span class="nav-count">4</span></button><div class="nav-group">Folders</div><button class="nav-item" type="button"><span>Games</span><span class="nav-count">2</span></button><button class="nav-item" type="button"><span>Homebrew</span><span class="nav-count">2</span></button><button class="nav-item" type="button"><span>PS3</span><span class="nav-count">1</span></button><button class="nav-item" type="button"><span>Uncategorized</span><span class="nav-count">2</span></button><button class="nav-item" type="button"><span>Utilities</span><span class="nav-count">1</span></button></nav><div class="sidebar-foot"><button class="nav-item" type="button" title="Store — download queue">⬇ Store <span class="nav-count" id="store-badge">1</span></button><button class="nav-item" type="button">⚙ Settings</button></div></aside><div class="main-col"><header class="toolbar"><button class="icon-btn" aria-label="Open menu" hidden>☰</button><input class="search" type="search" placeholder="Search library" aria-label="Search library" /><select class="select" aria-label="Sort by"><option value="title" selected>Title A–Z</option><option value="title-desc">Title Z–A</option><option value="size-desc">Largest first</option><option value="size-asc">Smallest first</option></select><button class="btn btn-primary" type="button">＋ Add Games</button></header><main class="library" aria-label="Games"><div class="grid" role="list"><div class="card" tabindex="0" role="listitem"><div class="card-cover placeholder" style="background:linear-gradient(160deg,hsl(348 42% 26%),hsl(28 52% 12%))" data-label="GA"></div><button class="fav-star" type="button" aria-label="Toggle favorite">☆</button><div class="card-body"><div class="card-title">Game Demo</div><div class="card-meta">Games · PS3 · 512 KB</div></div></div><div class="card" tabindex="0" role="listitem"><div class="card-cover placeholder" style="background:linear-gradient(160deg,hsl(289 42% 26%),hsl(329 52% 12%))" data-label="PS"></div><button class="fav-star" type="button" aria-label="Toggle favorite">☆</button><div class="card-body"><div class="card-title">PSP Game</div><div class="card-meta">Games · PSP · 256 KB</div></div></div><div class="card" tabindex="0" role="listitem"><div class="card-cover placeholder" style="background:linear-gradient(160deg,hsl(182 42% 26%),hsl(222 52% 12%))" data-label="HO"></div><button class="fav-star" type="button" aria-label="Toggle favorite">☆</button><div class="card-body"><div class="card-title">Homebrew Tool</div><div class="card-meta">Homebrew · PS3 · 64 KB</div></div></div><div class="card" tabindex="0" role="listitem"><div class="card-cover placeholder" style="background:linear-gradient(160deg,hsl(289 42% 26%),hsl(329 52% 12%))" data-label="PS"></div><button class="fav-star" type="button" aria-label="Toggle favorite">☆</button><div class="card-body"><div class="card-title">PSP Homebrew</div><div class="card-meta">Homebrew · PSP · 128 KB</div></div></div><div class="card" tabindex="0" role="listitem"><div class="card-cover placeholder" style="background:linear-gradient(160deg,hsl(265 42% 26%),hsl(305 52% 12%))" data-label="DI"></div><button class="fav-star" type="button" aria-label="Toggle favorite">☆</button><div class="card-body"><div class="card-title">Disc Image</div><div class="card-meta">PS3 · 1.0 MB</div></div></div><div class="card" tabindex="0" role="listitem"><div class="card-cover placeholder" style="background:linear-gradient(160deg,hsl(336 42% 26%),hsl(16 52% 12%))" data-label="13"></div><button class="fav-star" type="button" aria-label="Toggle favorite">☆</button><div class="card-body"><div class="card-title">1336 - Need for Speed Carbon - Own the City</div><div class="card-meta">Uncategorized · PSP · 853 MB</div></div></div><div class="card is-selected" tabindex="0" role="listitem"><div class="card-cover placeholder" style="background:linear-gradient(160deg,hsl(359 42% 26%),hsl(39 52% 12%))" data-label="MI"></div><button class="fav-star on" type="button" aria-label="Toggle favorite">★</button><div class="card-body"><div class="card-title">Midnight Club 3 DUB Edition v2 USA READNFO PSP-Googlecus</div><div class="card-meta">Uncategorized · PSP · 1.5 GB</div></div></div><div class="card" tabindex="0" role="listitem"><div class="card-cover placeholder" style="background:linear-gradient(160deg,hsl(259 42% 26%),hsl(299 52% 12%))" data-label="UT"></div><button class="fav-star" type="button" aria-label="Toggle favorite">☆</button><div class="card-body"><div class="card-title">Utility Pack</div><div class="card-meta">Utilities · PS3 · 384 KB</div></div></div></div></main></div></div></div>
+
+<h2 class="ref-sec">3 · Detail drawer (click a card)</h2>
+<div class="ref-note">Cover tile, title + platform <code>chip</code>, “category · size”,
+the Version/File/ID <code>kv</code> grid, then the Cover and License (RAP) boxes
+(<code>manage.js</code>) and the 2-column action grid: favourite, download
+(straight <code>&lt;a download&gt;</code> against the share), rename, move, metadata, delete
+(armed twice). <code>.rap</code> files get a key badge 🔑 on their card (red when the
+license file is gone) and a dashed border.</div>
+<div class="screen " ><div class="shell" style="height:640px"><div class="main-col"><header class="toolbar"><button class="icon-btn" aria-label="Open menu" hidden>☰</button><input class="search" type="search" placeholder="Search library" aria-label="Search library" /><select class="select" aria-label="Sort by"><option value="title" selected>Title A–Z</option><option value="title-desc">Title Z–A</option><option value="size-desc">Largest first</option><option value="size-asc">Smallest first</option></select><button class="btn btn-primary" type="button">＋ Add Games</button></header><main class="library" aria-label="Games"><div class="grid" role="list"><div class="card" tabindex="0" role="listitem"><div class="card-cover placeholder" style="background:linear-gradient(160deg,hsl(348 42% 26%),hsl(28 52% 12%))" data-label="GA"></div><button class="fav-star" type="button" aria-label="Toggle favorite">☆</button><div class="card-body"><div class="card-title">Game Demo</div><div class="card-meta">Games · PS3 · 512 KB</div></div></div><div class="card" tabindex="0" role="listitem"><div class="card-cover placeholder" style="background:linear-gradient(160deg,hsl(289 42% 26%),hsl(329 52% 12%))" data-label="PS"></div><button class="fav-star" type="button" aria-label="Toggle favorite">☆</button><div class="card-body"><div class="card-title">PSP Game</div><div class="card-meta">Games · PSP · 256 KB</div></div></div><div class="card" tabindex="0" role="listitem"><div class="card-cover placeholder" style="background:linear-gradient(160deg,hsl(182 42% 26%),hsl(222 52% 12%))" data-label="HO"></div><button class="fav-star" type="button" aria-label="Toggle favorite">☆</button><div class="card-body"><div class="card-title">Homebrew Tool</div><div class="card-meta">Homebrew · PS3 · 64 KB</div></div></div><div class="card" tabindex="0" role="listitem"><div class="card-cover placeholder" style="background:linear-gradient(160deg,hsl(289 42% 26%),hsl(329 52% 12%))" data-label="PS"></div><button class="fav-star" type="button" aria-label="Toggle favorite">☆</button><div class="card-body"><div class="card-title">PSP Homebrew</div><div class="card-meta">Homebrew · PSP · 128 KB</div></div></div><div class="card" tabindex="0" role="listitem"><div class="card-cover placeholder" style="background:linear-gradient(160deg,hsl(265 42% 26%),hsl(305 52% 12%))" data-label="DI"></div><button class="fav-star" type="button" aria-label="Toggle favorite">☆</button><div class="card-body"><div class="card-title">Disc Image</div><div class="card-meta">PS3 · 1.0 MB</div></div></div></div></main></div><aside class="drawer" aria-label="Game details"><div class="drawer-inner"><div class="drawer-cover placeholder" style="background:linear-gradient(160deg,hsl(289 42% 26%),hsl(329 52% 12%))" data-label="PS"></div><div class="drawer-title">PSP Homebrew<span class="chip">PSP</span></div><div class="drawer-sub">Homebrew · 128 KB</div><dl class="kv"><dt>Version</dt><dd>—</dd><dt>File</dt><dd>PSP_Homebrew.PBP</dd><dt>ID</dt><dd>Homebrew_PSP_Homebrew.PBP</dd></dl><div class="drawer-form lic-row"><h4>Cover</h4><div class="lic-state">Placeholder tile — no ICON0 found inside the game</div><div class="form-row"><button class="btn btn-ghost" type="button">⭱ Upload art</button><button class="btn btn-ghost" type="button">↻ Re-extract</button></div></div><div class="drawer-form lic-row"><h4>License (RAP)</h4><div class="lic-state">No license attached</div><div class="form-row"><button class="btn btn-ghost" type="button">Attach license</button></div></div><div class="drawer-actions"><button class="btn a-fav" type="button">☆ Favorite</button><a class="btn" href="#">⭳ Download</a><button class="btn btn-ghost" type="button">✎ Rename file</button><button class="btn btn-ghost" type="button">⇄ Move to folder</button><button class="btn btn-ghost" type="button" style="grid-column:1/-1">✎ Metadata</button><button class="btn btn-danger" type="button" style="grid-column:1/-1">🗑 Delete</button></div></div></aside></div></div>
+
+<h2 class="ref-sec">4 · Add Games modal (uploads)</h2>
+<div class="ref-note">One panel, both paths: click the dashed zone, or drop files anywhere in the
+window (full-screen <b>Drop to add games</b> overlay). Files go to the library root tagged
+<code>psp|ps3</code> and land in their tab immediately. Rows are one-at-a-time uploads in four
+states (Waiting / % / ✓ Added / error). When the panel closes, finished rows are discarded and
+the box retires — only in-flight uploads (and unseen failures) carry on in the dock.</div>
+<div class="screen " ><div class="shell" style="height:600px"><aside class="sidebar"><div class="brand"><span class="brand-mark">PS Linker</span><button class="icon-btn" aria-label="Close menu" hidden>✕</button></div><nav class="nav-scroll"><div class="nav-group">Library</div><button class="nav-item active" type="button"><span>All Games</span><span class="nav-count">8</span></button><button class="nav-item" type="button"><span>Favorites</span><span class="nav-count">1</span></button><button class="nav-item" type="button"><span>Recently Viewed</span><span class="nav-count">2</span></button><div class="nav-group">Platforms</div><button class="nav-item" type="button"><span>PSP</span><span class="nav-count">4</span></button><button class="nav-item" type="button"><span>PS3</span><span class="nav-count">4</span></button><div class="nav-group">Folders</div><button class="nav-item" type="button"><span>Games</span><span class="nav-count">2</span></button><button class="nav-item" type="button"><span>Homebrew</span><span class="nav-count">2</span></button><button class="nav-item" type="button"><span>PS3</span><span class="nav-count">1</span></button><button class="nav-item" type="button"><span>Uncategorized</span><span class="nav-count">2</span></button><button class="nav-item" type="button"><span>Utilities</span><span class="nav-count">1</span></button></nav><div class="sidebar-foot"><button class="nav-item" type="button" title="Store — download queue">⬇ Store <span class="nav-count" id="store-badge">1</span></button><button class="nav-item" type="button">⚙ Settings</button></div></aside><div class="main-col"><header class="toolbar"><button class="icon-btn" aria-label="Open menu" hidden>☰</button><input class="search" type="search" placeholder="Search library" aria-label="Search library" /><select class="select" aria-label="Sort by"><option value="title" selected>Title A–Z</option><option value="title-desc">Title Z–A</option><option value="size-desc">Largest first</option><option value="size-asc">Smallest first</option></select><button class="btn btn-primary" type="button">＋ Add Games</button></header><main class="library" aria-label="Games"><div class="grid" role="list"><div class="card" tabindex="0" role="listitem"><div class="card-cover placeholder" style="background:linear-gradient(160deg,hsl(348 42% 26%),hsl(28 52% 12%))" data-label="GA"></div><button class="fav-star" type="button" aria-label="Toggle favorite">☆</button><div class="card-body"><div class="card-title">Game Demo</div><div class="card-meta">Games · PS3 · 512 KB</div></div></div><div class="card" tabindex="0" role="listitem"><div class="card-cover placeholder" style="background:linear-gradient(160deg,hsl(289 42% 26%),hsl(329 52% 12%))" data-label="PS"></div><button class="fav-star" type="button" aria-label="Toggle favorite">☆</button><div class="card-body"><div class="card-title">PSP Game</div><div class="card-meta">Games · PSP · 256 KB</div></div></div><div class="card" tabindex="0" role="listitem"><div class="card-cover placeholder" style="background:linear-gradient(160deg,hsl(182 42% 26%),hsl(222 52% 12%))" data-label="HO"></div><button class="fav-star" type="button" aria-label="Toggle favorite">☆</button><div class="card-body"><div class="card-title">Homebrew Tool</div><div class="card-meta">Homebrew · PS3 · 64 KB</div></div></div><div class="card" tabindex="0" role="listitem"><div class="card-cover placeholder" style="background:linear-gradient(160deg,hsl(289 42% 26%),hsl(329 52% 12%))" data-label="PS"></div><button class="fav-star" type="button" aria-label="Toggle favorite">☆</button><div class="card-body"><div class="card-title">PSP Homebrew</div><div class="card-meta">Homebrew · PSP · 128 KB</div></div></div><div class="card" tabindex="0" role="listitem"><div class="card-cover placeholder" style="background:linear-gradient(160deg,hsl(265 42% 26%),hsl(305 52% 12%))" data-label="DI"></div><button class="fav-star" type="button" aria-label="Toggle favorite">☆</button><div class="card-body"><div class="card-title">Disc Image</div><div class="card-meta">PS3 · 1.0 MB</div></div></div><div class="card" tabindex="0" role="listitem"><div class="card-cover placeholder" style="background:linear-gradient(160deg,hsl(336 42% 26%),hsl(16 52% 12%))" data-label="13"></div><button class="fav-star" type="button" aria-label="Toggle favorite">☆</button><div class="card-body"><div class="card-title">1336 - Need for Speed Carbon - Own the City</div><div class="card-meta">Uncategorized · PSP · 853 MB</div></div></div><div class="card is-selected" tabindex="0" role="listitem"><div class="card-cover placeholder" style="background:linear-gradient(160deg,hsl(359 42% 26%),hsl(39 52% 12%))" data-label="MI"></div><button class="fav-star on" type="button" aria-label="Toggle favorite">★</button><div class="card-body"><div class="card-title">Midnight Club 3 DUB Edition v2 USA READNFO PSP-Googlecus</div><div class="card-meta">Uncategorized · PSP · 1.5 GB</div></div></div><div class="card" tabindex="0" role="listitem"><div class="card-cover placeholder" style="background:linear-gradient(160deg,hsl(259 42% 26%),hsl(299 52% 12%))" data-label="UT"></div><button class="fav-star" type="button" aria-label="Toggle favorite">☆</button><div class="card-body"><div class="card-title">Utility Pack</div><div class="card-meta">Utilities · PS3 · 384 KB</div></div></div></div></main></div></div><div class="modal-scrim"><div class="modal" role="dialog" aria-modal="true" aria-label="Add games"><button class="icon-btn close-x" aria-label="Close">✕</button><h3>Add Games</h3><div class="field"><label for="ref-plat">Platform</label><select id="ref-plat"><option>PSP</option><option selected>PS3</option></select></div><div class="drop-zone" tabindex="0">Choose files or drop them here<div class="drop-hint">iso cso pbp zip 7z rar pkg rap bin cue — files land in the library root, tagged for the platform you pick, and appear in its tab at once</div><div class="drop-hint hint-ps3">Licenses: upload a .rap together with its game, then attach it from the game’s drawer. Only supply .rap files for games you own.</div></div><ul class="up-list"><li class="up-row "><div><div class="up-name">Need for Speed Carbon - Own the City (Asia).iso</div><div class="up-size">1.4 GB</div></div><div class="up-bar"><div class="up-fill" style="width:0%"></div></div><div class="up-status">Waiting</div></li><li class="up-row is-active"><div><div class="up-name">Midnight_Club_3_DUB_Edition_v2_USA_READNFO_PSP-Googglecus.iso</div><div class="up-size">1.1 GB</div></div><div class="up-bar"><div class="up-fill" style="width:45%"></div></div><div class="up-status">45%</div></li><li class="up-row is-ok"><div><div class="up-name">Game_Demo_1.0.pkg</div><div class="up-size">512 KB</div></div><div class="up-bar"><div class="up-fill" style="width:100%"></div></div><div class="up-status">✓ Added</div></li><li class="up-row is-err"><div><div class="up-name">notes.txt</div><div class="up-size">4 KB</div></div><div class="up-bar"><div class="up-fill" style="width:0%"></div></div><div class="up-status">type not allowed</div></li></ul></div></div></div>
+
+<h2 class="ref-sec">5 · Store modal (server-side downloads)</h2>
+<div class="ref-note">The server's own fetcher: a live row while it works, ⬇ Download now to
+kick it, a queue form (URL + optional title + one-folder category), and the download history.
+Queue and history rows reuse the same <code>.up-row</code> grid as uploads.</div>
+<div class="screen " ><div class="shell" style="height:620px"><header class="toolbar"><button class="icon-btn" aria-label="Open menu" hidden>☰</button><input class="search" type="search" placeholder="Search library" aria-label="Search library" /><select class="select" aria-label="Sort by"><option value="title" selected>Title A–Z</option><option value="title-desc">Title Z–A</option><option value="size-desc">Largest first</option><option value="size-asc">Smallest first</option></select><button class="btn btn-primary" type="button">＋ Add Games</button></header><main class="library"><div class="grid" role="list"><div class="card" tabindex="0" role="listitem"><div class="card-cover placeholder" style="background:linear-gradient(160deg,hsl(348 42% 26%),hsl(28 52% 12%))" data-label="GA"></div><button class="fav-star" type="button" aria-label="Toggle favorite">☆</button><div class="card-body"><div class="card-title">Game Demo</div><div class="card-meta">Games · PS3 · 512 KB</div></div></div><div class="card" tabindex="0" role="listitem"><div class="card-cover placeholder" style="background:linear-gradient(160deg,hsl(289 42% 26%),hsl(329 52% 12%))" data-label="PS"></div><button class="fav-star" type="button" aria-label="Toggle favorite">☆</button><div class="card-body"><div class="card-title">PSP Game</div><div class="card-meta">Games · PSP · 256 KB</div></div></div><div class="card" tabindex="0" role="listitem"><div class="card-cover placeholder" style="background:linear-gradient(160deg,hsl(182 42% 26%),hsl(222 52% 12%))" data-label="HO"></div><button class="fav-star" type="button" aria-label="Toggle favorite">☆</button><div class="card-body"><div class="card-title">Homebrew Tool</div><div class="card-meta">Homebrew · PS3 · 64 KB</div></div></div></div></main></div><div class="modal-scrim"><div class="modal" role="dialog" aria-modal="true" aria-label="Store"><button class="icon-btn close-x" aria-label="Close">✕</button><h3>Store</h3><div class="up-row is-active q-live"><div><div class="up-name"><span class="spin"></span>Homebrew Pack</div><div class="up-size">Homebrew · 4.2 MB / 8.4 MB</div></div><div class="up-bar"><div class="up-fill" style="width:50%"></div></div><div class="up-status">Downloading 50%</div></div><div class="form-row"><button class="btn btn-primary" type="button">⬇ Download now</button></div><div class="q-add"><div class="field"><label>Download URL</label><input type="url" placeholder="https://example.com/game.zip" /></div><div class="form-row"><div class="field"><label>Title (optional)</label><input type="text" /></div><div class="field"><label>Category</label><input type="text" value="Homebrew" /></div></div><div class="form-row"><button class="btn btn-primary" type="button">＋ Add to queue</button></div></div><h4 class="q-head">Queue</h4><ul class="up-list q-list"><li class="up-row q-row"><div><div class="up-name">Retro Ports Vol. 2</div><div class="up-size">Homebrew · https://example.com/retro2.zip</div></div><div></div><div class="q-actions"><span class="up-status">Queued</span><button class="icon-btn" aria-label="Remove from queue" type="button">✕</button></div></li></ul><h4 class="q-head">Recent downloads</h4><ul class="up-list q-list"><li class="up-row is-ok"><div><div class="up-name">PSP Docviewer</div><div class="up-size">Homebrew · 812 KB · 2 h ago</div></div><div></div><div class="up-status">✓ 4s</div></li><li class="up-row is-err"><div><div class="up-name">Old Zip</div><div class="up-size">Homebrew · 0 B · 3 d ago</div></div><div></div><div class="up-status">HTTP 404</div></li></ul></div></div></div>
+
+<h2 class="ref-sec">6 · Transfers dock + toasts</h2>
+<div class="ref-note">The corner dock (<code>dock.js</code>) is one shell with an Uploads and a
+Store section, each collapsible; it appears only while a module has activity and retires itself a
+few seconds after the last transfer lands. Toasts bottom-left carry the same states (accent /
+green / red left rail).</div>
+<div class="screen " ><div class="shell" style="height:520px"><aside class="sidebar"><div class="brand"><span class="brand-mark">PS Linker</span><button class="icon-btn" aria-label="Close menu" hidden>✕</button></div><nav class="nav-scroll"><div class="nav-group">Library</div><button class="nav-item active" type="button"><span>All Games</span><span class="nav-count">8</span></button><button class="nav-item" type="button"><span>Favorites</span><span class="nav-count">1</span></button><button class="nav-item" type="button"><span>Recently Viewed</span><span class="nav-count">2</span></button><div class="nav-group">Platforms</div><button class="nav-item" type="button"><span>PSP</span><span class="nav-count">4</span></button><button class="nav-item" type="button"><span>PS3</span><span class="nav-count">4</span></button><div class="nav-group">Folders</div><button class="nav-item" type="button"><span>Games</span><span class="nav-count">2</span></button><button class="nav-item" type="button"><span>Homebrew</span><span class="nav-count">2</span></button><button class="nav-item" type="button"><span>PS3</span><span class="nav-count">1</span></button><button class="nav-item" type="button"><span>Uncategorized</span><span class="nav-count">2</span></button><button class="nav-item" type="button"><span>Utilities</span><span class="nav-count">1</span></button></nav><div class="sidebar-foot"><button class="nav-item" type="button" title="Store — download queue">⬇ Store <span class="nav-count" id="store-badge">1</span></button><button class="nav-item" type="button">⚙ Settings</button></div></aside><div class="main-col"><header class="toolbar"><button class="icon-btn" aria-label="Open menu" hidden>☰</button><input class="search" type="search" placeholder="Search library" aria-label="Search library" /><select class="select" aria-label="Sort by"><option value="title" selected>Title A–Z</option><option value="title-desc">Title Z–A</option><option value="size-desc">Largest first</option><option value="size-asc">Smallest first</option></select><button class="btn btn-primary" type="button">＋ Add Games</button></header><main class="library" aria-label="Games"><div class="grid" role="list"><div class="card" tabindex="0" role="listitem"><div class="card-cover placeholder" style="background:linear-gradient(160deg,hsl(348 42% 26%),hsl(28 52% 12%))" data-label="GA"></div><button class="fav-star" type="button" aria-label="Toggle favorite">☆</button><div class="card-body"><div class="card-title">Game Demo</div><div class="card-meta">Games · PS3 · 512 KB</div></div></div><div class="card" tabindex="0" role="listitem"><div class="card-cover placeholder" style="background:linear-gradient(160deg,hsl(289 42% 26%),hsl(329 52% 12%))" data-label="PS"></div><button class="fav-star" type="button" aria-label="Toggle favorite">☆</button><div class="card-body"><div class="card-title">PSP Game</div><div class="card-meta">Games · PSP · 256 KB</div></div></div><div class="card" tabindex="0" role="listitem"><div class="card-cover placeholder" style="background:linear-gradient(160deg,hsl(182 42% 26%),hsl(222 52% 12%))" data-label="HO"></div><button class="fav-star" type="button" aria-label="Toggle favorite">☆</button><div class="card-body"><div class="card-title">Homebrew Tool</div><div class="card-meta">Homebrew · PS3 · 64 KB</div></div></div><div class="card" tabindex="0" role="listitem"><div class="card-cover placeholder" style="background:linear-gradient(160deg,hsl(289 42% 26%),hsl(329 52% 12%))" data-label="PS"></div><button class="fav-star" type="button" aria-label="Toggle favorite">☆</button><div class="card-body"><div class="card-title">PSP Homebrew</div><div class="card-meta">Homebrew · PSP · 128 KB</div></div></div><div class="card" tabindex="0" role="listitem"><div class="card-cover placeholder" style="background:linear-gradient(160deg,hsl(265 42% 26%),hsl(305 52% 12%))" data-label="DI"></div><button class="fav-star" type="button" aria-label="Toggle favorite">☆</button><div class="card-body"><div class="card-title">Disc Image</div><div class="card-meta">PS3 · 1.0 MB</div></div></div><div class="card" tabindex="0" role="listitem"><div class="card-cover placeholder" style="background:linear-gradient(160deg,hsl(336 42% 26%),hsl(16 52% 12%))" data-label="13"></div><button class="fav-star" type="button" aria-label="Toggle favorite">☆</button><div class="card-body"><div class="card-title">1336 - Need for Speed Carbon - Own the City</div><div class="card-meta">Uncategorized · PSP · 853 MB</div></div></div><div class="card is-selected" tabindex="0" role="listitem"><div class="card-cover placeholder" style="background:linear-gradient(160deg,hsl(359 42% 26%),hsl(39 52% 12%))" data-label="MI"></div><button class="fav-star on" type="button" aria-label="Toggle favorite">★</button><div class="card-body"><div class="card-title">Midnight Club 3 DUB Edition v2 USA READNFO PSP-Googlecus</div><div class="card-meta">Uncategorized · PSP · 1.5 GB</div></div></div><div class="card" tabindex="0" role="listitem"><div class="card-cover placeholder" style="background:linear-gradient(160deg,hsl(259 42% 26%),hsl(299 52% 12%))" data-label="UT"></div><button class="fav-star" type="button" aria-label="Toggle favorite">☆</button><div class="card-body"><div class="card-title">Utility Pack</div><div class="card-meta">Utilities · PS3 · 384 KB</div></div></div></div></main></div></div><div class="dock"><div class="dock-head"><span>Transfers</span><span class="dock-caret">▾</span></div><div class="dock-body"><div class="dock-sect" data-sect="uploads"><div class="dock-sect-head"><span>Uploads</span><span class="dock-sect-info">1 to go</span><span class="dock-caret">▾</span></div><div class="dock-sect-body"><ul class="up-list"><li class="up-row is-active"><div><div class="up-name">Midnight_Club_3_DUB_Edition_v2_USA_READNFO_PSP-Googglecus.iso</div><div class="up-size">1.1 GB</div></div><div class="up-bar"><div class="up-fill" style="width:45%"></div></div><div class="up-status">45%</div></li><li class="up-row is-err"><div><div class="up-name">notes.txt</div><div class="up-size">4 KB</div></div><div class="up-bar"><div class="up-fill" style="width:0%"></div></div><div class="up-status">type not allowed</div></li></ul></div></div><div class="dock-sect" data-sect="store"><div class="dock-sect-head"><span>Store</span><span class="dock-sect-info"></span><span class="dock-caret">▾</span></div><div class="dock-sect-body"><ul class="up-list"><li class="up-row is-active"><div><div class="up-name"><span class="spin"></span>Homebrew Pack</div><div class="up-size">Homebrew · 4.2 MB / 8.4 MB</div></div><div class="up-bar"><div class="up-fill" style="width:50%"></div></div><div class="up-status">Downloading 50%</div></li><li class="up-row is-ok"><div><div class="up-name">PSP Docviewer</div><div class="up-size">Homebrew · 812 KB · 2 h ago</div></div><div></div><div class="up-status">✓ 4s</div></li></ul></div></div></div></div><div class="toasts"><div class="toast ok">Added Midnight Club 3</div><div class="toast err">notes.txt: type not allowed</div><div class="toast">Catalog updated · 8 entries</div></div></div>
+
+<h2 class="ref-sec">7 · Empty, error and drop states</h2>
+<div class="row3">
+<div class="screen " ><div class="shell" style="height:300px"><div class="main-col"><header class="toolbar"><button class="icon-btn" aria-label="Open menu" hidden>☰</button><input class="search" type="search" placeholder="Search library" aria-label="Search library" /><select class="select" aria-label="Sort by"><option value="title" selected>Title A–Z</option><option value="title-desc">Title Z–A</option><option value="size-desc">Largest first</option><option value="size-asc">Smallest first</option></select><button class="btn btn-primary" type="button">＋ Add Games</button></header><main class="library"><div class="state-box"><div class="state-big">Nothing in this view</div>Use ＋ Add Games to upload an ISO, PBP, or zip — or drop files anywhere on this page.</div></main></div></div></div>
+<div class="screen " ><div class="shell" style="height:300px"><div class="main-col"><header class="toolbar"><button class="icon-btn" aria-label="Open menu" hidden>☰</button><input class="search" type="search" placeholder="Search library" aria-label="Search library" /><select class="select" aria-label="Sort by"><option value="title" selected>Title A–Z</option><option value="title-desc">Title Z–A</option><option value="size-desc">Largest first</option><option value="size-asc">Smallest first</option></select><button class="btn btn-primary" type="button">＋ Add Games</button></header><main class="library"><div class="state-box err">Could not load the catalog: Failed to fetch</div></main></div></div></div>
+<div class="screen " ><div class="shell" style="height:300px"><div class="main-col"><header class="toolbar"><button class="icon-btn" aria-label="Open menu" hidden>☰</button><input class="search" type="search" placeholder="Search library" aria-label="Search library" /><select class="select" aria-label="Sort by"><option value="title" selected>Title A–Z</option><option value="title-desc">Title Z–A</option><option value="size-desc">Largest first</option><option value="size-asc">Smallest first</option></select><button class="btn btn-primary" type="button">＋ Add Games</button></header><main class="library"><div class="grid" role="list"><div class="card" tabindex="0" role="listitem"><div class="card-cover placeholder" style="background:linear-gradient(160deg,hsl(348 42% 26%),hsl(28 52% 12%))" data-label="GA"></div><button class="fav-star" type="button" aria-label="Toggle favorite">☆</button><div class="card-body"><div class="card-title">Game Demo</div><div class="card-meta">Games · PS3 · 512 KB</div></div></div><div class="card" tabindex="0" role="listitem"><div class="card-cover placeholder" style="background:linear-gradient(160deg,hsl(289 42% 26%),hsl(329 52% 12%))" data-label="PS"></div><button class="fav-star" type="button" aria-label="Toggle favorite">☆</button><div class="card-body"><div class="card-title">PSP Game</div><div class="card-meta">Games · PSP · 256 KB</div></div></div><div class="card" tabindex="0" role="listitem"><div class="card-cover placeholder" style="background:linear-gradient(160deg,hsl(182 42% 26%),hsl(222 52% 12%))" data-label="HO"></div><button class="fav-star" type="button" aria-label="Toggle favorite">☆</button><div class="card-body"><div class="card-title">Homebrew Tool</div><div class="card-meta">Homebrew · PS3 · 64 KB</div></div></div></div></main></div></div><div class="drop-overlay" style="display:flex">Drop to add games</div></div>
+</div>
+
+<h2 class="ref-sec">8 · Settings modal</h2>
+<div class="screen " ><div class="shell" style="height:430px"><div class="main-col"><header class="toolbar"><button class="icon-btn" aria-label="Open menu" hidden>☰</button><input class="search" type="search" placeholder="Search library" aria-label="Search library" /><select class="select" aria-label="Sort by"><option value="title" selected>Title A–Z</option><option value="title-desc">Title Z–A</option><option value="size-desc">Largest first</option><option value="size-asc">Smallest first</option></select><button class="btn btn-primary" type="button">＋ Add Games</button></header><main class="library"><div class="grid" role="list"><div class="card" tabindex="0" role="listitem"><div class="card-cover placeholder" style="background:linear-gradient(160deg,hsl(348 42% 26%),hsl(28 52% 12%))" data-label="GA"></div><button class="fav-star" type="button" aria-label="Toggle favorite">☆</button><div class="card-body"><div class="card-title">Game Demo</div><div class="card-meta">Games · PS3 · 512 KB</div></div></div><div class="card" tabindex="0" role="listitem"><div class="card-cover placeholder" style="background:linear-gradient(160deg,hsl(289 42% 26%),hsl(329 52% 12%))" data-label="PS"></div><button class="fav-star" type="button" aria-label="Toggle favorite">☆</button><div class="card-body"><div class="card-title">PSP Game</div><div class="card-meta">Games · PSP · 256 KB</div></div></div><div class="card" tabindex="0" role="listitem"><div class="card-cover placeholder" style="background:linear-gradient(160deg,hsl(182 42% 26%),hsl(222 52% 12%))" data-label="HO"></div><button class="fav-star" type="button" aria-label="Toggle favorite">☆</button><div class="card-body"><div class="card-title">Homebrew Tool</div><div class="card-meta">Homebrew · PS3 · 64 KB</div></div></div></div></main></div></div><div class="modal-scrim"><div class="modal" role="dialog" aria-label="Settings"><button class="icon-btn close-x" aria-label="Close">✕</button><h3>Settings</h3><div class="field"><label>Theme</label><select><option>Follow system</option><option selected>Dark</option><option>Light</option></select></div><div class="field"><label>Default sort</label><select><option selected>Title A–Z</option><option>Title Z–A</option><option>Largest first</option><option>Smallest first</option></select></div><div class="settings-kv"><div>Catalog: <code>GET /api/catalog</code> — 8 entries</div><div>Local data: 1 favorites, 2 recently viewed (kept in this browser only)</div><div><button class="btn btn-ghost" type="button">Reset local data</button></div></div></div></div></div>
+
+<h2 class="ref-sec">9 · Narrow screens (&le;860px)</h2>
+<div class="row2">
+<div class="screen narrow" ><div class="shell" style="height:480px"><aside class="sidebar open"><div class="brand"><span class="brand-mark">PS Linker</span><button class="icon-btn" aria-label="Close menu">✕</button></div><nav class="nav-scroll"><div class="nav-group">Library</div><button class="nav-item active" type="button"><span>All Games</span><span class="nav-count">8</span></button><button class="nav-item" type="button"><span>Favorites</span><span class="nav-count">1</span></button><button class="nav-item" type="button"><span>Recently Viewed</span><span class="nav-count">2</span></button><div class="nav-group">Platforms</div><button class="nav-item" type="button"><span>PSP</span><span class="nav-count">4</span></button><button class="nav-item" type="button"><span>PS3</span><span class="nav-count">4</span></button><div class="nav-group">Folders</div><button class="nav-item" type="button"><span>Games</span><span class="nav-count">2</span></button><button class="nav-item" type="button"><span>Homebrew</span><span class="nav-count">2</span></button><button class="nav-item" type="button"><span>PS3</span><span class="nav-count">1</span></button><button class="nav-item" type="button"><span>Uncategorized</span><span class="nav-count">2</span></button><button class="nav-item" type="button"><span>Utilities</span><span class="nav-count">1</span></button></nav><div class="sidebar-foot"><button class="nav-item" type="button">⬇ Store</button><button class="nav-item" type="button">⚙ Settings</button></div></aside><div class="scrim"></div><div class="main-col"><header class="toolbar"><button class="icon-btn" aria-label="Open menu" >☰</button><input class="search" type="search" placeholder="Search library" aria-label="Search library" /><select class="select" aria-label="Sort by"><option value="title" selected>Title A–Z</option><option value="title-desc">Title Z–A</option><option value="size-desc">Largest first</option><option value="size-asc">Smallest first</option></select><button class="btn btn-primary" type="button">＋ Add Games</button></header><main class="library"><div class="grid" role="list"><div class="card" tabindex="0" role="listitem"><div class="card-cover placeholder" style="background:linear-gradient(160deg,hsl(348 42% 26%),hsl(28 52% 12%))" data-label="GA"></div><button class="fav-star" type="button" aria-label="Toggle favorite">☆</button><div class="card-body"><div class="card-title">Game Demo</div><div class="card-meta">Games · PS3 · 512 KB</div></div></div><div class="card" tabindex="0" role="listitem"><div class="card-cover placeholder" style="background:linear-gradient(160deg,hsl(289 42% 26%),hsl(329 52% 12%))" data-label="PS"></div><button class="fav-star" type="button" aria-label="Toggle favorite">☆</button><div class="card-body"><div class="card-title">PSP Game</div><div class="card-meta">Games · PSP · 256 KB</div></div></div><div class="card" tabindex="0" role="listitem"><div class="card-cover placeholder" style="background:linear-gradient(160deg,hsl(182 42% 26%),hsl(222 52% 12%))" data-label="HO"></div><button class="fav-star" type="button" aria-label="Toggle favorite">☆</button><div class="card-body"><div class="card-title">Homebrew Tool</div><div class="card-meta">Homebrew · PS3 · 64 KB</div></div></div></div></main></div></div></div>
+<div class="screen narrow" ><div class="shell" style="height:480px"><div class="main-col"><header class="toolbar"><button class="icon-btn" aria-label="Open menu" >☰</button><input class="search" type="search" placeholder="Search library" aria-label="Search library" /><select class="select" aria-label="Sort by"><option value="title" selected>Title A–Z</option><option value="title-desc">Title Z–A</option><option value="size-desc">Largest first</option><option value="size-asc">Smallest first</option></select><button class="btn btn-primary" type="button">＋ Add Games</button></header><main class="library"><div class="grid" role="list"><div class="card" tabindex="0" role="listitem"><div class="card-cover placeholder" style="background:linear-gradient(160deg,hsl(348 42% 26%),hsl(28 52% 12%))" data-label="GA"></div><button class="fav-star" type="button" aria-label="Toggle favorite">☆</button><div class="card-body"><div class="card-title">Game Demo</div><div class="card-meta">Games · PS3 · 512 KB</div></div></div><div class="card" tabindex="0" role="listitem"><div class="card-cover placeholder" style="background:linear-gradient(160deg,hsl(289 42% 26%),hsl(329 52% 12%))" data-label="PS"></div><button class="fav-star" type="button" aria-label="Toggle favorite">☆</button><div class="card-body"><div class="card-title">PSP Game</div><div class="card-meta">Games · PSP · 256 KB</div></div></div></div></main></div><aside class="drawer sheet"><div class="drawer-inner"><div class="drawer-cover placeholder" style="background:linear-gradient(160deg,hsl(289 42% 26%),hsl(329 52% 12%))" data-label="PS"></div><div class="drawer-title">PSP Homebrew<span class="chip">PSP</span></div><div class="drawer-sub">Homebrew · 128 KB</div><div class="drawer-actions"><button class="btn" type="button">☆ Favorite</button><a class="btn" href="#">⭳ Download</a></div></div></aside></div></div>
+</div>
+
+<div class="ref-note" style="margin-top:30px">Generated from the working tree — re-run
+<code>python3 scripts/gen-web-gui-reference.py</code> after UI changes. The live app is at
+<code>/gui/</code> on the share port (test server: <code>http://10.0.0.63:18000/gui/</code>).</div>
+</div>
+</body></html>
